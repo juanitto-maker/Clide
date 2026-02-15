@@ -30,8 +30,8 @@ GEAR="⚙️"
 # Configuration
 # ============================================
 
-REPO_URL="https://github.com/yourusername/clide.git"
-RAW_URL="https://raw.githubusercontent.com/yourusername/clide/main"
+REPO_URL="https://github.com/juanitto-maker/Clide.git"
+RAW_URL="https://raw.githubusercontent.com/juanitto-maker/Clide/main"
 INSTALL_DIR="${1:-$HOME/clide}"
 
 # ============================================
