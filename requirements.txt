@@ -1,0 +1,45 @@
+# ============================================
+# clide - Python Dependencies
+# ============================================
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+python-dotenv>=1.0.0          # Environment variable management
+pyyaml>=6.0.1                 # YAML configuration parsing
+requests>=2.31.0              # HTTP requests
+
+# Signal integration
+signalbot>=0.8.0              # Signal messenger bot framework
+
+# AI/LLM
+google-generativeai>=0.3.0    # Gemini Flash API
+
+# Database
+# sqlite3 is built-in to Python, no need to install
+
+# Security & Encryption
+cryptography>=41.0.0          # Secure credential storage
+pyotp>=2.9.0                  # One-time passwords (optional)
+
+# SSH & Remote execution
+paramiko>=3.4.0               # SSH client library
+fabric>=3.2.0                 # High-level SSH operations
+
+# Utilities
+click>=8.1.7                  # CLI argument parsing
+rich>=13.7.0                  # Beautiful terminal output
+python-dateutil>=2.8.2        # Date/time utilities
+
+# Logging & Monitoring
+python-json-logger>=2.0.7     # Structured JSON logging
+
+# Testing (development)
+pytest>=7.4.0                 # Testing framework
+pytest-cov>=4.1.0             # Code coverage
+black>=23.12.0                # Code formatting
+flake8>=7.0.0                 # Linting
+mypy>=1.8.0                   # Type checking
+
+# Security scanning (development)
+bandit>=1.7.6                 # Security issue scanner
+safety>=3.0.0                 # Dependency vulnerability scanner
