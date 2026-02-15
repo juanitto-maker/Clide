@@ -1,0 +1,75 @@
+# ============================================
+# Example Skill Template
+# ============================================
+# Copy this template to create your own skills
+
+name: example_skill
+description: A template skill demonstrating all available features
+version: "1.0.0"
+author: Your Name
+
+# Tags help organize and discover skills
+tags:
+  - example
+  - template
+
+# Parameters can be passed when executing the skill
+# Use {{parameter_name}} in commands to reference them
+parameters:
+  target:
+    description: Target server or path
+    type: string
+    required: true
+  
+  port:
+    description: Port number
+    type: number
+    required: false
+    default: "22"
+  
+  username:
+    description: Username for connection
+    type: string
+    required: false
+    default: "root"
+
+# Commands are executed in sequence
+commands:
+  # First command
+  - echo "Connecting to {{target}} on port {{port}}"
+  
+  # Second command with parameter substitution
+  - ssh -p {{port}} {{username}}@{{target}} "uptime"
+  
+  # Third command
+  - echo "Connection test completed"
+
+# Optional: Commands to run if workflow fails (executed in reverse order)
+rollback_command:
+  - echo "Rollback: Cleaning up after failure"
+
+# Security settings
+require_confirmation: false  # Ask user before executing
+parallel: false              # Execute commands in parallel
+retry_count: 0              # Retry failed commands
+timeout: 60                 # Timeout in seconds (null = no timeout)
+
+# ============================================
+# Usage Examples
+# ============================================
+# 
+# Basic usage:
+#   /skill example_skill target=server.com
+#
+# With all parameters:
+#   /skill example_skill target=server.com port=2222 username=admin
+#
+# ============================================
+# Creating Your Own Skills
+# ============================================
+#
+# 1. Copy this file to ~/.clide/skills/my_skill.yaml
+# 2. Modify the name, description, and commands
+# 3. Test with: clide skill run my_skill
+# 4. Share with others or add to skills/ directory
+#
