@@ -293,18 +293,16 @@ install_python_deps() {
 
     # Termux-specific warning + build dependencies
     if [ "$PLATFORM" = "termux" ]; then
-        print_warning "Android / Termux notice"
-        print_info "Some Python dependencies (cryptography, grpcio, pynacl, maturin)"
-        print_info "are compiled from source on Android."
-        print_info ""
-        print_info "⏳ This step may take 10–30 minutes"
-        print_info "⛔ It may appear frozen with no output"
-        print_info ""
-        print_info "• Do NOT exit the installer"
-        print_info "• Do NOT close Termux"
-        print_info "• Keep the screen on"
-        print_info "• Be patient — this is normal"
-        print_info ""
+        # Immediate warning to user
+        echo ""
+        echo "⚠️  Android / Termux notice: Some Python dependencies (cryptography, grpcio, pynacl, maturin)"
+        echo "    are compiled from source on Android."
+        echo "⏳  This step may take 10–30 minutes."
+        echo "⛔  It may appear frozen with no output."
+        echo "• Do NOT exit Termux"
+        echo "• Keep screen on"
+        echo "• Be patient — this is normal"
+        echo ""
 
         print_info "Installing Termux build dependencies for grpcio / Gemini / pynacl..."
         pkg install -y clang make pkg-config libc++ protobuf libsodium
@@ -328,6 +326,7 @@ install_python_deps() {
 
     print_success "Python dependencies installed"
 }
+
 # ============================================
 # Configuration Setup
 # ============================================
