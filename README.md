@@ -47,13 +47,14 @@ clide → You: ✓ Complete! Lynis score: 42 → 71
 
 ### One-Liner Install (Termux)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/clide/main/install.sh | bash
+bash
+curl -fsSL https://raw.githubusercontent.com/youruser/clide/main/install.sh | bash | bash
 ```
 
 ### Manual Installation
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/clide
+git clone https://github.com/juanitto-maker/clide
 cd clide
 
 # Run setup
