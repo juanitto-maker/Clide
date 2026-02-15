@@ -1,0 +1,93 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# Release builds
+/release/
+/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Configuration files (contain secrets!)
+config.yaml
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+.clide/logs/
+
+# SSH keys
+*.pem
+*.key
+id_rsa
+id_ed25519
+ssh_key
+ssh_key.pub
+
+# Signal CLI data
+.local/share/signal-cli/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Test coverage
+tarpaulin-report.html
+cobertura.xml
+lcov.info
+
+# Benchmark results
+target/criterion/
+
+# Documentation builds
+book/
+target/doc/
+
+# Binary artifacts
+clide
+clide-*-linux
+clide-*-darwin
+clide-*-android
+clide-*-windows.exe
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+
+# Python (from old version - keep for migration period)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Node (if using for build tools)
+node_modules/
+npm-debug.log
+yarn-error.log
