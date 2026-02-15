@@ -49,7 +49,13 @@ clide → You: ✓ Complete! Lynis score: 42 → 71
 ```bash
 curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
 ```
-
+### clean reinstall sequence (termux)
+```bash
+rm -rf ~/clide
+rm -rf ~/.cache/pip
+rm -rf /data/data/com.termux/files/usr/tmp/pip-build-env-*
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
+```
 ### Manual Installation
 ```bash
 # Clone the repository
