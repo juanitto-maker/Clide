@@ -281,24 +281,41 @@ install_cline() {
 
 install_python_deps() {
     print_step "Installing Python dependencies..."
-    
+
     # Ensure we're in the clide directory
     cd "$CLIDE_DIR"
-    
+
     # Verify requirements.txt exists
     if [ ! -f "requirements.txt" ]; then
         print_error "requirements.txt not found in $CLIDE_DIR"
         exit 1
     fi
-    
+
     print_info "Installing from: $CLIDE_DIR/requirements.txt"
-    
+
+    # Android / Termux warning BEFORE pip starts
+    if [ "$PLATFORM" = "termux" ]; then
+        print_warning "Android / Termux notice"
+        print_info "Some Python dependencies (cryptography, grpcio)"
+        print_info "are compiled from source on Android."
+        print_info ""
+        print_info "⏳ This step may take 10–30 minutes"
+        print_info "⛔ It may appear frozen with no output"
+        print_info ""
+        print_info "• Do NOT exit the installer"
+        print_info "• Do NOT close Termux"
+        print_info "• Keep the screen on"
+        print_info "• Be patient — this is normal"
+        print_info ""
+    fi
+
+    # Install dependencies
     if [ "$PLATFORM" = "termux" ]; then
         pip install -r requirements.txt --break-system-packages
     else
         pip3 install -r requirements.txt
     fi
-    
+
     print_success "Python dependencies installed"
 }
 
