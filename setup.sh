@@ -291,9 +291,7 @@ install_python_deps() {
         exit 1
     fi
 
-    print_info "Installing from: $CLIDE_DIR/requirements.txt"
-
-    # Android / Termux warning BEFORE pip starts
+    # Termux-specific warning + build dependencies
     if [ "$PLATFORM" = "termux" ]; then
         print_warning "Android / Termux notice"
         print_info "Some Python dependencies (cryptography, grpcio)"
@@ -307,9 +305,15 @@ install_python_deps() {
         print_info "• Keep the screen on"
         print_info "• Be patient — this is normal"
         print_info ""
+
+        # Ensure necessary build dependencies are installed for grpcio
+        print_info "Installing Termux build dependencies for grpcio / Gemini..."
+        pkg install -y clang python3-dev libc++ protobuf pkg-config make
     fi
 
-    # Install dependencies
+    print_info "Installing from: $CLIDE_DIR/requirements.txt"
+
+    # Install Python dependencies
     if [ "$PLATFORM" = "termux" ]; then
         pip install -r requirements.txt --break-system-packages
     else
