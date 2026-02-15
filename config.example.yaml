@@ -1,0 +1,311 @@
+# ============================================
+# Clide Configuration File
+# ============================================
+# Copy this to config.yaml and customize
+# IMPORTANT: config.yaml contains secrets - never commit to git!
+
+# ============================================
+# API Keys
+# ============================================
+
+# Gemini API Key (REQUIRED)
+# Get yours at: https://makersuite.google.com/app/apikey
+# Free tier: 60 req/min, 1500 req/day
+gemini_api_key: "YOUR_GEMINI_API_KEY_HERE"
+
+# Alternative: Use environment variable (more secure)
+# gemini_api_key: "${CLIDE_GEMINI_API_KEY}"
+
+# ============================================
+# Signal Configuration
+# ============================================
+
+# Your Signal phone number (REQUIRED)
+# Format: +countrycode + number (e.g., +1234567890)
+signal_number: "+1234567890"
+
+# Alternative: Use environment variable
+# signal_number: "${CLIDE_SIGNAL_NUMBER}"
+
+# Authorized numbers that can send commands
+# Leave empty to allow only signal_number
+# Add others for multi-user setups
+authorized_numbers:
+  - "+1234567890"  # Your primary number
+  # - "+0987654321"  # Your backup number
+  # - "+1122334455"  # Team member
+
+# ============================================
+# Security Settings
+# ============================================
+
+# Require confirmation before executing commands
+# Recommended: true for production, false for testing
+require_confirmation: false
+
+# Timeout for confirmation (seconds)
+confirmation_timeout: 60
+
+# Allow command execution (set false to disable all commands)
+allow_commands: true
+
+# Deny by default (only allow whitelisted commands)
+deny_by_default: false
+
+# Command whitelist (only these commands allowed if deny_by_default: true)
+# Supports wildcards: *, ?, [abc]
+allowed_commands:
+  - "systemctl status *"
+  - "docker ps*"
+  - "docker logs *"
+  - "ls *"
+  - "cat /var/log/*"
+  - "tail -f /var/log/*"
+  - "uptime"
+  - "df -h"
+  - "free -h"
+  - "ps aux"
+
+# Command blacklist (these commands are NEVER allowed)
+blocked_commands:
+  - "rm -rf /*"
+  - "rm -rf ~/*"
+  - "mkfs.*"
+  - "dd if=*"
+  - "chmod 777 *"
+  - "chmod -R 777 *"
+  - "passwd*"
+  - "userdel*"
+  - "shutdown*"
+  - "reboot*"
+  - "init 0"
+  - "init 6"
+  - ":(){ :|:& };:"  # Fork bomb
+
+# Dry run mode (log commands but don't execute)
+# Useful for testing
+dry_run: false
+
+# ============================================
+# SSH Configuration
+# ============================================
+
+# SSH key path (for remote operations)
+# Generate with: ssh-keygen -t ed25519 -f ~/.clide/ssh_key
+ssh_key_path: "~/.clide/ssh_key"
+
+# Verify SSH host keys (recommended)
+ssh_verify_host_keys: true
+
+# Allowed SSH hosts (empty = all hosts allowed)
+allowed_ssh_hosts: []
+  # - "production.example.com"
+  # - "staging.example.com"
+  # - "192.168.1.100"
+
+# SSH connection timeout (seconds)
+ssh_timeout: 30
+
+# ============================================
+# Logging
+# ============================================
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  
+  # Log file path
+  file: "~/.clide/logs/clide.log"
+  
+  # Max log file size before rotation
+  max_size: "100MB"
+  
+  # Number of old log files to keep
+  max_backups: 10
+  
+  # Compress old log files
+  compress: true
+  
+  # Log all executed commands
+  log_commands: true
+  
+  # Log command output (can be verbose)
+  log_output: true
+  
+  # Log API calls (Gemini requests)
+  log_api_calls: false
+  
+  # JSON format (easier for parsing)
+  json_format: true
+  
+  # Include timestamps
+  timestamps: true
+  
+  # Include caller information (file:line)
+  caller_info: false
+
+# ============================================
+# Execution Settings
+# ============================================
+
+execution:
+  # Maximum command execution time (seconds)
+  timeout: 300
+  
+  # Working directory for commands
+  working_dir: "~"
+  
+  # Environment variables to set
+  env_vars: {}
+    # PATH: "/usr/local/bin:/usr/bin:/bin"
+    # LANG: "en_US.UTF-8"
+  
+  # Shell to use for command execution
+  shell: "/bin/bash"
+  
+  # Shell flags
+  shell_flags: ["-c"]
+
+# ============================================
+# AI/Gemini Settings
+# ============================================
+
+gemini:
+  # Model to use
+  # Options: gemini-pro, gemini-pro-vision
+  model: "gemini-pro"
+  
+  # Temperature (0.0 = deterministic, 1.0 = creative)
+  temperature: 0.7
+  
+  # Max tokens in response
+  max_tokens: 2048
+  
+  # System prompt (context for AI)
+  system_prompt: |
+    You are Clide, an AI assistant that helps execute terminal commands.
+    Be concise and helpful. When suggesting commands, explain what they do.
+    Always prioritize safety and ask for confirmation for destructive operations.
+  
+  # Retry on failure
+  retry_count: 3
+  
+  # Retry delay (seconds)
+  retry_delay: 2
+
+# ============================================
+# Rate Limiting
+# ============================================
+
+rate_limit:
+  # Max commands per minute (per user)
+  commands_per_minute: 60
+  
+  # Max API calls per minute
+  api_calls_per_minute: 60
+  
+  # Max SSH connections per minute
+  ssh_per_minute: 30
+
+# ============================================
+# Notifications
+# ============================================
+
+notifications:
+  # Send notification on errors
+  notify_on_error: true
+  
+  # Send notification on successful execution
+  notify_on_success: false
+  
+  # Send daily summary
+  daily_summary: true
+  
+  # Daily summary time (24h format)
+  summary_time: "18:00"
+
+# ============================================
+# Advanced Settings
+# ============================================
+
+advanced:
+  # Enable experimental features
+  experimental: false
+  
+  # Cache API responses
+  cache_responses: true
+  
+  # Cache TTL (seconds)
+  cache_ttl: 3600
+  
+  # Graceful shutdown timeout (seconds)
+  shutdown_timeout: 10
+  
+  # Worker threads (0 = auto-detect)
+  worker_threads: 0
+
+# ============================================
+# Monitoring & Health Checks
+# ============================================
+
+monitoring:
+  # Enable health check endpoint
+  health_check: true
+  
+  # Health check port
+  health_check_port: 8080
+  
+  # Metrics collection
+  collect_metrics: true
+  
+  # Metrics retention (days)
+  metrics_retention: 30
+
+# ============================================
+# Backup & Recovery
+# ============================================
+
+backup:
+  # Enable automatic backups
+  enabled: false
+  
+  # Backup directory
+  directory: "~/.clide/backups"
+  
+  # Backup interval (hours)
+  interval: 24
+  
+  # Max backups to keep
+  max_backups: 7
+  
+  # Backup configuration
+  include_config: true
+  
+  # Backup logs
+  include_logs: false
+
+# ============================================
+# Custom Commands (Aliases)
+# ============================================
+
+aliases:
+  # Define custom command shortcuts
+  status: "systemctl status nginx && docker ps"
+  deploy: "cd /var/www && git pull && docker-compose up -d"
+  backup-db: "pg_dump mydb > /backups/db_$(date +%Y%m%d).sql"
+  clean-logs: "find /var/log -name '*.log' -mtime +30 -delete"
+
+# ============================================
+# Webhooks
+# ============================================
+
+webhooks:
+  # Send webhooks on events
+  enabled: false
+  
+  # Webhook endpoints
+  endpoints: []
+    # - url: "https://hooks.slack.com/services/..."
+    #   events: ["command_executed", "error"]
+    # - url: "https://discord.com/api/webhooks/..."
+    #   events: ["all"]
