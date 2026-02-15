@@ -71,6 +71,15 @@ python src/clide.py
 
 ---
 
+## Android / Termux Installation Notes
+
+When installing on Android via Termux, some dependencies
+(e.g. cryptography and grpcio) are compiled from source.
+
+This can take 10–30 minutes with little or no terminal output.
+Do not interrupt the installation if it appears stalled.
+
+---
 ## 🛫 Example Flight Path
 
 ### Simple Operations
