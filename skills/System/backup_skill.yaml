@@ -1,0 +1,53 @@
+# ============================================
+# Backup Automation Skill
+# ============================================
+# Automated backup with compression and cleanup
+
+name: backup_automation
+description: Automated backup of directories with compression and rotation
+version: "1.0.0"
+author: Clide Team
+tags:
+  - backup
+  - automation
+  - maintenance
+
+parameters:
+  source_dir:
+    description: Directory to backup
+    type: string
+    required: true
+  
+  backup_dir:
+    description: Destination directory for backups
+    type: string
+    required: true
+    default: "/backups"
+  
+  keep_days:
+    description: Number of days to keep old backups
+    type: number
+    required: false
+    default: "7"
+
+commands:
+  # Create backup directory
+  - mkdir -p {{backup_dir}}
+  
+  # Create timestamped backup
+  - tar -czf {{backup_dir}}/backup_$(date +%Y%m%d_%H%M%S).tar.gz {{source_dir}}
+  
+  # Remove old backups
+  - find {{backup_dir}} -name "backup_*.tar.gz" -mtime +{{keep_days}} -delete
+  
+  # Show backup status
+  - ls -lh {{backup_dir}}/backup_*.tar.gz | tail -5
+
+rollback_command:
+  # Remove failed backup if it exists
+  - rm -f {{backup_dir}}/backup_$(date +%Y%m%d)*.tar.gz
+
+require_confirmation: true
+parallel: false
+retry_count: 1
+timeout: 300

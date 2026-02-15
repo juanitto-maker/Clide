@@ -1,0 +1,40 @@
+# ============================================
+# System Monitoring Skill
+# ============================================
+# Comprehensive system health monitoring
+
+name: system_monitoring
+description: Monitor system health with disk, memory, CPU, and process checks
+version: "1.0.0"
+author: Clide Team
+tags:
+  - monitoring
+  - system
+  - health
+
+parameters:
+  alert_threshold:
+    description: Alert threshold percentage for disk/memory usage
+    type: number
+    required: false
+    default: "80"
+
+commands:
+  # Disk usage check
+  - df -h | awk 'NR>1 {if ($5+0 > {{alert_threshold}}) print "⚠️  " $0; else print "✅ " $0}'
+  
+  # Memory usage
+  - free -h | awk 'NR==2 {printf "Memory: %s / %s (%.1f%% used)\n", $3, $2, ($3/$2)*100}'
+  
+  # CPU load average
+  - uptime | awk -F'load average:' '{print "Load Average:" $2}'
+  
+  # Top 5 CPU processes
+  - ps aux --sort=-%cpu | head -6 | awk 'NR>1 {printf "%.1f%% CPU - %s\n", $3, $11}'
+  
+  # Top 5 Memory processes
+  - ps aux --sort=-%mem | head -6 | awk 'NR>1 {printf "%.1f%% MEM - %s\n", $4, $11}'
+
+require_confirmation: false
+parallel: false
+retry_count: 0
