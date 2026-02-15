@@ -294,7 +294,7 @@ install_python_deps() {
     # Termux-specific warning + build dependencies
     if [ "$PLATFORM" = "termux" ]; then
         print_warning "Android / Termux notice"
-        print_info "Some Python dependencies (cryptography, grpcio)"
+        print_info "Some Python dependencies (cryptography, grpcio, pynacl)"
         print_info "are compiled from source on Android."
         print_info ""
         print_info "⏳ This step may take 10–30 minutes"
@@ -306,9 +306,8 @@ install_python_deps() {
         print_info "• Be patient — this is normal"
         print_info ""
 
-        # Ensure necessary build dependencies are installed for grpcio
-        print_info "Installing Termux build dependencies for grpcio / Gemini..."
-        pkg install -y clang python3-dev libc++ protobuf pkg-config make
+        print_info "Installing Termux build dependencies for grpcio / Gemini / pynacl..."
+        pkg install -y clang make pkg-config libc++ protobuf libsodium
     fi
 
     print_info "Installing from: $CLIDE_DIR/requirements.txt"
