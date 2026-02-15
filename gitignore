@@ -1,0 +1,217 @@
+# ============================================
+# clide - Git Ignore File
+# ============================================
+
+# ============================================
+# CRITICAL - Never commit these!
+# ============================================
+
+# Configuration with secrets
+config.yaml
+*.yaml.local
+*.yml.local
+
+# API keys and credentials
+.env
+.env.*
+*.key
+*.pem
+id_rsa*
+*.p12
+*.pfx
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Backups
+*.backup
+*.bak
+*~
+*.swp
+*.swo
+
+# ============================================
+# Python
+# ============================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.spyderproject
+.spyproject
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# ============================================
+# Node.js (for Cline CLI)
+# ============================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ============================================
+# OS-specific
+# ============================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================
+# Termux-specific
+# ============================================
+
+# Termux storage symlinks
+storage/
+
+# ============================================
+# clide-specific
+# ============================================
+
+# User data directory
+.clide/
+!.clide/.gitkeep
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Signal CLI data
+.local/share/signal-cli/
+
+# SSH keys (should be elsewhere, but just in case)
+.ssh/
+
+# Cache
+.cache/
+__cache__/
+
+# Memory dumps
+*.dump
+core
+
+# Development notes
+TODO.md
+NOTES.md
+scratch.md
+
+# Test files
+test_*.py.local
+*_test_output/
+
+# ============================================
+# Documentation build
+# ============================================
+
+docs/_build/
+site/
+.mkdocs_cache/
+
+# ============================================
+# Docker (future use)
+# ============================================
+
+docker-compose.override.yml
+.dockerignore
+
+# ============================================
+# Allowed exceptions
+# ============================================
+
+# Allow example configs
+!config.example.yaml
+!.env.example
+
+# Allow docs
+!docs/
+
+# Allow skill templates
+!skills/*.yaml
