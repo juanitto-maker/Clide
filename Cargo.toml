@@ -1,0 +1,113 @@
+[package]
+name = "clide"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Autonomous terminal operations via Signal messenger powered by AI"
+repository = "https://github.com/yourusername/clide"
+license = "MIT"
+keywords = ["cli", "signal", "ai", "automation", "bot"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = "0.7"
+
+# HTTP client for Gemini API
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Configuration
+config = "0.14"
+dotenv = "0.15"
+
+# Database (SQLite for memory/persistence)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# SSH client (pure Rust - compiles on Termux!)
+russh = "0.45"
+russh-keys = "0.45"
+
+# Async SSH trait
+async-trait = "0.1"
+
+# Process execution
+tokio-process = "0.2"
+
+# CLI framework
+clap = { version = "4.5", features = ["derive", "cargo", "env"] }
+colored = "2.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Cryptography (pure Rust - compiles everywhere!)
+ring = "0.17"
+base64 = "0.22"
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# String utilities
+regex = "1.10"
+
+# File system
+dirs = "5.0"
+walkdir = "2.5"
+
+# Terminal UI
+indicatif = "0.17"
+
+# System info
+sysinfo = "0.31"
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+mockall = "0.13"
+tempfile = "3.12"
+assert_cmd = "2.0"
+predicates = "3.1"
+
+# Benchmarking
+criterion = "0.5"
+
+[profile.release]
+# Optimize for size and speed
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+strip = false
+debug = true
+
+[[bin]]
+name = "clide"
+path = "src/main.rs"
+
+[features]
+default = ["signal", "ssh", "gemini", "memory", "skills"]
+signal = []
+ssh = ["russh", "russh-keys"]
+gemini = ["reqwest"]
+memory = ["rusqlite"]
+skills = []
+workflow = []
+full = ["signal", "ssh", "gemini", "memory", "skills", "workflow"]
+
+# Platform-specific features
+termux = []
