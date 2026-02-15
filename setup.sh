@@ -294,7 +294,7 @@ install_python_deps() {
     # Termux-specific warning + build dependencies
     if [ "$PLATFORM" = "termux" ]; then
         print_warning "Android / Termux notice"
-        print_info "Some Python dependencies (cryptography, grpcio, pynacl)"
+        print_info "Some Python dependencies (cryptography, grpcio, pynacl, maturin)"
         print_info "are compiled from source on Android."
         print_info ""
         print_info "⏳ This step may take 10–30 minutes"
@@ -308,6 +308,13 @@ install_python_deps() {
 
         print_info "Installing Termux build dependencies for grpcio / Gemini / pynacl..."
         pkg install -y clang make pkg-config libc++ protobuf libsodium
+
+        print_info "Cleaning pip and tmp caches to avoid build issues..."
+        rm -rf ~/.cache/pip
+        rm -rf /data/data/com.termux/files/usr/tmp/pip-*
+
+        print_info "Setting single-threaded cargo build to avoid Rust build errors..."
+        export CARGO_BUILD_JOBS=1
     fi
 
     print_info "Installing from: $CLIDE_DIR/requirements.txt"
@@ -321,7 +328,6 @@ install_python_deps() {
 
     print_success "Python dependencies installed"
 }
-
 # ============================================
 # Configuration Setup
 # ============================================
