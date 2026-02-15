@@ -169,7 +169,14 @@ clide: 🛫 Deploying...
 ## Why Clide Uses Signal
 
 ```
-Clide uses Signal for messaging and notifications because it provides end-to-end encryption by default, ensuring that all communications remain private and secure. Unlike other platforms, Signal can be integrated via signal-cli, a lightweight CLI tool, which allows Clide to operate fully from the terminal without requiring webhooks, persistent servers, or complex APIs. This makes it ideal for autonomous, secure, and reliable CLI-based automation. Signal’s open-source ecosystem, minimal metadata retention, and consistent message delivery make it the safest and most straightforward choice compared to alternatives like Telegram, Discord, or WhatsApp, which often require hosted bots, OAuth, or paid APIs.
+Clide uses Signal for messaging and notifications because it provides end-to-end encryption by default,
+ensuring that all communications remain private and secure. Unlike other platforms,
+Signal can be integrated via signal-cli, a lightweight CLI tool, which allows Clide to operate fully
+from the terminal without requiring webhooks, persistent servers, or complex APIs.
+This makes it ideal for autonomous, secure, and reliable CLI-based automation.
+Signal’s open-source ecosystem, minimal metadata retention, and consistent message delivery make it
+the safest and most straightforward choice compared to alternatives like Telegram, Discord, or WhatsApp,
+which often require hosted bots, OAuth, or paid APIs.
 
 ```
 ---
