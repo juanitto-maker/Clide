@@ -24,8 +24,8 @@ PLANE="✈️"
 # Configuration
 # ============================================
 
-REPO_OWNER="yourusername"
-REPO_NAME="clide"
+REPO_OWNER="juanitto-maker"   # <--- Change this from "yourusername"
+REPO_NAME="Clide"            # <--- Ensure this matches your repo name exactly
 BINARY_NAME="clide"
 GITHUB_REPO="https://github.com/${REPO_OWNER}/${REPO_NAME}"
 
