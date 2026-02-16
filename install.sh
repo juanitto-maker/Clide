@@ -139,7 +139,8 @@ install_binary() {
     mkdir -p "$INSTALL_DIR"
     
     # Download binary
-    TMP_FILE="/tmp/${BINARY_NAME}.tmp"
+    # This uses the current directory or the environment's temp path
+TMP_FILE="./${BINARY_NAME}.tmp" 
     
     if command -v wget &> /dev/null; then
         wget -q --show-progress "$DOWNLOAD_URL" -O "$TMP_FILE" || print_error "Download failed"
