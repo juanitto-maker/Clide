@@ -2,7 +2,7 @@
 name = "clide"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["juanitto-maker"]
 description = "Autonomous terminal operations via Signal messenger powered by AI"
 repository = "https://github.com/juanitto-maker/Clide"
 license = "MIT"
@@ -14,8 +14,8 @@ categories = ["command-line-utilities"]
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7"
 
-# HTTP client for Gemini API
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# HTTP client for Gemini API (Marked Optional for Features)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -26,12 +26,12 @@ serde_yaml = "0.9"
 config = "0.14"
 dotenv = "0.15"
 
-# Database (SQLite for memory/persistence)
-rusqlite = { version = "0.32", features = ["bundled"] }
+# Database (Marked Optional for Features)
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
-# SSH client (pure Rust - compiles on Termux!)
-russh = "0.45"
-russh-keys = "0.45"
+# SSH client (Marked Optional for Features)
+russh = { version = "0.45", optional = true }
+russh-keys = { version = "0.45", optional = true }
 
 # Async SSH trait
 async-trait = "0.1"
@@ -52,7 +52,7 @@ tracing-appender = "0.2"
 anyhow = "1.0"
 thiserror = "1.0"
 
-# Cryptography (pure Rust - compiles everywhere!)
+# Cryptography
 ring = "0.17"
 base64 = "0.22"
 
@@ -72,43 +72,26 @@ indicatif = "0.17"
 # System info
 sysinfo = "0.31"
 
-[dev-dependencies]
-# Testing
-tokio-test = "0.4"
-mockall = "0.13"
-tempfile = "3.12"
-assert_cmd = "2.0"
-predicates = "3.1"
-
-# Benchmarking
-criterion = "0.5"
-
-[profile.release]
-# Optimize for size and speed
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-
-[profile.release-with-debug]
-inherits = "release"
-strip = false
-debug = true
-
-[[bin]]
-name = "clide"
-path = "src/main.rs"
-
 [features]
+# Default includes all core modules
 default = ["signal", "ssh", "gemini", "memory", "skills"]
+
+# Using dep: ensures the optional dependency is only compiled when the feature is active
 signal = []
-ssh = ["russh", "russh-keys"]
-gemini = ["reqwest"]
-memory = ["rusqlite"]
+ssh = ["dep:russh", "dep:russh-keys"]
+gemini = ["dep:reqwest"]
+memory = ["dep:rusqlite"]
 skills = []
 workflow = []
 full = ["signal", "ssh", "gemini", "memory", "skills", "workflow"]
 
-# Platform-specific features
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.13"
+tempfile = "3.12"
 
-termux = []
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Link Time Optimization
+codegen-units = 1   # Better optimization
+strip = true        # Remove symbols (smaller binary)
