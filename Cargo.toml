@@ -5,78 +5,39 @@ edition = "2021"
 authors = ["juanitto-maker"]
 description = "Autonomous terminal operations via Signal messenger powered by AI"
 repository = "https://github.com/juanitto-maker/Clide"
-license = "MIT"
-keywords = ["cli", "signal", "ai", "automation", "bot"]
-categories = ["command-line-utilities"]
 
 [dependencies]
-# Async runtime
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7"
-
-# HTTP client for Gemini API (Marked Optional for Features)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
-
-# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-
-# Configuration
 config = "0.14"
 dotenv = "0.15"
-
-# Database (Marked Optional for Features)
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
-
-# SSH client (Marked Optional for Features)
 russh = { version = "0.45", optional = true }
 russh-keys = { version = "0.45", optional = true }
-
-# Async SSH trait
 async-trait = "0.1"
-
-# Process execution
 tokio-process = "0.2"
-
-# CLI framework
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 colored = "2.1"
-
-# Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chrono"] }
 tracing-appender = "0.2"
-
-# Error handling
 anyhow = "1.0"
 thiserror = "1.0"
-
-# Cryptography
 ring = "0.17"
 base64 = "0.22"
-
-# Date/Time
 chrono = { version = "0.4", features = ["serde"] }
-
-# String utilities
 regex = "1.10"
-
-# File system
 dirs = "5.0"
 walkdir = "2.5"
-
-# Terminal UI
 indicatif = "0.17"
-
-# System info
 sysinfo = "0.31"
 
 [features]
-# Default includes all core modules
 default = ["signal", "ssh", "gemini", "memory", "skills"]
-
-# Using dep: ensures the optional dependency is only compiled when the feature is active
 signal = []
 ssh = ["dep:russh", "dep:russh-keys"]
 gemini = ["dep:reqwest"]
@@ -85,13 +46,8 @@ skills = []
 workflow = []
 full = ["signal", "ssh", "gemini", "memory", "skills", "workflow"]
 
-[dev-dependencies]
-tokio-test = "0.4"
-mockall = "0.13"
-tempfile = "3.12"
-
 [profile.release]
-opt-level = "z"     # Optimize for size
-lto = true          # Link Time Optimization
-codegen-units = 1   # Better optimization
-strip = true        # Remove symbols (smaller binary)
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
