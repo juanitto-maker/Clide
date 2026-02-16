@@ -24,7 +24,7 @@ impl client::Handler for ClientHandler {
         &mut self,
         _server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        Ok(true) // Trust all hosts for now; configure for production
     }
 }
 
@@ -52,20 +52,23 @@ impl SshClient {
     ) -> Result<SshOutput> {
         let (hostname, port) = parse_host(host);
         
+        // FIXED: connection_timeout is no longer a field in russh::client::Config
         let config = russh::client::Config {
-            connection_timeout: std::time::Duration::from_secs(self.timeout),
             ..Default::default()
         };
         let config = Arc::new(config);
         let sh = ClientHandler;
         
-        let mut session = russh::client::connect(config, (hostname, port), sh).await?;
+        // Wrap connection in a timeout
+        let mut session = tokio::time::timeout(
+            std::time::Duration::from_secs(self.timeout),
+            russh::client::connect(config, (hostname, port), sh)
+        ).await.context("SSH connection timed out")??;
 
         let auth_res = if let Some(path) = key_path {
             let key_pair = load_private_key(path)?;
             session.authenticate_publickey(user, Arc::new(key_pair)).await?
         } else {
-            // Default to current user agent if no key
             false
         };
 
@@ -75,8 +78,7 @@ impl SshClient {
 
         let mut channel = session.channel_open_session().await?;
         
-        // FIXED: .exec now takes a reference or Vec<u8> depending on exact russh minor version
-        // Using as_bytes() is the safest way to satisfy the trait bound
+        // FIXED: .exec requires &[u8] for the command
         channel.exec(true, command.as_bytes()).await?;
 
         let mut stdout = Vec::new();
@@ -110,7 +112,6 @@ fn parse_host(host: &str) -> (String, u16) {
 
 fn load_private_key(path: &Path) -> Result<key::KeyPair> {
     let key_data = std::fs::read_to_string(path)?;
-    // Updated russh_keys decode call
     let key_pair = russh_keys::decode_secret_key(&key_data, None)
         .context("Failed to decode SSH key")?;
     Ok(key_pair)
