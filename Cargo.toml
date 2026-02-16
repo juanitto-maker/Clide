@@ -2,29 +2,27 @@
 name = "clide"
 version = "0.1.0"
 edition = "2021"
-authors = ["juanitto-maker"]
-description = "Autonomous terminal operations via Signal messenger powered by AI"
-repository = "https://github.com/juanitto-maker/Clide"
 
 [dependencies]
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7"
+# Added optional = true to satisfy the [features] section
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
-
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 config = "0.14"
 dotenv = "0.15"
-rusqlite = { version = "0.32", features = ["bundled"] }
-russh = "0.45"
-russh-keys = "0.45"
+# Added optional = true for rusqlite
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+# Added optional = true for ssh features
+russh = { version = "0.45", optional = true }
+russh-keys = { version = "0.45", optional = true }
 async-trait = "0.1"
 tokio-process = "0.2"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 colored = "2.1"
 tracing = "0.1"
-# FIXED: Enabled 'time' and 'local-time' features for UtcTime/LocalTime
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chrono", "time", "local-time"] }
 tracing-appender = "0.2"
 anyhow = "1.0"
@@ -39,19 +37,17 @@ indicatif = "0.17"
 sysinfo = "0.31"
 
 [features]
-default = ["signal", "ssh", "gemini", "memory", "skills"]
-signal = []
-ssh = ["dep:russh", "dep:russh-keys"]
+default = ["gemini", "memory", "ssh"]
 gemini = ["dep:reqwest"]
 memory = ["dep:rusqlite"]
-skills = []
-workflow = []
-full = ["signal", "ssh", "gemini", "memory", "skills", "workflow"]
+ssh = ["dep:russh", "dep:russh-keys"]
+
 
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
 
 
