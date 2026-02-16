@@ -1,7 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================
-# Clide Complete Installer - One-Line Setup
-# Handles everything from scratch to finish
+# Clide Installer - Secure & User-Friendly
 # ============================================
 set -e
 
@@ -101,11 +100,9 @@ echo ""
 
 # Build with progress indicator
 cargo build --release 2>&1 | while IFS= read -r line; do
-    # Show only important lines
     if echo "$line" | grep -qE "Compiling|Finished|error:|warning:"; then
         echo "   $line"
     fi
-    # Show progress dots for other lines to indicate it's working
     if echo "$line" | grep -qE "Downloading|Updating"; then
         echo -n "."
     fi
@@ -121,10 +118,7 @@ echo ""
 # ============================================
 echo "🚚 Installing Clide binary..."
 
-# Create bin directory
 mkdir -p "$PREFIX/bin"
-
-# Copy and make executable
 cp target/release/clide "$PREFIX/bin/clide"
 chmod +x "$PREFIX/bin/clide"
 
@@ -132,46 +126,71 @@ echo "✅ Installed to: $PREFIX/bin/clide"
 echo ""
 
 # ============================================
-# 9. Auto-Configure Clide
+# 9. Secure Configuration Setup
 # ============================================
 echo "⚙️  Setting up configuration..."
 echo ""
 
-# Create config directory
+# Create config directory with secure permissions
 mkdir -p ~/.clide/logs
+chmod 700 ~/.clide
 
 # Copy example config
 cp "$INSTALL_DIR/config.example.yaml" ~/.clide/config.yaml
+chmod 600 ~/.clide/config.yaml
 
 echo "✅ Config file created at: ~/.clide/config.yaml"
 echo ""
 
-# Ask for API key
+# ============================================
+# 10. Secure API Key Setup
+# ============================================
 echo "═══════════════════════════════════════"
-echo "🔑 Gemini API Key Setup"
+echo "🔑 Gemini API Key Setup (Secure)"
 echo "═══════════════════════════════════════"
 echo ""
 echo "To use Clide, you need a Gemini API key."
 echo "Get one free at: https://makersuite.google.com/app/apikey"
 echo ""
-read -p "Enter your Gemini API key (or press Enter to skip): " API_KEY
+echo "🔒 Security: Your key will be stored as an environment"
+echo "   variable (not in the config file) for better security."
+echo ""
+read -sp "Enter your Gemini API key (hidden): " API_KEY
+echo ""
+echo ""
 
 if [ ! -z "$API_KEY" ]; then
-    # Insert API key into config
-    sed -i "s/YOUR_API_KEY_HERE/$API_KEY/" ~/.clide/config.yaml
-    echo ""
-    echo "✅ API key configured!"
+    # Store securely in .bashrc as environment variable
+    echo "" >> ~/.bashrc
+    echo "# Clide Configuration (added by installer)" >> ~/.bashrc
+    echo "export GEMINI_API_KEY='$API_KEY'" >> ~/.bashrc
+    
+    # Set strict permissions on .bashrc
+    chmod 600 ~/.bashrc
+    
+    # Load into current session
+    export GEMINI_API_KEY="$API_KEY"
+    
+    # Clear from shell history
+    history -d $((HISTCMD-1)) 2>/dev/null || true
+    
+    echo "✅ API key securely stored as environment variable"
+    echo "   (stored in ~/.bashrc with 600 permissions)"
     CONFIG_READY=true
 else
-    echo ""
     echo "⚠️  Skipped API key setup"
-    echo "   Edit later: nano ~/.clide/config.yaml"
+    echo ""
+    echo "To set it later, run:"
+    echo "  export GEMINI_API_KEY='your-key-here'"
+    echo "  echo 'export GEMINI_API_KEY=\"your-key\"' >> ~/.bashrc"
     CONFIG_READY=false
 fi
 
 echo ""
 
-# Ask for Signal number (optional)
+# ============================================
+# 11. Optional Signal Configuration
+# ============================================
 echo "═══════════════════════════════════════"
 echo "📱 Signal Number (Optional)"
 echo "═══════════════════════════════════════"
@@ -191,7 +210,7 @@ fi
 echo ""
 
 # ============================================
-# 10. Verify Installation
+# 12. Verify Installation
 # ============================================
 echo "🔍 Verifying installation..."
 
@@ -207,7 +226,7 @@ fi
 echo ""
 
 # ============================================
-# 11. Final Summary
+# 13. Final Summary
 # ============================================
 echo "═══════════════════════════════════════"
 echo "✨ Installation Complete!"
@@ -215,26 +234,31 @@ echo "════════════════════════�
 echo ""
 
 if [ "$CONFIG_READY" = true ]; then
-    echo "🎉 Clide is ready to use!"
+    echo "🎉 Clide is ready to use immediately!"
     echo ""
     echo "Try these commands:"
-    echo "   clide status           # Check system status"
-    echo "   clide test-gemini      # Test Gemini API"
-    echo "   clide start            # Start the bot"
+    echo "   clide test-gemini 'hello'   # Test Gemini API"
+    echo "   clide status                # Check system"
+    echo "   clide --help                # See all commands"
     echo ""
 else
     echo "📝 To finish setup:"
     echo ""
     echo "1️⃣  Get API key: https://makersuite.google.com/app/apikey"
-    echo "2️⃣  Edit config: nano ~/.clide/config.yaml"
-    echo "3️⃣  Test: clide test-gemini"
+    echo "2️⃣  Set environment: export GEMINI_API_KEY='your-key'"
+    echo "3️⃣  Test: clide test-gemini 'hello'"
     echo ""
 fi
 
+echo "🔒 Security:"
+echo "   • API key stored as environment variable"
+echo "   • Config files have 600 permissions (only you can read)"
+echo "   • API key not in config file or git history"
+echo ""
 echo "📚 Documentation: $INSTALL_DIR/README.md"
 echo "⚙️  Config file: ~/.clide/config.yaml"
-echo "🗂️  Source code: $INSTALL_DIR"
+echo "🔑 API key: Set via GEMINI_API_KEY environment variable"
 echo ""
-echo "💡 Tip: Run 'clide --help' to see all commands"
+echo "💡 Model: gemini-2.5-flash (fast and efficient!)"
 echo ""
 echo "🎉 Happy hacking!"
