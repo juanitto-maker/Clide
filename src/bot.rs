@@ -58,7 +58,7 @@ impl Bot {
         let executor = Executor::new(config.clone());
         let gemini = GeminiClient::new(
             config.gemini_api_key.clone(),
-            "gemini-1.5-flash".to_string(), // Updated model name
+            config.get_model(), // Uses gemini-2.5-flash from config
             0.7,
             2048,
             "You are Clide, a terminal assistant...".to_string(),
