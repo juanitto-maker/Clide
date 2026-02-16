@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+##!/data/data/com.termux/files/usr/bin/bash
 # ============================================
 # Clide Installer - Secure & User-Friendly
 # ============================================
@@ -6,6 +6,11 @@ set -e
 
 echo "🚀 Installing Clide - Complete Setup"
 echo ""
+
+# ============================================
+# FIX: Allow keyboard input when piped
+# ============================================
+exec < /dev/tty
 
 # ============================================
 # 1. Detect if Termux
