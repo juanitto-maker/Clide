@@ -89,24 +89,41 @@ async fn main() -> Result<()> {
                 1024,
                 "You are a helpful assistant.".to_string(),
             );
-            println!("Sending prompt: {}", prompt);
+            info!("Sending prompt to Gemini...");
             let response = client.generate(&prompt).await?;
             println!("\nGemini Response:\n{}", response);
         }
         Commands::Status => {
-            // Re-using logic from bot.rs for the CLI status command
+            // FIXED: sysinfo v0.31 uses static methods for load and uptime
             let mut sys = sysinfo::System::new_all();
             sys.refresh_all();
+            
             let load = sysinfo::System::load_average();
-            println!("📊 System Status");
-            println!("Load: {:.2}, {:.2}, {:.2}", load.one, load.five, load.fifteen);
-            println!("Memory: {}/{} MB", sys.used_memory() / 1024 / 1024, sys.total_memory() / 1024 / 1024);
+            let uptime = sysinfo::System::uptime();
+            let used_mem = sys.used_memory() / 1024 / 1024;
+            let total_mem = sys.total_memory() / 1024 / 1024;
+
+            println!("📊 **System Status**");
+            println!("• Load: {:.2}, {:.2}, {:.2}", load.one, load.five, load.fifteen);
+            println!("• Memory: {}/{} MB", used_mem, total_mem);
+            println!("• Uptime: {}h {}m", uptime / 3600, (uptime % 3600) / 60);
         }
         Commands::Init => {
             init_config(&cli.config)?;
         }
+        Commands::Config { show_secrets } => {
+            let config_path = expand_path(&cli.config);
+            let config = Config::load(config_path)?;
+            if show_secrets {
+                println!("{:#?}", config);
+            } else {
+                let mut safe_config = config.clone();
+                safe_config.gemini_api_key = "********".to_string();
+                println!("{:#?}", safe_config);
+            }
+        }
         _ => {
-            println!("Command not yet implemented or use --help");
+            println!("Command not yet implemented. Use --help for available commands.");
         }
     }
 
@@ -116,24 +133,31 @@ async fn main() -> Result<()> {
 fn init_config(path: &PathBuf) -> Result<()> {
     let expanded_path = expand_path(path);
     if expanded_path.exists() {
-        println!("⚠️  Config file already exists: {:?}", expanded_path);
+        println!("⚠️  Config file already exists at {:?}", expanded_path);
         return Ok(());
     }
     if let Some(parent) = expanded_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Simple placeholder for init
-    let example = "gemini_api_key: \"YOUR_KEY\"\nsignal_number: \"+123456789\"\nauthorized_numbers: [\"+123456789\"]";
-    std::fs::write(&expanded_path, example)?;
-    println!("✅ Config initialized at {:?}", expanded_path);
+    
+    // Create a basic config template
+    let template = r#"gemini_api_key: "YOUR_API_KEY"
+signal_number: "+123456789"
+authorized_numbers: ["+123456789"]
+logging:
+  level: "info"
+  json: false
+"#;
+    std::fs::write(&expanded_path, template)?;
+    println!("✅ Configuration initialized at {:?}", expanded_path);
     Ok(())
 }
 
 fn expand_path(path: &PathBuf) -> PathBuf {
-    if path.starts_with("~") {
+    let path_str = path.to_string_lossy();
+    if path_str.starts_with('~') {
         if let Some(home) = dirs::home_dir() {
-            let path_str = path.to_string_lossy();
-            return PathBuf::from(path_str.replacen("~", &home.to_string_lossy(), 1));
+            return PathBuf::from(path_str.replacen('~', &home.to_string_lossy(), 1));
         }
     }
     path.clone()
