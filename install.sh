@@ -108,9 +108,15 @@ detect_platform() {
 install_binary() {
     print_step "Downloading clide for ${TARGET}..."
     
-    # Get latest release version
+     # Get latest release version
     LATEST_URL="${GITHUB_REPO}/releases/latest"
-    VERSION=$(curl -sI "$LATEST_URL" | grep -i "location:" | sed 's/.*tag\///' | tr -d '\r\n')
+    
+    # --- CHANGE THIS PART ---
+    # Comment out the automatic detection:
+    # VERSION=$(curl -sI "$LATEST_URL" | grep -i "location:" | sed 's/.*tag\///' | tr -d '\r\n')
+    
+    # Manually set the version to match your GitHub Release tag:
+    VERSION="v0.1.0" 
     
     if [ -z "$VERSION" ]; then
         print_error "Failed to get latest version"
