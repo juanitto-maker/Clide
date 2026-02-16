@@ -1,5 +1,5 @@
 // ============================================
-// skills/mod.rs - Skills System
+// skills/mod.rs - Skills System (CORRECTED)
 // ============================================
 // Modular skill system for reusable commands
 
