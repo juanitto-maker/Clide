@@ -37,7 +37,7 @@ pub fn init(config: LoggerConfig) -> Result<Option<WorkerGuard>> {
     let mut guard = None;
 
     // Use UtcTime for reliability across platforms/features
-    let timer = fmt::time::UtcTime::rfc3339();
+    let timer = fmt::time::UtcTime::rfc_3339();
 
     if let Some(file_path) = config.file_path {
         if let Some(parent) = file_path.parent() {
