@@ -132,14 +132,73 @@ echo "✅ Installed to: $PREFIX/bin/clide"
 echo ""
 
 # ============================================
-# 9. Verify Installation
+# 9. Auto-Configure Clide
+# ============================================
+echo "⚙️  Setting up configuration..."
+echo ""
+
+# Create config directory
+mkdir -p ~/.clide/logs
+
+# Copy example config
+cp "$INSTALL_DIR/config.example.yaml" ~/.clide/config.yaml
+
+echo "✅ Config file created at: ~/.clide/config.yaml"
+echo ""
+
+# Ask for API key
+echo "═══════════════════════════════════════"
+echo "🔑 Gemini API Key Setup"
+echo "═══════════════════════════════════════"
+echo ""
+echo "To use Clide, you need a Gemini API key."
+echo "Get one free at: https://makersuite.google.com/app/apikey"
+echo ""
+read -p "Enter your Gemini API key (or press Enter to skip): " API_KEY
+
+if [ ! -z "$API_KEY" ]; then
+    # Insert API key into config
+    sed -i "s/YOUR_API_KEY_HERE/$API_KEY/" ~/.clide/config.yaml
+    echo ""
+    echo "✅ API key configured!"
+    CONFIG_READY=true
+else
+    echo ""
+    echo "⚠️  Skipped API key setup"
+    echo "   Edit later: nano ~/.clide/config.yaml"
+    CONFIG_READY=false
+fi
+
+echo ""
+
+# Ask for Signal number (optional)
+echo "═══════════════════════════════════════"
+echo "📱 Signal Number (Optional)"
+echo "═══════════════════════════════════════"
+echo ""
+read -p "Enter your Signal number (e.g., +1234567890) or press Enter to skip: " SIGNAL_NUMBER
+
+if [ ! -z "$SIGNAL_NUMBER" ]; then
+    sed -i "s/+1234567890/$SIGNAL_NUMBER/" ~/.clide/config.yaml
+    echo ""
+    echo "✅ Signal number configured!"
+else
+    echo ""
+    echo "⚠️  Skipped Signal setup"
+    echo "   Configure later: nano ~/.clide/config.yaml"
+fi
+
+echo ""
+
+# ============================================
+# 10. Verify Installation
 # ============================================
 echo "🔍 Verifying installation..."
 
 if command -v clide >/dev/null 2>&1; then
     echo "✅ Clide is ready!"
     echo ""
-    clide --version 2>&1 || echo "   (Configuration needed)"
+    clide --version 2>&1
 else
     echo "⚠️  Installation completed"
     echo "   Restart Termux to use 'clide' command"
@@ -148,26 +207,34 @@ fi
 echo ""
 
 # ============================================
-# 10. Setup Configuration
+# 11. Final Summary
 # ============================================
 echo "═══════════════════════════════════════"
 echo "✨ Installation Complete!"
 echo "═══════════════════════════════════════"
 echo ""
-echo "📝 Next Steps:"
+
+if [ "$CONFIG_READY" = true ]; then
+    echo "🎉 Clide is ready to use!"
+    echo ""
+    echo "Try these commands:"
+    echo "   clide status           # Check system status"
+    echo "   clide test-gemini      # Test Gemini API"
+    echo "   clide start            # Start the bot"
+    echo ""
+else
+    echo "📝 To finish setup:"
+    echo ""
+    echo "1️⃣  Get API key: https://makersuite.google.com/app/apikey"
+    echo "2️⃣  Edit config: nano ~/.clide/config.yaml"
+    echo "3️⃣  Test: clide test-gemini"
+    echo ""
+fi
+
+echo "📚 Documentation: $INSTALL_DIR/README.md"
+echo "⚙️  Config file: ~/.clide/config.yaml"
+echo "🗂️  Source code: $INSTALL_DIR"
 echo ""
-echo "1️⃣  Create config directory:"
-echo "   mkdir -p ~/.clide"
-echo ""
-echo "2️⃣  Copy example config:"
-echo "   cp $INSTALL_DIR/config.example.yaml ~/.clide/config.yaml"
-echo ""
-echo "3️⃣  Edit config with your API key:"
-echo "   nano ~/.clide/config.yaml"
-echo ""
-echo "4️⃣  Run Clide:"
-echo "   clide --help"
-echo ""
-echo "💡 If 'clide' command not found, restart Termux"
+echo "💡 Tip: Run 'clide --help' to see all commands"
 echo ""
 echo "🎉 Happy hacking!"
