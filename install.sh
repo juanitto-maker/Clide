@@ -139,8 +139,13 @@ install_binary() {
     mkdir -p "$INSTALL_DIR"
     
     # Download binary
-    # This uses the current directory or the environment's temp path
-TMP_FILE="./${BINARY_NAME}.tmp" 
+        # A more robust way to handle temp files across OSs (Fixes Termux /tmp error)
+    if [ "$OS" = "android" ]; then
+        TMP_FILE="${TMPDIR:-$HOME}/clide.tmp"
+    else
+        TMP_FILE="/tmp/clide.tmp"
+    fi
+
     
     if command -v wget &> /dev/null; then
         wget -q --show-progress "$DOWNLOAD_URL" -O "$TMP_FILE" || print_error "Download failed"
