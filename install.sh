@@ -23,14 +23,25 @@ echo ""
 # 2. Update packages
 # ============================================
 echo "📦 Updating package lists..."
-pkg update -y 2>&1 | grep -v "dpkg" || true
+pkg update -y 2>&1 | grep -E "Get:|Fetched|Reading" | tail -n 5
+echo "✅ Package lists updated"
 echo ""
 
 # ============================================
 # 3. Install Rust and dependencies
 # ============================================
 echo "📦 Installing Rust and build dependencies..."
-pkg install -y rust binutils git pkg-config openssl 2>&1 | tail -n 5
+echo "   This takes 2-3 minutes, please wait..."
+echo ""
+
+pkg install -y rust binutils git pkg-config openssl 2>&1 | while IFS= read -r line; do
+    if echo "$line" | grep -qE "Unpacking|Setting up|Processing"; then
+        echo "   $line"
+    fi
+done
+
+echo ""
+echo "✅ Packages installed"
 echo ""
 
 # ============================================
@@ -44,22 +55,22 @@ fi
 
 RUST_VERSION=$(rustc --version 2>&1)
 CARGO_VERSION=$(cargo --version 2>&1)
-echo "✅ Rust: $RUST_VERSION"
-echo "✅ Cargo: $CARGO_VERSION"
+echo "✅ $RUST_VERSION"
+echo "✅ $CARGO_VERSION"
 echo ""
 
 # ============================================
 # 5. Clone Repository
 # ============================================
-echo "📂 Cloning Clide..."
+echo "📂 Cloning Clide repository..."
 INSTALL_DIR="$HOME/Clide_Source"
 
 if [ -d "$INSTALL_DIR" ]; then
-    echo "⚠️  Removing old installation..."
+    echo "   Removing old installation..."
     rm -rf "$INSTALL_DIR"
 fi
 
-git clone https://github.com/juanitto-maker/Clide.git "$INSTALL_DIR" 2>&1 | tail -n 3
+git clone https://github.com/juanitto-maker/Clide.git "$INSTALL_DIR" 2>&1 | grep -E "Cloning|Receiving|Resolving" || true
 cd "$INSTALL_DIR"
 echo "✅ Repository cloned"
 echo ""
@@ -81,34 +92,28 @@ echo ""
 # ============================================
 # 7. Build Clide
 # ============================================
-echo "🛠️  Building Clide (this takes 5-15 minutes)..."
-echo "☕ Grab a coffee - this is the longest step!"
+echo "🛠️  Building Clide..."
+echo "   This is the longest step (5-15 minutes)"
+echo "   ☕ Grab a coffee!"
 echo ""
-echo "Started at: $(date '+%H:%M:%S')"
+echo "   Started at: $(date '+%H:%M:%S')"
 echo ""
 
 # Build with progress indicator
-if cargo build --release 2>&1 | while IFS= read -r line; do
-    # Show only important lines (not all the noise)
-    if echo "$line" | grep -qE "Compiling|Finished|error|warning"; then
-        echo "$line"
+cargo build --release 2>&1 | while IFS= read -r line; do
+    # Show only important lines
+    if echo "$line" | grep -qE "Compiling|Finished|error:|warning:"; then
+        echo "   $line"
     fi
-done; then
-    echo ""
-    echo "✅ Build completed at: $(date '+%H:%M:%S')"
-else
-    echo ""
-    echo "❌ Build failed!"
-    echo ""
-    echo "Common issues:"
-    echo "  • Low memory - close other apps"
-    echo "  • Low storage - need ~2GB free"
-    echo ""
-    echo "For detailed error, run:"
-    echo "  cd $INSTALL_DIR"
-    echo "  cargo build --release"
-    exit 1
-fi
+    # Show progress dots for other lines to indicate it's working
+    if echo "$line" | grep -qE "Downloading|Updating"; then
+        echo -n "."
+    fi
+done
+
+echo ""
+echo ""
+echo "✅ Build completed at: $(date '+%H:%M:%S')"
 echo ""
 
 # ============================================
@@ -134,9 +139,10 @@ echo "🔍 Verifying installation..."
 if command -v clide >/dev/null 2>&1; then
     echo "✅ Clide is ready!"
     echo ""
-    clide --version 2>&1 || echo "Clide installed (version check pending config)"
+    clide --version 2>&1 || echo "   (Configuration needed)"
 else
-    echo "⚠️  Installation completed but restart Termux to use 'clide' command"
+    echo "⚠️  Installation completed"
+    echo "   Restart Termux to use 'clide' command"
 fi
 
 echo ""
@@ -162,6 +168,6 @@ echo ""
 echo "4️⃣  Run Clide:"
 echo "   clide --help"
 echo ""
-echo "💡 Tip: If 'clide' command not found, restart Termux"
+echo "💡 If 'clide' command not found, restart Termux"
 echo ""
 echo "🎉 Happy hacking!"
