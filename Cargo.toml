@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "Autonomous terminal operations via Signal messenger powered by AI"
-repository = "https://github.com/yourusername/clide"
+repository = "https://github.com/juanitto-maker/Clide"
 license = "MIT"
 keywords = ["cli", "signal", "ai", "automation", "bot"]
 categories = ["command-line-utilities"]
@@ -110,4 +110,5 @@ workflow = []
 full = ["signal", "ssh", "gemini", "memory", "skills", "workflow"]
 
 # Platform-specific features
+
 termux = []
