@@ -20,9 +20,8 @@ cd $HOME/Clide_Source
 echo "🛠️  Building (this may take a minute)..."
 cargo build --release
 
-# 4. Install it
+# 4. Install it to Termux binary directory
 echo "🚚 Moving to bin..."
-mkdir -p $HOME/.local/bin
-cp target/release/clide $HOME/.local/bin/
+cp target/release/clide $PREFIX/bin/
 
 echo "✅ DONE! Restart Termux and type 'clide'"
