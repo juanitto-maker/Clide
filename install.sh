@@ -71,7 +71,7 @@ pkg install -y openjdk-17 wget 2>&1 | tail -n 3
 SIGNAL_VERSION="0.13.1"
 SIGNAL_URL="https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_VERSION}/signal-cli-${SIGNAL_VERSION}.tar.gz"
 
-cd /tmp
+cd "$TMPDIR"
 wget -q --show-progress "$SIGNAL_URL" 2>&1 | tail -n 2
 
 echo "📦 Installing Signal-CLI..."
@@ -91,7 +91,7 @@ fi
 export PATH="$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin:$PATH"
 
 # Cleanup
-rm -f "/tmp/signal-cli-${SIGNAL_VERSION}.tar.gz"
+rm -f "$TMPDIR/signal-cli-${SIGNAL_VERSION}.tar.gz"
 
 echo "✅ Signal-CLI installed"
 echo ""
