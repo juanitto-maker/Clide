@@ -20,6 +20,13 @@ echo "✅ Termux detected"
 echo ""
 
 # ============================================
+# Global variables (defined early so all
+# sections can reference them safely)
+# ============================================
+INSTALL_DIR="$HOME/Clide_Source"
+TMPDIR="${TMPDIR:-$PREFIX/tmp}"   # fallback if TMPDIR is unset
+
+# ============================================
 # 2. Update packages
 # ============================================
 echo "📦 Updating package lists..."
@@ -133,7 +140,7 @@ if [ ! -z "$LIBSIGNAL_JAR" ]; then
                     echo "⚠️  Injection failed"
             fi
             rm -f "$TMPDIR/libsignal_arm64.tar.gz"
-            cd "$INSTALL_DIR"
+            cd "$TMPDIR"   # ← FIX: was cd "$INSTALL_DIR" (undefined at this point)
         else
             echo "⚠️  libsignal_jni.so not found in archive"
         fi
@@ -143,6 +150,7 @@ if [ ! -z "$LIBSIGNAL_JAR" ]; then
 else
     echo "⚠️  libsignal jar not found"
 fi
+
 # Verify signal-cli works
 if command -v signal-cli >/dev/null 2>&1; then
     echo "✅ Signal-CLI: $(signal-cli --version | head -n1)"
@@ -161,7 +169,6 @@ echo ""
 # 6. Clone Repository
 # ============================================
 echo "📂 Cloning Clide repository..."
-INSTALL_DIR="$HOME/Clide_Source"
 
 if [ -d "$INSTALL_DIR" ]; then
     echo "   Removing old installation..."
