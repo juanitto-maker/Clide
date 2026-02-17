@@ -1,28 +1,51 @@
-name: Build Clide
+name: Build Clide Binaries
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    env:
+      CARGO_TERM_COLOR: always
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Install Rust
-        run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-      - name: Add Cargo to PATH
-        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
 
-      - name: Build release
-        run: cargo build --release
+      - name: Install required packages for Termux cross-compile
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl build-essential libssl-dev pkg-config
 
-      - name: Upload binary artifact
+      - name: Install cross target
+        run: rustup target add aarch64-linux-android
+
+      - name: Build Release for Termux
+        run: cargo build --release --target aarch64-linux-android
+
+      - name: Package binary
+        run: |
+          mkdir -p release
+          cp target/aarch64-linux-android/release/clide release/clide-aarch64
+          ls -lh release/
+
+      - name: Upload release artifact
         uses: actions/upload-artifact@v3
         with:
-          name: clide-binary
-          path: target/release/clide
+          name: clide-aarch64
+          path: release/clide-aarch64
