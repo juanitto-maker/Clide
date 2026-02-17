@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
+# Force interactive mode even when piped
+exec < /dev/tty
+
 echo "✨ Installing Clide..."
 
 # -----------------------------
-# Prompt user FIRST (no vars used before this)
+# Prompt user for API Key (required)
 # -----------------------------
 echo ""
 echo "🔑 Gemini API Key"
@@ -16,19 +19,21 @@ if [ -z "$GEMINI_API_KEY" ]; then
     exit 1
 fi
 
+# -----------------------------
+# Prompt user for Signal Number (optional)
+# -----------------------------
 echo ""
-echo "📱 Signal bot number (E.164 format, e.g. +1234567890)"
-printf "Enter Signal number (or press Enter to skip): "
+echo "📱 Signal Bot Number (E.164 format, e.g. +1234567890)"
+printf "Enter Signal number (press Enter to skip): "
 read -r SIGNAL_NUMBER
 
-# Make Signal number optional with a default
 if [ -z "$SIGNAL_NUMBER" ]; then
     SIGNAL_NUMBER="+0000000000"
-    echo "⚠️  Skipping Signal setup. You'll need to configure it manually later."
+    echo "⚠️  Signal setup skipped. Edit ~/.clide/config.yaml later to enable."
 fi
 
 # -----------------------------
-# Paths
+# Setup directories
 # -----------------------------
 HOME_DIR="$HOME"
 INSTALL_DIR="$HOME_DIR/.clide"
@@ -37,6 +42,7 @@ CONFIG_FILE="$INSTALL_DIR/config.yaml"
 
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$BIN_DIR"
+mkdir -p "$INSTALL_DIR/logs"
 
 # -----------------------------
 # Write config.yaml
@@ -53,58 +59,65 @@ signal_number: "$SIGNAL_NUMBER"
 
 # Execution Settings
 allow_commands: true
-require_confirmation: false
-allowed_hosts: []  # Empty = all hosts allowed
+require_confirmation: true
+allowed_hosts: []
 
 # Logging
 log_level: "info"
-log_file: "~/.clide/logs/clide.log"
+log_file: "$INSTALL_DIR/logs/clide.log"
 EOF
 
-echo "✅ Config created at $CONFIG_FILE"
+echo "✅ Config created"
 
 # -----------------------------
-# Check/Install Rust
+# Install Rust if missing
 # -----------------------------
-if ! command -v cargo &> /dev/null 2>&1; then
+if ! command -v cargo &> /dev/null; then
     echo "🦀 Installing Rust..."
-    pkg install -y rust
+    pkg install -y rust || apt-get install -y cargo || (echo "❌ Failed to install Rust"; exit 1)
 fi
 
 # -----------------------------
-# Clone + build
+# Clone and build
 # -----------------------------
-SRC_DIR="$HOME_DIR/Clide_Source"
+SRC_DIR="$HOME_DIR/.clide_source"
 rm -rf "$SRC_DIR"
 
-echo "📦 Cloning Clide..."
-git clone https://github.com/juanitto-maker/Clide.git "$SRC_DIR"
+echo "📦 Downloading Clide..."
+git clone --depth 1 https://github.com/juanitto-maker/Clide.git "$SRC_DIR"
 
 cd "$SRC_DIR"
-echo "🔨 Building Clide..."
+echo "🔨 Building Clide (this may take 5-10 minutes)..."
 cargo build --release
 
 # -----------------------------
 # Install binary
 # -----------------------------
-cp target/release/clide "$BIN_DIR/clide"
+cp "$SRC_DIR/target/release/clide" "$BIN_DIR/clide"
 chmod +x "$BIN_DIR/clide"
 
-# Add to PATH if not already there
+# -----------------------------
+# Setup PATH
+# -----------------------------
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$HOME_DIR/.bashrc"
-    echo "📝 Added $BIN_DIR to PATH in .bashrc"
-    echo "⚠️  Run 'source ~/.bashrc' or restart Termux to use 'clide' command"
+    echo "📝 Added to PATH. Run: source ~/.bashrc"
 fi
 
+# -----------------------------
+# Final instructions
+# -----------------------------
 echo ""
-echo "═══════════════════════════════════════"
-echo "✨ Installation Complete!"
-echo "═══════════════════════════════════════"
+echo "═══════════════════════════════════════════════════"
+echo "✨ Clide Installation Complete!"
+echo "═══════════════════════════════════════════════════"
 echo ""
-echo "Try:"
-echo "  clide test-gemini \"hello\""
-echo "  clide start"
+echo "📱 To use with Signal:"
+echo "   1. Install signal-cli: pkg install signal-cli"
+echo "   2. Link your device: signal-cli link -n clide-bot"
+echo "   3. Start Clide: clide start"
 echo ""
-echo "Config: $CONFIG_FILE"
+echo "🧪 Test Gemini: clide test-gemini \"hello world\""
+echo ""
+echo "⚙️  Config: $CONFIG_FILE"
 echo ""
