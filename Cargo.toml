@@ -2,10 +2,22 @@
 name = "clide"
 version = "0.1.0"
 edition = "2021"
+authors = ["juanitto-maker"]
+description = "A Gemini AI CLI tool"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# HTTP Client for Gemini API
 reqwest = { version = "0.11", features = ["json"] }
+
+# JSON Serialization/Deserialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-dotenvy = "0.15" # This helps load the API key from ~/.config/clide/config.env
+
+# Loading the .env/config file
+dotenvy = "0.15"
+
+# Terminal coloring
+colored = "2.0"
