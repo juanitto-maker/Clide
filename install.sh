@@ -9,21 +9,22 @@ echo "✨ Installing Clide..."
 echo ""
 echo "🔑 Gemini API Key"
 printf "Enter Gemini API key: "
-read GEMINI_API_KEY
+read -r GEMINI_API_KEY
 
 if [ -z "$GEMINI_API_KEY" ]; then
-  echo "❌ Gemini API key is required"
-  exit 1
+    echo "❌ Gemini API key is required"
+    exit 1
 fi
 
 echo ""
-echo "📱 Signal bot number (E.164 format, e.g. +123456789)"
-printf "Enter Signal number: "
-read SIGNAL_NUMBER
+echo "📱 Signal bot number (E.164 format, e.g. +1234567890)"
+printf "Enter Signal number (or press Enter to skip): "
+read -r SIGNAL_NUMBER
 
+# Make Signal number optional with a default
 if [ -z "$SIGNAL_NUMBER" ]; then
-  echo "❌ Signal number is required"
-  exit 1
+    SIGNAL_NUMBER="+0000000000"
+    echo "⚠️  Skipping Signal setup. You'll need to configure it manually later."
 fi
 
 # -----------------------------
@@ -40,40 +41,34 @@ mkdir -p "$BIN_DIR"
 # -----------------------------
 # Write config.yaml
 # -----------------------------
-cat > "$CONFIG_FILE" <<EOF
-gemini_api_key: "$GEMINI_API_KEY"
-gemini_model: "gemini-2.5-flash"
+cat > "$CONFIG_FILE" << EOF
+# Clide Configuration
+# Generated on $(date)
 
+# Gemini API Key (get from https://makersuite.google.com/app/apikey)
+gemini_api_key: "$GEMINI_API_KEY"
+
+# Signal Number (format: +1234567890)
 signal_number: "$SIGNAL_NUMBER"
 
-authorized_numbers: []
-require_confirmation: false
-confirmation_timeout: 60
-
+# Execution Settings
 allow_commands: true
-deny_by_default: false
-allowed_commands: []
+require_confirmation: false
+allowed_hosts: []  # Empty = all hosts allowed
 
-blocked_commands:
-  - "rm -rf /"
-  - "mkfs"
-  - "dd"
-
-dry_run: false
-
-logging:
-  level: "info"
-  json: false
+# Logging
+log_level: "info"
+log_file: "~/.clide/logs/clide.log"
 EOF
 
-chmod 600 "$CONFIG_FILE"
+echo "✅ Config created at $CONFIG_FILE"
 
 # -----------------------------
-# Ensure Rust
+# Check/Install Rust
 # -----------------------------
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "🦀 Installing Rust..."
-  pkg install -y rust
+if ! command -v cargo &> /dev/null 2>&1; then
+    echo "🦀 Installing Rust..."
+    pkg install -y rust
 fi
 
 # -----------------------------
@@ -94,6 +89,13 @@ cargo build --release
 # -----------------------------
 cp target/release/clide "$BIN_DIR/clide"
 chmod +x "$BIN_DIR/clide"
+
+# Add to PATH if not already there
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$HOME_DIR/.bashrc"
+    echo "📝 Added $BIN_DIR to PATH in .bashrc"
+    echo "⚠️  Run 'source ~/.bashrc' or restart Termux to use 'clide' command"
+fi
 
 echo ""
 echo "═══════════════════════════════════════"
