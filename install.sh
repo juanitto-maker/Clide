@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================
-# install.sh - Clide Installer
+# install.sh - Clide Installer (FIXED)
 # ============================================
 
 set -euo pipefail
@@ -13,7 +13,7 @@ if [[ -z "$GEMINI_API_KEY" ]]; then
     GEMINI_API_KEY="__SKIP__"
 fi
 
-# --- User input: Signal number ---
+# --- User input: Signal number (mandatory) ---
 read -rp "Enter your Signal number (e.g., +1234567890): " SIGNAL_NUMBER
 if [[ -z "$SIGNAL_NUMBER" ]]; then
     echo "❌ Signal number is required!"
@@ -25,9 +25,7 @@ INSTALL_DIR="$HOME/Clide_Source"
 CONFIG_DIR="$HOME/.clide"
 BIN_DIR="$HOME/.local/bin"
 
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$CONFIG_DIR"
-mkdir -p "$BIN_DIR"
+mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$BIN_DIR"
 
 # --- Download source code ---
 echo "📦 Downloading Clide source code..."
