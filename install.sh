@@ -20,8 +20,12 @@ mkdir -p "$TMP_DIR"
 echo "✨ Installing Clide..."
 
 # Ask for API key and Signal number
-read -rp "Enter your Gemini API key (leave blank to skip): " GEMINI_API_KEY
-read -rp "Enter your Signal number (in international format, e.g., +1234567890): " SIGNAL_NUMBER
+# Ask for API key and Signal number
+read -rp "Enter your Gemini API key (leave blank to skip): " GEMINI_API_KEY_INPUT
+GEMINI_API_KEY="${GEMINI_API_KEY_INPUT:-}"
+
+read -rp "Enter your Signal number (in international format, e.g., +1234567890, leave blank to skip): " SIGNAL_NUMBER_INPUT
+SIGNAL_NUMBER="${SIGNAL_NUMBER_INPUT:-}"
 
 # Prepare config.yaml
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
