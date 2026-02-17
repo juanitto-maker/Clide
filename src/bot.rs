@@ -1,178 +1,100 @@
-// ============================================
-// bot.rs - Signal Bot Logic (CORRECTED)
-// ============================================
+#!/usr/bin/env bash
+# ============================================
+# Clide Installer (Updated for full automated setup)
+# ============================================
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::Mutex;
-use tracing::info;
-use std::process::Stdio;
+set -euo pipefail
 
-use crate::config::Config;
-use crate::database::Database;
-use crate::executor::Executor;
-use crate::gemini::GeminiClient;
-use crate::memory::Memory;
-use crate::skills::SkillManager;
-use crate::workflow::WorkflowExecutor;
+echo "✨ Installing Clide..."
 
-pub struct Bot {
-    config: Config,
-    executor: Executor,
-    gemini: GeminiClient,
-    memory: Arc<Mutex<Memory>>,
-    #[allow(dead_code)]
-    skills: SkillManager,
-    #[allow(dead_code)]
-    workflows: WorkflowExecutor,
-}
+# --- Step 1: Ask for API key and Signal number ---
+read -rp "Enter your Gemini API Key (required): " GEMINI_API_KEY
+if [ -z "$GEMINI_API_KEY" ]; then
+    echo "❌ API key is required. Exiting."
+    exit 1
+fi
 
-#[derive(Debug, Deserialize)]
-struct SignalMessage {
-    envelope: Envelope,
-}
+read -rp "Enter your Signal number (e.g., +1234567890, required): " SIGNAL_NUMBER
+if [ -z "$SIGNAL_NUMBER" ]; then
+    echo "❌ Signal number is required. Exiting."
+    exit 1
+fi
 
-#[derive(Debug, Deserialize)]
-struct Envelope {
-    source: Option<String>,
-    #[serde(rename = "sourceNumber")]
-    source_number: Option<String>,
-    message: Option<MessageData>,
-}
+# --- Step 2: Install Rust if missing ---
+if ! command -v cargo &>/dev/null; then
+    echo "⚙️  Rust not found. Installing Rust..."
+    pkg update -y
+    pkg install -y rust
+fi
 
-#[derive(Debug, Deserialize)]
-struct MessageData {
-    message: String,
-}
+# --- Step 3: Clone the repo ---
+CLIDE_SRC="$HOME/Clide_Source"
+if [ -d "$CLIDE_SRC" ]; then
+    echo "🗑️  Removing existing Clide source..."
+    rm -rf "$CLIDE_SRC"
+fi
 
-impl Bot {
-    pub async fn new(config: Config) -> Result<Self> {
-        let db_path = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".clide/memory.db");
-        let db = Database::new(db_path)?;
-        
-        let executor = Executor::new(config.clone());
-        let gemini = GeminiClient::new(
-            config.gemini_api_key.clone(),
-            config.get_model(), // Uses gemini-2.5-flash from config
-            0.7,
-            2048,
-            "You are Clide, a terminal assistant...".to_string(),
-        );
+echo "📦 Cloning Clide repository..."
+git clone https://github.com/juanitto-maker/Clide.git "$CLIDE_SRC"
 
-        let skill_path = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".clide/skills");
-        let skills = SkillManager::new(skill_path)?;
-        let workflows = WorkflowExecutor::new(executor.clone());
-        let memory = Arc::new(Mutex::new(Memory::new(db)));
+# --- Step 4: Build Clide ---
+cd "$CLIDE_SRC"
+echo "🔨 Building Clide..."
+cargo build --release
 
-        Ok(Self {
-            config,
-            executor,
-            gemini,
-            memory,
-            skills,
-            workflows,
-        })
-    }
+# --- Step 5: Install binary ---
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+cp target/release/clide "$BIN_DIR/"
+chmod +x "$BIN_DIR/clide"
 
-    pub async fn run(&self) -> Result<()> {
-        info!("Starting Clide bot...");
-        let mut process = Command::new("signal-cli")
-            .arg("-a")
-            .arg(&self.config.signal_number)
-            .arg("jsonRpc")
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("Failed to start signal-cli. Is it installed?")?;
+echo "✅ Clide binary installed to $BIN_DIR/clide"
 
-        let stdout = process.stdout.take().unwrap();
-        let mut reader = BufReader::new(stdout).lines();
+# --- Step 6: Setup configuration directory ---
+CONFIG_DIR="$HOME/.clide"
+mkdir -p "$CONFIG_DIR"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
 
-        while let Some(line) = reader.next_line().await? {
-            if let Ok(msg) = serde_json::from_str::<SignalMessage>(&line) {
-                if let Some(data) = msg.envelope.message {
-                    let sender = msg.envelope.source_number
-                        .or(msg.envelope.source)
-                        .unwrap_or_default();
-                    
-                    if self.is_authorized(&sender) {
-                        self.handle_message(&sender, &data.message).await?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
+cat > "$CONFIG_FILE" <<EOF
+gemini_api_key: "${GEMINI_API_KEY}"
+gemini_model: "gemini-2.5-flash"
+signal_number: "${SIGNAL_NUMBER}"
 
-    fn is_authorized(&self, sender: &str) -> bool {
-        self.config.authorized_numbers.contains(&sender.to_string())
-    }
+# Security
+require_confirmation: false
+confirmation_timeout: 60
+allow_commands: true
+deny_by_default: false
+allowed_commands: []
+blocked_commands:
+  - "rm -rf /"
+  - "mkfs"
+  - "dd"
+dry_run: false
 
-    async fn handle_message(&self, sender: &str, text: &str) -> Result<()> {
-        let text = text.trim();
-        
-        // Handle "status" command (sysinfo 0.31 fix)
-        if text == "status" {
-            let mut sys = sysinfo::System::new_all();
-            sys.refresh_all();
-            
-            let load = sysinfo::System::load_average();
-            let memory_used = sys.used_memory() / 1024 / 1024;
-            let memory_total = sys.total_memory() / 1024 / 1024;
-            let uptime = sysinfo::System::uptime(); 
+# Signal authorized numbers
+authorized_numbers: []
 
-            let status = format!(
-                "📊 **System Status**\n\n\
-                • Load: {:.2}, {:.2}, {:.2}\n\
-                • Memory: {}/{} MB\n\
-                • Uptime: {}h {}m",
-                load.one, load.five, load.fifteen,
-                memory_used, memory_total,
-                uptime / 3600, (uptime % 3600) / 60
-            );
-            return self.send_message(sender, &status).await;
-        }
+# SSH
+ssh_verify_host_keys: true
+allowed_ssh_hosts: []
+ssh_timeout: 30
 
-        if text == "help" {
-            return self.send_message(sender, &self.get_help()).await;
-        }
+# Logging
+logging:
+  level: "info"
+  json: false
+EOF
 
-        // Logic for AI command analysis and execution...
-        let mut memory = self.memory.lock().await;
-        let context = memory.get_context(sender, 5).await?;
-        
-        let analysis = self.gemini.analyze_command(text, &context).await?;
-        
-        if analysis.safe {
-            if let Some(cmd) = analysis.suggestion {
-                self.send_message(sender, &format!("⚙️ Executing: `{}`", cmd)).await?;
-                let result = self.executor.execute(&cmd).await?;
-                let output = result.output();
-                self.send_message(sender, &format!("✅ Output:\n{}", output)).await?;
-                memory.save_conversation(sender, text, &output, Some(&cmd), Some(result.exit_code), Some(result.duration_ms)).await?;
-            }
-        } else {
-            self.send_message(sender, &format!("⚠️ Blocked: {}", analysis.explanation)).await?;
-        }
+echo "✅ Configuration created at $CONFIG_FILE"
 
-        Ok(())
-    }
-
-    async fn send_message(&self, recipient: &str, message: &str) -> Result<()> {
-        Command::new("signal-cli")
-            .arg("-a").arg(&self.config.signal_number)
-            .arg("send").arg("-m").arg(message).arg(recipient)
-            .spawn()?.wait().await?;
-        Ok(())
-    }
-
-    fn get_help(&self) -> String {
-        "🚀 **Clide Help**\n- `status`: Show system info\n- `help`: This list\n- Send any command or request in plain English!".to_string()
-    }
-}
+# --- Step 7: Final message ---
+echo ""
+echo "🎉 Clide installation complete!"
+echo "You can now run:"
+echo "  clide test-gemini 'hello'   # Test Gemini API"
+echo "  clide status                # Check system"
+echo "  clide start                 # Start Signal bot"
+echo ""
+echo "Config file: $CONFIG_FILE"
+echo ""
