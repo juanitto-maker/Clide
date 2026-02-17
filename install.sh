@@ -1,54 +1,36 @@
 #!/usr/bin/env bash
 # ============================================
-# install.sh - Clide Installer (FIXED)
+# Clide Installer - Full Setup
 # ============================================
 
 set -euo pipefail
 
 echo "✨ Installing Clide..."
 
-# --- User input: Gemini API key ---
-read -rp "Enter your Gemini API key (or leave empty to skip): " GEMINI_API_KEY
-if [[ -z "$GEMINI_API_KEY" ]]; then
-    GEMINI_API_KEY="__SKIP__"
-fi
+# -----------------------------
+# Step 1: Ask for user input
+# -----------------------------
+read -rp "Enter your Gemini API Key (or leave empty to skip): " GEMINI_API_KEY
+read -rp "Enter your Signal number (e.g. +1234567890): " SIGNAL_NUMBER
 
-# --- User input: Signal number (mandatory) ---
-read -rp "Enter your Signal number (e.g., +1234567890): " SIGNAL_NUMBER
-if [[ -z "$SIGNAL_NUMBER" ]]; then
-    echo "❌ Signal number is required!"
-    exit 1
-fi
-
-# --- Prepare directories ---
-INSTALL_DIR="$HOME/Clide_Source"
+# -----------------------------
+# Step 2: Setup directories
+# -----------------------------
+CLIDE_DIR="$HOME/Clide_Source"
 CONFIG_DIR="$HOME/.clide"
 BIN_DIR="$HOME/.local/bin"
 
-mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$BIN_DIR"
+mkdir -p "$CLIDE_DIR" "$CONFIG_DIR" "$BIN_DIR"
 
-# --- Download source code ---
-echo "📦 Downloading Clide source code..."
-cd "$HOME"
-if command -v git >/dev/null 2>&1; then
-    git clone --depth 1 https://github.com/juanitto-maker/Clide.git Clide_Source || true
-else
-    echo "⚠️ Git not found, downloading ZIP..."
-    curl -fsSL -o Clide.zip https://github.com/juanitto-maker/Clide/archive/refs/heads/main.zip
-    unzip -o Clide.zip -d .
-    mv Clide-main Clide_Source
-fi
-
-cd "$INSTALL_DIR"
-
-# --- Write config.yaml ---
+# -----------------------------
+# Step 3: Create config.yaml
+# -----------------------------
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
-echo "📝 Writing default configuration..."
-cat > "$CONFIG_FILE" <<EOF
-gemini_api_key: "${GEMINI_API_KEY}"
-gemini_model: "gemini-2.5-flash"
 
-signal_number: "${SIGNAL_NUMBER}"
+cat > "$CONFIG_FILE" <<EOF
+gemini_api_key: "$GEMINI_API_KEY"
+gemini_model: "gemini-2.5-flash"
+signal_number: "$SIGNAL_NUMBER"
 
 require_confirmation: false
 confirmation_timeout: 60
@@ -61,44 +43,65 @@ blocked_commands:
   - "dd"
 dry_run: false
 
-ssh_key_path: null
+ssh_key_path: "~/.ssh/id_rsa"
 ssh_verify_host_keys: true
 allowed_ssh_hosts: []
 ssh_timeout: 30
 
 logging:
   level: "info"
-  file_path: null
+  file_path: "$CONFIG_DIR/logs/clide.log"
   json: false
-  with_timestamps: true
-  with_caller: false
+
+authorized_numbers: []
 EOF
 
-chmod 600 "$CONFIG_FILE"
+echo "✅ Configuration saved to $CONFIG_FILE"
 
-# --- Ensure Rust toolchain ---
+# -----------------------------
+# Step 4: Check Rust/Cargo
+# -----------------------------
 if ! command -v cargo >/dev/null 2>&1; then
-    echo "📦 Rust not found, installing Rust..."
+    echo "⚠️ Rust/Cargo not found. Installing Rust via pkg..."
     pkg install -y rust
 fi
 
-# --- Build Clide ---
-echo "🔨 Building Clide..."
+# -----------------------------
+# Step 5: Clone or update repo
+# -----------------------------
+if [ ! -d "$CLIDE_DIR/.git" ]; then
+    echo "📥 Cloning Clide repository..."
+    git clone https://github.com/juanitto-maker/Clide.git "$CLIDE_DIR"
+else
+    echo "♻️ Updating Clide repository..."
+    git -C "$CLIDE_DIR" pull
+fi
+
+# -----------------------------
+# Step 6: Build the binary
+# -----------------------------
+echo "🔨 Building Clide binary..."
+cd "$CLIDE_DIR"
 cargo build --release
 
-# --- Install binary ---
-echo "🚀 Installing Clide binary..."
-cp -f target/release/clide "$BIN_DIR/clide"
+# -----------------------------
+# Step 7: Install binary
+# -----------------------------
+echo "📂 Installing binary to $BIN_DIR"
+cp "$CLIDE_DIR/target/release/clide" "$BIN_DIR/"
 chmod +x "$BIN_DIR/clide"
 
-# --- Success message ---
-echo ""
-echo "🎉 Clide installation complete!"
+echo "✨ Clide installed successfully!"
 echo "Binary: $BIN_DIR/clide"
 echo "Config: $CONFIG_FILE"
+
+# -----------------------------
+# Step 8: Final instructions
+# -----------------------------
 echo ""
-echo "Try these commands:"
-echo "  clide test-gemini 'hello'   # Test Gemini API"
-echo "  clide status                # Check system"
-echo "  clide start                 # Start Signal bot"
+echo "📱 Signal Bot Setup:"
+echo "   1. Link device: signal-cli link -n \"clide-bot\""
+echo "   2. Scan QR code with Signal app"
+echo "   3. Start bot: clide start"
 echo ""
+echo "🎉 Happy hacking!"
