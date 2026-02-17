@@ -1,23 +1,18 @@
 // ============================================
-// config.rs - Configuration (UPDATED)
+// config.rs - Configuration Management (CORRECTED)
 // ============================================
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Main configuration for Clide
+/// Main configuration struct
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    // Gemini
     pub gemini_api_key: String,
-    #[serde(default)]
-    pub gemini_model: Option<String>,
-
-    // Signal
+    #[serde(default = "default_model")]
+    pub gemini_model: String,
     pub signal_number: String,
-
-    // Security
     #[serde(default)]
     pub require_confirmation: bool,
     #[serde(default)]
@@ -31,51 +26,53 @@ pub struct Config {
     #[serde(default)]
     pub blocked_commands: Vec<String>,
     #[serde(default)]
-    pub authorized_numbers: Vec<String>,
-
-    // Dry run
-    #[serde(default)]
     pub dry_run: bool,
-
-    // SSH
     #[serde(default)]
-    pub ssh_key_path: Option<PathBuf>,
+    pub ssh_key_path: Option<String>,
     #[serde(default)]
     pub ssh_verify_host_keys: bool,
     #[serde(default)]
     pub allowed_ssh_hosts: Vec<String>,
     #[serde(default)]
     pub ssh_timeout: u64,
-
-    // Logging
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub authorized_numbers: Vec<String>,
 }
 
-/// Logging configuration
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
-    #[serde(default)]
     pub file_path: Option<PathBuf>,
     #[serde(default)]
     pub json: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub with_timestamps: bool,
     #[serde(default)]
     pub with_caller: bool,
+}
+
+fn default_model() -> String {
+    "gemini-2.5-flash".to_string()
 }
 
 fn default_log_level() -> String {
     "info".to_string()
 }
 
-// --- Config helper methods ---
+fn default_true() -> bool {
+    true
+}
+
 impl Config {
-    pub fn get_model(&self) -> String {
-        self.gemini_model
-            .clone()
-            .unwrap_or_else(|| "gemini-2.5-flash".to_string())
+    /// Returns the Gemini model (with fallback)
+    pub fn get_model(&self) -> &str {
+        if self.gemini_model.is_empty() {
+            "gemini-2.5-flash"
+        } else {
+            &self.gemini_model
+        }
     }
 }
