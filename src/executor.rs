@@ -9,13 +9,11 @@ use tracing::{debug, error};
 
 use crate::config::Config;
 
-/// Command executor with security features
-#[derive(Debug, Clone)] // Added Clone here
+#[derive(Debug, Clone)]
 pub struct Executor {
     config: Config,
 }
 
-/// Command execution result
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
     pub stdout: String,
@@ -25,12 +23,10 @@ pub struct ExecutionResult {
 }
 
 impl ExecutionResult {
-    /// Check if command succeeded
     pub fn success(&self) -> bool {
         self.exit_code == 0
     }
 
-    /// Get combined output
     pub fn output(&self) -> String {
         if self.stderr.is_empty() {
             self.stdout.clone()
@@ -43,16 +39,13 @@ impl ExecutionResult {
 }
 
 impl Executor {
-    /// Create new executor
     pub fn new(config: Config) -> Self {
         Self { config }
     }
 
-    /// Execute command with safety checks
     pub async fn execute(&self, command_str: &str) -> Result<ExecutionResult> {
         let start = std::time::Instant::now();
-        
-        // Security Check: Blocked commands
+
         for blocked in &self.config.blocked_commands {
             if command_str.contains(blocked) {
                 error!("Blocked command attempt: {}", command_str);
