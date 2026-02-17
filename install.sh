@@ -1,73 +1,126 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 set -e
 
 echo "✨ Installing Clide..."
 
-# --- Ensure dependencies ---
-echo "📦 Checking dependencies..."
-pkg install -y git rust clang
+# -----------------------------
+# Detect platform
+# -----------------------------
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
 
-# --- Ask for configuration ---
+if [[ "$OS" != "linux" ]]; then
+  echo "❌ Unsupported OS: $OS"
+  exit 1
+fi
+
+# -----------------------------
+# Ask for configuration FIRST
+# -----------------------------
 echo ""
-read -p "🔑 Enter your Gemini API key: " GEMINI_API_KEY
-
-while [ -z "$GEMINI_API_KEY" ]; do
-  echo "❌ API key cannot be empty"
-  read -p "🔑 Enter your Gemini API key: " GEMINI_API_KEY
-done
+echo "🔑 Gemini API Key"
+read -r -p "Enter Gemini API key: " GEMINI_API_KEY
+if [[ -z "$GEMINI_API_KEY" ]]; then
+  echo "❌ Gemini API key is required"
+  exit 1
+fi
 
 echo ""
-read -p "📱 Enter your Signal phone number (E.164, ex: +34123456789): " SIGNAL_NUMBER
+echo "📱 Signal bot number (E.164 format, e.g. +123456789)"
+read -r -p "Enter Signal number: " SIGNAL_NUMBER
+if [[ -z "$SIGNAL_NUMBER" ]]; then
+  echo "❌ Signal number is required"
+  exit 1
+fi
 
-while [ -z "$SIGNAL_NUMBER" ]; do
-  echo "❌ Signal number cannot be empty"
-  read -p "📱 Enter your Signal phone number: " SIGNAL_NUMBER
-done
+# -----------------------------
+# Paths
+# -----------------------------
+INSTALL_DIR="$HOME/.clide"
+BIN_DIR="$HOME/.local/bin"
+CONFIG_FILE="$INSTALL_DIR/config.yaml"
 
-# --- Paths ---
-INSTALL_DIR="$HOME/Clide_Source"
-BIN_DIR="$PREFIX/bin"
+mkdir -p "$INSTALL_DIR"
+mkdir -p "$BIN_DIR"
 
-# --- Clean old install ---
-echo "🧹 Cleaning old installation..."
-rm -rf "$INSTALL_DIR"
-rm -f "$BIN_DIR/clide"
-rm -rf "$HOME/.clide"
+# -----------------------------
+# Write config.yaml
+# -----------------------------
+cat > "$CONFIG_FILE" <<EOF
+# ============================================
+# Clide Configuration File
+# ============================================
 
-# --- Clone repo ---
-echo "📥 Cloning repository..."
-git clone https://github.com/juanitto-maker/Clide.git "$INSTALL_DIR"
+gemini_api_key: "$GEMINI_API_KEY"
+gemini_model: "gemini-2.5-flash"
 
-cd "$INSTALL_DIR"
+signal_number: "$SIGNAL_NUMBER"
 
-# --- Write config ---
-echo "⚙️  Writing configuration..."
-mkdir -p "$HOME/.clide"
+authorized_numbers: []
+require_confirmation: false
+confirmation_timeout: 60
 
-cat > "$HOME/.clide/config.toml" <<EOF
-gemini_api_key = "$GEMINI_API_KEY"
-gemini_model = "gemini-2.5-flash"
-signal_number = "$SIGNAL_NUMBER"
+allow_commands: true
+deny_by_default: false
+allowed_commands: []
 
-require_confirmation = true
-confirmation_timeout = 30
+blocked_commands:
+  - "rm -rf /"
+  - "mkfs"
+  - "dd"
 
-authorized_numbers = ["$SIGNAL_NUMBER"]
+dry_run: false
 
-[logging]
-level = "info"
+logging:
+  level: "info"
+  json: false
 EOF
 
-# --- Build ---
-echo "🦀 Building Clide..."
+chmod 600 "$CONFIG_FILE"
+
+# -----------------------------
+# Install Rust if missing
+# -----------------------------
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "🦀 Installing Rust..."
+  pkg install -y rust
+fi
+
+# -----------------------------
+# Clone source
+# -----------------------------
+SRC_DIR="$HOME/Clide_Source"
+rm -rf "$SRC_DIR"
+
+echo "📦 Cloning Clide source..."
+git clone https://github.com/juanitto-maker/Clide.git "$SRC_DIR"
+
+# -----------------------------
+# Build
+# -----------------------------
+echo "🔨 Building Clide..."
+cd "$SRC_DIR"
 cargo build --release
 
-# --- Install binary ---
-echo "🚀 Installing binary..."
+# -----------------------------
+# Install binary
+# -----------------------------
 cp target/release/clide "$BIN_DIR/clide"
 chmod +x "$BIN_DIR/clide"
 
+# -----------------------------
+# Final message
+# -----------------------------
 echo ""
-echo "✅ Clide installed successfully!"
-echo "👉 Run with: clide"
+echo "═══════════════════════════════════════"
+echo "✨ Installation Complete!"
+echo "═══════════════════════════════════════"
+echo ""
+echo "🎉 Clide is ready to use!"
+echo ""
+echo "Try:"
+echo "  clide test-gemini \"hello\""
+echo "  clide start"
+echo ""
+echo "⚙️  Config: $CONFIG_FILE"
 echo ""
