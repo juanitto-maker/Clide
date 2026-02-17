@@ -29,6 +29,10 @@ pub struct Config {
     #[serde(default)]
     pub dry_run: bool,
 
+    // Signal authorized numbers
+    #[serde(default)]
+    pub authorized_numbers: Vec<String>,
+
     // SSH
     #[serde(default)]
     pub ssh_verify_host_keys: bool,
