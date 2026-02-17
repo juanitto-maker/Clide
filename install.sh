@@ -178,26 +178,35 @@ echo ""
 # 11. Interactive Configuration
 # ============================================
 
-# Redirect stdin AND stdout to terminal for interactive prompts
-exec < /dev/tty > /dev/tty 2>&1 || true
+# Helper function - reads from keyboard even when piped
+ask() {
+    local prompt="$1"
+    local varname="$2"
+    local secret="$3"
+    printf "%s" "$prompt" > /dev/tty
+    if [ "$secret" = "secret" ]; then
+        IFS= read -rs answer < /dev/tty
+        echo "" > /dev/tty
+    else
+        IFS= read -r answer < /dev/tty
+    fi
+    eval "$varname=\$answer"
+}
 
-echo "═══════════════════════════════════════"
-echo "🔑 Gemini API Key Setup"
-echo "═══════════════════════════════════════"
-echo ""
-echo "To use Clide, you need a Gemini API key."
-echo "Get one free at: https://makersuite.google.com/app/apikey"
-echo ""
-echo "🔒 Security: Your key will be stored as an environment"
-echo "   variable (not in the config file) for better security."
-echo ""
+echo "═══════════════════════════════════════" > /dev/tty
+echo "🔑 Gemini API Key Setup" > /dev/tty
+echo "═══════════════════════════════════════" > /dev/tty
+echo "" > /dev/tty
+echo "To use Clide, you need a Gemini API key." > /dev/tty
+echo "Get one free at: https://makersuite.google.com/app/apikey" > /dev/tty
+echo "" > /dev/tty
+echo "🔒 Key will be stored as environment variable (secure)" > /dev/tty
+echo "" > /dev/tty
 
-read -sp "Enter your Gemini API key (or press Enter to skip): " API_KEY
-echo ""
+ask "Enter your Gemini API key (or press Enter to skip): " API_KEY secret
 echo ""
 
 if [ ! -z "$API_KEY" ]; then
-    # Store in .bashrc
     if ! grep -q "GEMINI_API_KEY" ~/.bashrc; then
         echo "" >> ~/.bashrc
         echo "# Clide Configuration (added by installer)" >> ~/.bashrc
@@ -205,17 +214,12 @@ if [ ! -z "$API_KEY" ]; then
     else
         sed -i "s/export GEMINI_API_KEY=.*/export GEMINI_API_KEY='$API_KEY'/" ~/.bashrc
     fi
-    
     chmod 600 ~/.bashrc
     export GEMINI_API_KEY="$API_KEY"
-    history -d $((HISTCMD-1)) 2>/dev/null || true
-    
-    echo "✅ API key securely stored as environment variable"
-    echo "   (stored in ~/.bashrc with 600 permissions)"
+    echo "✅ API key securely stored!"
     CONFIG_READY=true
 else
-    echo "⚠️  Skipped API key setup"
-    echo "   Set it later: export GEMINI_API_KEY='your-key'"
+    echo "⚠️  Skipped API key - set later: export GEMINI_API_KEY='your-key'"
     CONFIG_READY=false
 fi
 
@@ -224,24 +228,20 @@ echo ""
 # ============================================
 # 12. Signal Number Setup
 # ============================================
-echo "═══════════════════════════════════════"
-echo "📱 Signal Number Configuration"
-echo "═══════════════════════════════════════"
-echo ""
+echo "═══════════════════════════════════════" > /dev/tty
+echo "📱 Signal Number Configuration" > /dev/tty
+echo "═══════════════════════════════════════" > /dev/tty
+echo "" > /dev/tty
 
-read -p "Enter your Signal number (e.g., +1234567890) or press Enter to skip: " SIGNAL_NUMBER
+ask "Enter your Signal number (e.g., +1234567890) or Enter to skip: " SIGNAL_NUMBER
 echo ""
 
 if [ ! -z "$SIGNAL_NUMBER" ]; then
     sed -i "s/+1234567890/$SIGNAL_NUMBER/" ~/.clide/config.yaml
     echo "✅ Signal number configured!"
-    echo ""
-    echo "💡 Next: Link Signal-CLI to your phone:"
-    echo "   signal-cli link -n \"clide-bot\""
-    echo "   Then scan the QR code with Signal app"
+    echo "💡 Next: signal-cli link -n \"clide-bot\""
 else
-    echo "⚠️  Skipped Signal number"
-    echo "   Configure later: nano ~/.clide/config.yaml"
+    echo "⚠️  Skipped - configure later: nano ~/.clide/config.yaml"
 fi
 
 echo ""
