@@ -1,7 +1,3 @@
-// ============================================
-// lib.rs - Library Root (CORRECTED)
-// ============================================
-
 pub mod bot;
 pub mod config;
 pub mod database;
@@ -10,10 +6,9 @@ pub mod gemini;
 pub mod logger;
 pub mod memory;
 pub mod ssh;
-pub mod skills; // This now looks for src/skills/mod.rs
+pub mod skills;
 pub mod workflow;
 
-// Re-export commonly used types
 pub use bot::Bot;
 pub use config::Config;
 pub use database::{Conversation, Database, Stats};
@@ -24,13 +19,9 @@ pub use skills::{Skill, SkillManager, SkillResult};
 pub use ssh::{SshClient, SshOutput};
 pub use workflow::{Workflow, WorkflowExecutor, WorkflowResult};
 
-/// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Library name
 pub const NAME: &str = env!("CARGO_PKG_NAME");
 
-/// Get version string
 pub fn version() -> String {
     format!("{} v{}", NAME, VERSION)
 }
