@@ -4,24 +4,24 @@ use std::path::PathBuf;
 use reqwest::Client;
 use serde_json::json;
 use std::io::{self, Write};
+use colored::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Load config from ~/.config/clide/config.env
     let mut config_path = PathBuf::from(env::var("HOME").unwrap_or_default());
     config_path.push(".config/clide/config.env");
     let _ = from_path(config_path);
 
-    // 2. Get API Key
     let api_key = env::var("GEMINI_API_KEY").unwrap_or_else(|_| {
-        eprintln!("❌ Error: GEMINI_API_KEY not found in ~/.config/clide/config.env");
+        eprintln!("{}", "❌ Error: API Key not found!".red());
+        eprintln!("Please add: {} to {}", "GEMINI_API_KEY=your_key".yellow(), "~/.config/clide/config.env".cyan());
         std::process::exit(1);
     });
 
-    println!("✨ Clide is ready! Type your prompt:");
+    println!("{}", "✨ Clide is active. Type 'exit' to quit.".bright_green());
 
     loop {
-        print!("> ");
+        print!("{}", "user > ".bright_blue());
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -31,33 +31,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if prompt == "exit" || prompt == "quit" { break; }
         if prompt.is_empty() { continue; }
 
-        // 3. Call Gemini API
         let client = Client::new();
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={}",
-            api_key
-        );
+        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}", api_key);
 
-        let body = json!({
-            "contents": [{
-                "parts": [{ "text": prompt }]
-            }]
-        });
+        let body = json!({"contents": [{"parts": [{"text": prompt}]}]});
 
-        let res = client.post(url)
-            .json(&body)
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
+        let res = client.post(url).json(&body).send().await?;
+        let json: serde_json::Value = res.json().await?;
 
-        // 4. Print Response
-        if let Some(text) = res["candidates"][0]["content"]["parts"][0]["text"].as_str() {
-            println!("\n{}\n", text);
+        if let Some(text) = json["candidates"][0]["content"]["parts"][0]["text"].as_str() {
+            println!("\n{}\n", text.white());
         } else {
-            println!("❌ Error: Unexpected response format from API.");
+            println!("{}", "❌ Could not get a response. Check your API key or connection.".red());
         }
     }
-
     Ok(())
 }
