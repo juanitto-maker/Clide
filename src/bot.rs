@@ -1,55 +1,101 @@
-// ============================================
-// bot.rs - Clide Bot (CORRECTED)
-// ============================================
-
 use anyhow::Result;
-use tracing::{debug, error, info, warn};
+use log::{info, warn};
+use rusqlite::Connection;
 
 use crate::config::Config;
-use crate::executor::Executor;
-use crate::gemini::{CommandAnalysis, GeminiClient};
+use crate::gemini::GeminiClient;
+use crate::signal::SignalClient;
 
-pub struct Bot {
-    pub config: Config,
-    pub executor: Executor,
-    pub gemini: GeminiClient,
+/// Main bot structure
+pub struct ClideBot {
+    config: Config,
+    gemini: GeminiClient,
+    signal: SignalClient,
+    db: Connection,
 }
 
-impl Bot {
-    pub fn new(config: Config, executor: Executor) -> Self {
-        let gemini_model = config.get_model().to_string();
+impl ClideBot {
+    /// Initialize bot
+    pub fn new(config: Config) -> Result<Self> {
+        info!("Opening database: {:?}", Self::db_path());
+
+        let db = Connection::open(Self::db_path())?;
+
         let gemini = GeminiClient::new(
             config.gemini_api_key.clone(),
-            gemini_model,
-            0.7,
-            1024,
-            "You are a safe assistant.".to_string(),
+            config.get_model().to_string(),
         );
 
-        Self {
+        let signal = SignalClient::new(config.signal_number.clone());
+
+        Ok(Self {
             config,
-            executor,
             gemini,
+            signal,
+            db,
+        })
+    }
+
+    /// Start the bot loop
+    pub fn start(&mut self) -> Result<()> {
+        info!("Starting Clide bot...");
+
+        loop {
+            let messages = self.signal.receive_messages()?;
+
+            for msg in messages {
+                self.handle_message(msg.sender, msg.text)?;
+            }
         }
     }
 
-    pub fn is_authorized(&self, sender: &str) -> bool {
-        if self.config.authorized_numbers.is_empty() {
-            true
-        } else {
-            self.config.authorized_numbers.contains(&sender.to_string())
+    /// Handle a single incoming message
+    fn handle_message(&mut self, sender: String, text: String) -> Result<()> {
+        info!("Message from {}: {}", sender, text);
+
+        // Authorization check
+        if !self.config.is_authorized(&sender) {
+            warn!("Unauthorized sender: {}", sender);
+            return Ok(());
         }
+
+        // Optional confirmation gate
+        if self.config.require_confirmation {
+            if !self.confirm_execution(&sender, &text)? {
+                return Ok(());
+            }
+        }
+
+        // Send prompt to Gemini
+        info!("Sending prompt to Gemini...");
+        let response = self.gemini.generate(&text)?;
+
+        // Send response back via Signal
+        self.signal.send_message(&sender, &response)?;
+
+        Ok(())
     }
 
-    pub async fn analyze_command(&self, command: &str, context: &str) -> Result<CommandAnalysis> {
-        self.gemini.analyze_command(command, context).await
+    /// Confirmation logic (simple yes/no)
+    fn confirm_execution(&self, sender: &str, text: &str) -> Result<bool> {
+        let confirm_msg = format!(
+            "⚠️ Confirm execution?\n\n{}\n\nReply with YES to proceed.",
+            text
+        );
+
+        self.signal.send_message(sender, &confirm_msg)?;
+
+        let reply = self.signal.wait_for_reply(
+            sender,
+            self.config.confirmation_timeout,
+        )?;
+
+        Ok(reply.trim().eq_ignore_ascii_case("yes"))
     }
 
-    pub async fn execute(&self, command: &str) -> Result<String> {
-        if !self.config.allow_commands {
-            return Err(anyhow::anyhow!("Command execution not allowed"));
-        }
-        let res = self.executor.execute(command).await?;
-        Ok(res.output())
+    /// Database path
+    fn db_path() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{}/.clide/memory.db", home)
     }
 }
