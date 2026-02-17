@@ -1,76 +1,52 @@
 // ============================================
-// database.rs - Database Abstraction (CORRECTED)
+// database.rs - SQLite Memory DB (CORRECTED)
 // ============================================
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension}; // Added OptionalExtension here
+use rusqlite::{params, Connection, NO_PARAMS};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tracing::{debug, info};
 
-/// Database manager
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Conversation {
+    pub id: i64,
+    pub user: String,
+    pub message: String,
+    pub response: Option<String>,
+    pub command: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub timestamp: i64,
+}
+
 pub struct Database {
     conn: Connection,
 }
 
+#[derive(Debug, Clone)]
+pub struct Stats {
+    pub total_messages: usize,
+    pub total_commands: usize,
+}
+
 impl Database {
-    /// Open or create database
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref();
-        
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        info!("Opening database: {:?}", path);
-
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .context("Failed to open database")?;
-
-        conn.execute("PRAGMA foreign_keys = ON", [])?;
-
-        let db = Self { conn };
-        db.init_schema()?;
-
-        Ok(db)
-    }
-
-    fn init_schema(&self) -> Result<()> {
-        debug!("Initializing database schema");
-
-        // Conversations table
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY,
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user TEXT NOT NULL,
                 message TEXT NOT NULL,
                 response TEXT,
-                timestamp INTEGER NOT NULL,
                 command TEXT,
                 exit_code INTEGER,
-                duration_ms INTEGER
-            )",
-            [],
+                duration_ms INTEGER,
+                timestamp INTEGER NOT NULL
+            );
+            "#,
         )?;
-
-        // Learning table (for patterns)
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS learning (
-                id INTEGER PRIMARY KEY,
-                user TEXT NOT NULL,
-                intent TEXT NOT NULL,
-                command TEXT NOT NULL,
-                success_count INTEGER DEFAULT 0,
-                last_used INTEGER
-            )",
-            [],
-        )?;
-
-        Ok(())
+        Ok(Self { conn })
     }
 
     pub fn save_conversation(
@@ -81,85 +57,54 @@ impl Database {
         command: Option<&str>,
         exit_code: Option<i32>,
         duration_ms: Option<u64>,
-    ) -> Result<i64> {
+    ) -> Result<()> {
         let timestamp = chrono::Utc::now().timestamp();
-        
         self.conn.execute(
-            "INSERT INTO conversations (user, message, response, timestamp, command, exit_code, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            r#"
+            INSERT INTO conversations
+                (user, message, response, command, exit_code, duration_ms, timestamp)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
             params![
                 user,
                 message,
                 response,
-                timestamp,
                 command,
                 exit_code,
-                duration_ms.map(|d| d as i64)
+                duration_ms.map(|v| v as i64),
+                timestamp
             ],
         )?;
-
-        Ok(self.conn.last_insert_rowid())
+        Ok(())
     }
 
-    pub fn get_recent_conversations(&self, user: &str, limit: usize) -> Result<Vec<Conversation>> {
+    pub fn get_recent_conversations(&self, user: &str, count: usize) -> Result<Vec<Conversation>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user, message, response, timestamp, command, exit_code, duration_ms 
-             FROM conversations WHERE user = ?1 ORDER BY timestamp DESC LIMIT ?2"
+            r#"
+            SELECT id, user, message, response, command, exit_code, duration_ms, timestamp
+            FROM conversations
+            WHERE user = ?1
+            ORDER BY timestamp DESC
+            LIMIT ?2
+            "#,
         )?;
-
-        let rows = stmt.query_map(params![user, limit], |row| {
+        let rows = stmt.query_map(params![user, count as i64], |row| {
             Ok(Conversation {
                 id: row.get(0)?,
                 user: row.get(1)?,
                 message: row.get(2)?,
                 response: row.get(3)?,
-                timestamp: row.get(4)?,
-                command: row.get(5)?,
-                exit_code: row.get(6)?,
-                duration_ms: row.get(7)?,
+                command: row.get(4)?,
+                exit_code: row.get(5)?,
+                duration_ms: row.get(6)?,
+                timestamp: row.get(7)?,
             })
         })?;
 
         let mut conversations = Vec::new();
-        for row in rows {
-            conversations.push(row?);
+        for conv in rows {
+            conversations.push(conv?);
         }
         Ok(conversations)
     }
-
-    pub fn save_pattern(&self, user: &str, intent: &str, command: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO learning (user, intent, command, last_used) 
-             VALUES (?1, ?2, ?3, ?4)",
-            params![user, intent, command, chrono::Utc::now().timestamp()],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_pattern(&self, user: &str, intent: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT command FROM learning WHERE user = ?1 AND intent = ?2"
-        )?;
-        
-        // This is where OptionalExtension is used
-        let command: Option<String> = stmt.query_row(params![user, intent], |row| row.get(0)).optional()?;
-        Ok(command)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Conversation {
-    pub id: i64,
-    pub user: String,
-    pub message: String,
-    pub response: Option<String>,
-    pub timestamp: i64,
-    pub command: Option<String>,
-    pub exit_code: Option<i32>,
-    pub duration_ms: Option<i64>,
-}
-
-pub struct Stats {
-    pub total_conversations: i64,
-    pub successful_commands: i64,
 }
