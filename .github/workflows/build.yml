@@ -1,39 +1,28 @@
-name: Build & Release
+name: Build Clide
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust
+        run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      - name: Add Cargo to PATH
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v3
         with:
-          toolchain: stable
-          override: true
-
-      - name: Install musl target
-        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-
-      - name: Build static binary (aarch64)
-        run: |
-          cargo build --release --target aarch64-unknown-linux-musl
-          mkdir -p dist
-          cp target/aarch64-unknown-linux-musl/release/clide dist/
-
-      - name: Create tar.gz for release
-        run: |
-          tar -czf dist/clide-static-aarch64.tar.gz -C dist clide
-
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/clide-static-aarch64.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: clide-binary
+          path: target/release/clide
