@@ -90,6 +90,14 @@ fi
 
 export PATH="$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin:$PATH"
 
+# Fix libgcc_s.so.1 missing in Termux (symlink fix)
+if [ ! -f "$PREFIX/lib/libgcc_s.so.1" ]; then
+    if [ -f "$PREFIX/lib/libgcc_s.so" ]; then
+        ln -sf "$PREFIX/lib/libgcc_s.so" "$PREFIX/lib/libgcc_s.so.1"
+        echo "✅ libgcc_s.so.1 symlink created"
+    fi
+fi
+
 # Cleanup
 rm -f "$TMPDIR/signal-cli-${SIGNAL_VERSION}.tar.gz"
 
