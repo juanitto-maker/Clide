@@ -1,5 +1,5 @@
 // ============================================
-// gemini.rs - Google Gemini API Client (CORRECTED)
+// gemini.rs - Google Gemini API Client (UPDATED)
 // ============================================
 
 use anyhow::{Context, Result};
@@ -65,6 +65,17 @@ struct ResponsePart {
     text: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GeminiError {
+    error: Option<ApiError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiError {
+    code: u16,
+    message: String,
+}
+
 impl GeminiClient {
     pub fn new(
         api_key: String,
@@ -96,9 +107,7 @@ impl GeminiClient {
         );
 
         let request = GeminiRequest {
-            contents: vec![Content {
-                parts: vec![Part { text: prompt }],
-            }],
+            contents: vec![Content { parts: vec![Part { text: prompt }] }],
             generation_config: GenerationConfig {
                 temperature: self.temperature,
                 max_output_tokens: self.max_tokens,
@@ -109,18 +118,28 @@ impl GeminiClient {
             }),
         };
 
-        let response = self.client.post(&url).json(&request).send().await?;
-        let body: GeminiResponse = response.json().await?;
+        let resp = self.client.post(&url).json(&request).send().await?;
+
+        let body_text = resp.text().await?;
+
+        // Handle API error responses
+        if let Ok(err_body) = serde_json::from_str::<GeminiError>(&body_text) {
+            if let Some(err) = err_body.error {
+                return Err(anyhow::anyhow!("Gemini API error {}: {}", err.code, err.message));
+            }
+        }
+
+        let body: GeminiResponse = serde_json::from_str(&body_text)
+            .context("Failed to parse Gemini response")?;
 
         let json_text = body.candidates.first()
-            .context("No response from Gemini")?
+            .context("No response candidates from Gemini")?
             .content.parts.first()
-            .context("Empty response parts")?
-            .text.clone();
+            .context("Empty response parts from Gemini")?
+            .text
+            .clone();
 
-        // FIXED: Added explicit type parameters to the Result
         let analysis: CommandAnalysis = serde_json::from_str(&json_text)
-            .map(|a| Ok::<CommandAnalysis, anyhow::Error>(a))?
             .context("Failed to parse analysis JSON")?;
 
         Ok(analysis)
@@ -133,9 +152,7 @@ impl GeminiClient {
         );
 
         let request = GeminiRequest {
-            contents: vec![Content {
-                parts: vec![Part { text: prompt.to_string() }],
-            }],
+            contents: vec![Content { parts: vec![Part { text: prompt.to_string() }] }],
             generation_config: GenerationConfig {
                 temperature: self.temperature,
                 max_output_tokens: self.max_tokens,
@@ -144,8 +161,18 @@ impl GeminiClient {
             system_instruction: None,
         };
 
-        let response = self.client.post(&url).json(&request).send().await?;
-        let body: GeminiResponse = response.json().await?;
+        let resp = self.client.post(&url).json(&request).send().await?;
+        let body_text = resp.text().await?;
+        
+        // Try parse error first
+        if let Ok(err_body) = serde_json::from_str::<GeminiError>(&body_text) {
+            if let Some(err) = err_body.error {
+                return Err(anyhow::anyhow!("Gemini API error {}: {}", err.code, err.message));
+            }
+        }
+
+        let body: GeminiResponse = serde_json::from_str(&body_text)
+            .context("Failed to parse Gemini response")?;
 
         Ok(body.candidates[0].content.parts[0].text.clone())
     }
