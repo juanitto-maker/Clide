@@ -1,5 +1,10 @@
+# ============================================
+# Clide Configuration File
+# ============================================
+
 gemini_api_key: "${GEMINI_API_KEY}"
-signal_number: "${SIGNAL_NUMBER}"
+gemini_model: "gemini-2.5-flash"
+signal_number: "+1234567890"
 
 require_confirmation: false
 confirmation_timeout: 60
@@ -12,10 +17,14 @@ blocked_commands:
   - "dd"
 dry_run: false
 
+ssh_key_path: "~/.ssh/id_rsa"
 ssh_verify_host_keys: true
 allowed_ssh_hosts: []
 ssh_timeout: 30
 
 logging:
   level: "info"
+  file_path: "~/.clide/logs/clide.log"
   json: false
+
+authorized_numbers: []
