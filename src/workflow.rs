@@ -64,7 +64,6 @@ impl WorkflowExecutor {
         let mut success = true;
         let mut executed_steps = Vec::new();
 
-        // Merge default workflow variables with provided ones
         let mut active_vars = workflow.variables.clone();
         for (k, v) in vars {
             active_vars.insert(k.clone(), v.clone());
@@ -72,7 +71,6 @@ impl WorkflowExecutor {
 
         for step in &workflow.steps {
             info!("Executing step: {}", step.name);
-            
             let mut command = step.command.clone();
             for (key, value) in &active_vars {
                 command = command.replace(&format!("{{{{{}}}}}", key), value);
