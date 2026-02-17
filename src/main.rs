@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
             let config_path = expand_path(&cli.config);
             let config = Config::load(config_path)?;
             let client = clide::GeminiClient::new(
-                config.gemini_api_key,
+                config.gemini_api_key.clone(),
                 config.get_model(),
                 0.7,
                 1024,
