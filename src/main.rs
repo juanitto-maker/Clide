@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
             let config = Config::load(config_path)?;
             let client = clide::GeminiClient::new(
                 config.gemini_api_key,
-                "gemini-1.5-flash".to_string(),
+                config.get_model(),
                 0.7,
                 1024,
                 "You are a helpful assistant.".to_string(),
