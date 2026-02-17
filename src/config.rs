@@ -1,16 +1,20 @@
 // ============================================
-// config.rs - Configuration Management (FIXED)
+// config.rs - Configuration (UPDATED)
 // ============================================
 
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Main configuration for Clide
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
+    // Gemini
     pub gemini_api_key: String,
     #[serde(default)]
     pub gemini_model: Option<String>,
+
+    // Signal
     pub signal_number: String,
 
     // Security
@@ -27,13 +31,15 @@ pub struct Config {
     #[serde(default)]
     pub blocked_commands: Vec<String>,
     #[serde(default)]
-    pub dry_run: bool,
-
-    // Signal authorized numbers
-    #[serde(default)]
     pub authorized_numbers: Vec<String>,
 
+    // Dry run
+    #[serde(default)]
+    pub dry_run: bool,
+
     // SSH
+    #[serde(default)]
+    pub ssh_key_path: Option<PathBuf>,
     #[serde(default)]
     pub ssh_verify_host_keys: bool,
     #[serde(default)]
@@ -41,34 +47,35 @@ pub struct Config {
     #[serde(default)]
     pub ssh_timeout: u64,
 
+    // Logging
     #[serde(default)]
     pub logging: LoggingConfig,
 }
 
-impl Config {
-    /// Get the Gemini model, defaulting to "gemini-2.5-flash"
-    pub fn get_model(&self) -> String {
-        self.gemini_model.clone().unwrap_or_else(|| "gemini-2.5-flash".to_string())
-    }
-
-    /// Load from YAML file
-    pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
-        let content = fs::read_to_string(path)?;
-        let cfg: Config = serde_yaml::from_str(&content)?;
-        Ok(cfg)
-    }
-}
-
+/// Logging configuration
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct LoggingConfig {
-    #[serde(default = "default_level")]
+    #[serde(default = "default_log_level")]
     pub level: String,
     #[serde(default)]
-    pub file_path: Option<String>,
+    pub file_path: Option<PathBuf>,
     #[serde(default)]
     pub json: bool,
+    #[serde(default)]
+    pub with_timestamps: bool,
+    #[serde(default)]
+    pub with_caller: bool,
 }
 
-fn default_level() -> String {
+fn default_log_level() -> String {
     "info".to_string()
+}
+
+// --- Config helper methods ---
+impl Config {
+    pub fn get_model(&self) -> String {
+        self.gemini_model
+            .clone()
+            .unwrap_or_else(|| "gemini-2.5-flash".to_string())
+    }
 }
