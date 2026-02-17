@@ -4,31 +4,24 @@ set -e
 echo "✨ Installing Clide..."
 
 # -----------------------------
-# Detect platform
-# -----------------------------
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-
-if [[ "$OS" != "linux" ]]; then
-  echo "❌ Unsupported OS: $OS"
-  exit 1
-fi
-
-# -----------------------------
-# Ask for configuration FIRST
+# Prompt user FIRST (no vars used before this)
 # -----------------------------
 echo ""
 echo "🔑 Gemini API Key"
-read -r -p "Enter Gemini API key: " GEMINI_API_KEY
-if [[ -z "$GEMINI_API_KEY" ]]; then
+printf "Enter Gemini API key: "
+read GEMINI_API_KEY
+
+if [ -z "$GEMINI_API_KEY" ]; then
   echo "❌ Gemini API key is required"
   exit 1
 fi
 
 echo ""
 echo "📱 Signal bot number (E.164 format, e.g. +123456789)"
-read -r -p "Enter Signal number: " SIGNAL_NUMBER
-if [[ -z "$SIGNAL_NUMBER" ]]; then
+printf "Enter Signal number: "
+read SIGNAL_NUMBER
+
+if [ -z "$SIGNAL_NUMBER" ]; then
   echo "❌ Signal number is required"
   exit 1
 fi
@@ -36,8 +29,9 @@ fi
 # -----------------------------
 # Paths
 # -----------------------------
-INSTALL_DIR="$HOME/.clide"
-BIN_DIR="$HOME/.local/bin"
+HOME_DIR="$HOME"
+INSTALL_DIR="$HOME_DIR/.clide"
+BIN_DIR="$HOME_DIR/.local/bin"
 CONFIG_FILE="$INSTALL_DIR/config.yaml"
 
 mkdir -p "$INSTALL_DIR"
@@ -47,10 +41,6 @@ mkdir -p "$BIN_DIR"
 # Write config.yaml
 # -----------------------------
 cat > "$CONFIG_FILE" <<EOF
-# ============================================
-# Clide Configuration File
-# ============================================
-
 gemini_api_key: "$GEMINI_API_KEY"
 gemini_model: "gemini-2.5-flash"
 
@@ -79,7 +69,7 @@ EOF
 chmod 600 "$CONFIG_FILE"
 
 # -----------------------------
-# Install Rust if missing
+# Ensure Rust
 # -----------------------------
 if ! command -v cargo >/dev/null 2>&1; then
   echo "🦀 Installing Rust..."
@@ -87,19 +77,16 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # -----------------------------
-# Clone source
+# Clone + build
 # -----------------------------
-SRC_DIR="$HOME/Clide_Source"
+SRC_DIR="$HOME_DIR/Clide_Source"
 rm -rf "$SRC_DIR"
 
-echo "📦 Cloning Clide source..."
+echo "📦 Cloning Clide..."
 git clone https://github.com/juanitto-maker/Clide.git "$SRC_DIR"
 
-# -----------------------------
-# Build
-# -----------------------------
-echo "🔨 Building Clide..."
 cd "$SRC_DIR"
+echo "🔨 Building Clide..."
 cargo build --release
 
 # -----------------------------
@@ -108,19 +95,14 @@ cargo build --release
 cp target/release/clide "$BIN_DIR/clide"
 chmod +x "$BIN_DIR/clide"
 
-# -----------------------------
-# Final message
-# -----------------------------
 echo ""
 echo "═══════════════════════════════════════"
 echo "✨ Installation Complete!"
 echo "═══════════════════════════════════════"
 echo ""
-echo "🎉 Clide is ready to use!"
-echo ""
 echo "Try:"
 echo "  clide test-gemini \"hello\""
 echo "  clide start"
 echo ""
-echo "⚙️  Config: $CONFIG_FILE"
+echo "Config: $CONFIG_FILE"
 echo ""
