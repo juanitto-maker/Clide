@@ -1,31 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================
-# Clide Installer - Smart Pipe Detection
+# Clide Complete Installer
+# Installs: Clide + Signal-CLI (default) + Configuration
 # ============================================
 set -e
 
 echo "🚀 Installing Clide - Complete Setup"
 echo ""
 
-# ============================================
-# Detect if running via pipe (curl | bash)
-# ============================================
-if [ -t 0 ]; then
-    # stdin is a terminal - normal mode
-    INTERACTIVE=true
-else
-    # stdin is a pipe - skip interactive prompts
-    INTERACTIVE=false
-    echo "⚠️  Running in non-interactive mode (piped install)"
-    echo "   API key setup will be skipped"
-    echo ""
-    echo "💡 For interactive setup, run:"
-    echo "   curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh -o install.sh"
-    echo "   bash install.sh"
-    echo ""
-fi
-
-# Rest of script stays the same until API key section...
 # ============================================
 # 1. Detect if Termux
 # ============================================
@@ -78,7 +60,44 @@ echo "✅ $CARGO_VERSION"
 echo ""
 
 # ============================================
-# 5. Clone Repository
+# 5. Install Signal-CLI (DEFAULT)
+# ============================================
+echo "📱 Installing Signal-CLI..."
+echo "   (Required for Signal bot functionality)"
+echo ""
+
+pkg install -y openjdk-17 wget 2>&1 | tail -n 3
+
+SIGNAL_VERSION="0.13.1"
+SIGNAL_URL="https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_VERSION}/signal-cli-${SIGNAL_VERSION}.tar.gz"
+
+cd /tmp
+wget -q --show-progress "$SIGNAL_URL" 2>&1 | tail -n 2
+
+echo "📦 Installing Signal-CLI..."
+tar xf "signal-cli-${SIGNAL_VERSION}.tar.gz"
+
+mkdir -p "$HOME/.local"
+rm -rf "$HOME/.local/signal-cli-${SIGNAL_VERSION}"
+mv "signal-cli-${SIGNAL_VERSION}" "$HOME/.local/"
+
+# Add to PATH
+if ! grep -q "signal-cli-${SIGNAL_VERSION}" ~/.bashrc; then
+    echo "" >> ~/.bashrc
+    echo "# Signal-CLI (added by Clide installer)" >> ~/.bashrc
+    echo "export PATH=\$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin:\$PATH" >> ~/.bashrc
+fi
+
+export PATH="$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin:$PATH"
+
+# Cleanup
+rm -f "/tmp/signal-cli-${SIGNAL_VERSION}.tar.gz"
+
+echo "✅ Signal-CLI installed"
+echo ""
+
+# ============================================
+# 6. Clone Repository
 # ============================================
 echo "📂 Cloning Clide repository..."
 INSTALL_DIR="$HOME/Clide_Source"
@@ -94,7 +113,7 @@ echo "✅ Repository cloned"
 echo ""
 
 # ============================================
-# 6. Fix Cargo.toml for Android
+# 7. Fix Cargo.toml for Android
 # ============================================
 echo "🔧 Applying Android compatibility fixes..."
 
@@ -105,7 +124,7 @@ echo "✅ TLS configuration fixed for Android"
 echo ""
 
 # ============================================
-# 7. Build Clide
+# 8. Build Clide
 # ============================================
 echo "🛠️  Building Clide..."
 echo "   This is the longest step (5-15 minutes)"
@@ -129,7 +148,7 @@ echo "✅ Build completed at: $(date '+%H:%M:%S')"
 echo ""
 
 # ============================================
-# 8. Install Binary
+# 9. Install Binary
 # ============================================
 echo "🚚 Installing Clide binary..."
 
@@ -141,7 +160,7 @@ echo "✅ Installed to: $PREFIX/bin/clide"
 echo ""
 
 # ============================================
-# 9. Secure Configuration Setup
+# 10. Configuration Setup
 # ============================================
 echo "⚙️  Setting up configuration..."
 echo ""
@@ -156,81 +175,99 @@ echo "✅ Config file created at: ~/.clide/config.yaml"
 echo ""
 
 # ============================================
-# 10. API Key Setup (Interactive or Skip)
+# 11. Interactive Configuration
 # ============================================
-if [ "$INTERACTIVE" = true ]; then
-    echo "═══════════════════════════════════════"
-    echo "🔑 Gemini API Key Setup (Secure)"
-    echo "═══════════════════════════════════════"
-    echo ""
-    echo "To use Clide, you need a Gemini API key."
-    echo "Get one free at: https://makersuite.google.com/app/apikey"
-    echo ""
-    echo "🔒 Security: Your key will be stored as an environment"
-    echo "   variable (not in the config file) for better security."
-    echo ""
-    read -sp "Enter your Gemini API key (hidden): " API_KEY
-    echo ""
-    echo ""
 
-    if [ ! -z "$API_KEY" ]; then
+# Redirect stdin from terminal for interactive prompts
+exec < /dev/tty 2>/dev/null || true
+
+echo "═══════════════════════════════════════"
+echo "🔑 Gemini API Key Setup"
+echo "═══════════════════════════════════════"
+echo ""
+echo "To use Clide, you need a Gemini API key."
+echo "Get one free at: https://makersuite.google.com/app/apikey"
+echo ""
+echo "🔒 Security: Your key will be stored as an environment"
+echo "   variable (not in the config file) for better security."
+echo ""
+
+read -sp "Enter your Gemini API key (or press Enter to skip): " API_KEY
+echo ""
+echo ""
+
+if [ ! -z "$API_KEY" ]; then
+    # Store in .bashrc
+    if ! grep -q "GEMINI_API_KEY" ~/.bashrc; then
         echo "" >> ~/.bashrc
         echo "# Clide Configuration (added by installer)" >> ~/.bashrc
         echo "export GEMINI_API_KEY='$API_KEY'" >> ~/.bashrc
-        
-        chmod 600 ~/.bashrc
-        export GEMINI_API_KEY="$API_KEY"
-        history -d $((HISTCMD-1)) 2>/dev/null || true
-        
-        echo "✅ API key securely stored as environment variable"
-        echo "   (stored in ~/.bashrc with 600 permissions)"
-        CONFIG_READY=true
     else
-        CONFIG_READY=false
+        sed -i "s/export GEMINI_API_KEY=.*/export GEMINI_API_KEY='$API_KEY'/" ~/.bashrc
     fi
     
-    echo ""
+    chmod 600 ~/.bashrc
+    export GEMINI_API_KEY="$API_KEY"
+    history -d $((HISTCMD-1)) 2>/dev/null || true
     
-    # Signal number
-    echo "═══════════════════════════════════════"
-    echo "📱 Signal Number (Optional)"
-    echo "═══════════════════════════════════════"
-    echo ""
-    read -p "Enter your Signal number (e.g., +1234567890) or press Enter to skip: " SIGNAL_NUMBER
-
-    if [ ! -z "$SIGNAL_NUMBER" ]; then
-        sed -i "s/+1234567890/$SIGNAL_NUMBER/" ~/.clide/config.yaml
-        echo ""
-        echo "✅ Signal number configured!"
-    else
-        echo ""
-        echo "⚠️  Skipped Signal setup"
-    fi
+    echo "✅ API key securely stored as environment variable"
+    echo "   (stored in ~/.bashrc with 600 permissions)"
+    CONFIG_READY=true
 else
-    # Non-interactive mode - skip prompts
+    echo "⚠️  Skipped API key setup"
+    echo "   Set it later: export GEMINI_API_KEY='your-key'"
     CONFIG_READY=false
 fi
 
 echo ""
 
 # ============================================
-# 11. Verify Installation
+# 12. Signal Number Setup
 # ============================================
-echo "🔍 Verifying installation..."
+echo "═══════════════════════════════════════"
+echo "📱 Signal Number Configuration"
+echo "═══════════════════════════════════════"
+echo ""
 
-if command -v clide >/dev/null 2>&1; then
-    echo "✅ Clide is ready!"
+read -p "Enter your Signal number (e.g., +1234567890) or press Enter to skip: " SIGNAL_NUMBER
+echo ""
+
+if [ ! -z "$SIGNAL_NUMBER" ]; then
+    sed -i "s/+1234567890/$SIGNAL_NUMBER/" ~/.clide/config.yaml
+    echo "✅ Signal number configured!"
     echo ""
-    clide --version 2>&1
+    echo "💡 Next: Link Signal-CLI to your phone:"
+    echo "   signal-cli link -n \"clide-bot\""
+    echo "   Then scan the QR code with Signal app"
 else
-    echo "⚠️  Installation completed"
-    echo "   Restart Termux to use 'clide' command"
+    echo "⚠️  Skipped Signal number"
+    echo "   Configure later: nano ~/.clide/config.yaml"
 fi
 
 echo ""
 
 # ============================================
-# 12. Final Summary
+# 13. Verify Installation
+# ============================================
+echo "🔍 Verifying installation..."
+echo ""
+
+if command -v clide >/dev/null 2>&1; then
+    echo "✅ Clide: $(clide --version)"
+else
+    echo "⚠️  Clide installed (restart Termux to use)"
+fi
+
+if command -v signal-cli >/dev/null 2>&1; then
+    echo "✅ Signal-CLI: $(signal-cli --version | head -n1)"
+else
+    echo "⚠️  Signal-CLI not found in PATH"
+fi
+
+echo ""
+
+# ============================================
+# 14. Final Summary
 # ============================================
 echo "═══════════════════════════════════════"
 echo "✨ Installation Complete!"
@@ -238,33 +275,36 @@ echo "════════════════════════�
 echo ""
 
 if [ "$CONFIG_READY" = true ]; then
-    echo "🎉 Clide is ready to use immediately!"
+    echo "🎉 Clide is ready to use!"
     echo ""
     echo "Try these commands:"
     echo "   clide test-gemini 'hello'   # Test Gemini API"
     echo "   clide status                # Check system"
-    echo "   clide --help                # See all commands"
+    echo "   clide start                 # Start Signal bot"
     echo ""
 else
     echo "📝 To finish setup:"
     echo ""
     echo "1️⃣  Get API key: https://makersuite.google.com/app/apikey"
-    echo "2️⃣  Set environment variable:"
+    echo "2️⃣  Set environment:"
     echo "     export GEMINI_API_KEY='your-key-here'"
     echo "     echo 'export GEMINI_API_KEY=\"your-key\"' >> ~/.bashrc"
     echo "3️⃣  Test: clide test-gemini 'hello'"
     echo ""
 fi
 
+echo "📱 Signal Bot Setup:"
+echo "   1. Link device: signal-cli link -n \"clide-bot\""
+echo "   2. Scan QR code with Signal app"
+echo "   3. Start bot: clide start"
+echo ""
 echo "🔒 Security:"
 echo "   • API key stored as environment variable"
-echo "   • Config files have 600 permissions (only you can read)"
-echo "   • API key not in config file or git history"
+echo "   • Config files have 600 permissions"
+echo "   • No secrets in git history"
 echo ""
 echo "📚 Documentation: $INSTALL_DIR/README.md"
 echo "⚙️  Config file: ~/.clide/config.yaml"
-echo "🔑 API key: Set via GEMINI_API_KEY environment variable"
-echo ""
-echo "💡 Model: gemini-2.5-flash (fast and efficient!)"
+echo "💡 Model: gemini-2.5-flash"
 echo ""
 echo "🎉 Happy hacking!"
