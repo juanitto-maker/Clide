@@ -1,17 +1,19 @@
 // ============================================
-// config.rs - Configuration Management
+// config.rs - Configuration Loader (UPDATED)
 // ============================================
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{collections::HashMap, fs, path::PathBuf};
 
-/// Main application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    // API Keys - support both direct and environment variable
+    // Gemini API
     pub gemini_api_key: String,
-    pub gemini_model: Option<String>, // NEW: Optional model override
+    #[serde(default = "default_model")]
+    pub gemini_model: String,
+
+    // Signal
     pub signal_number: String,
 
     // Security
@@ -19,15 +21,15 @@ pub struct Config {
     pub authorized_numbers: Vec<String>,
     #[serde(default)]
     pub require_confirmation: bool,
-    #[serde(default = "default_timeout")]
+    #[serde(default = "default_confirmation_timeout")]
     pub confirmation_timeout: u64,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub allow_commands: bool,
     #[serde(default)]
     pub deny_by_default: bool,
     #[serde(default)]
     pub allowed_commands: Vec<String>,
-    #[serde(default = "default_blocked_commands")]
+    #[serde(default)]
     pub blocked_commands: Vec<String>,
     #[serde(default)]
     pub dry_run: bool,
@@ -35,7 +37,7 @@ pub struct Config {
     // SSH
     #[serde(default)]
     pub ssh_key_path: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_ssh_verify")]
     pub ssh_verify_host_keys: bool,
     #[serde(default)]
     pub allowed_ssh_hosts: Vec<String>,
@@ -47,7 +49,7 @@ pub struct Config {
     pub logging: LoggingConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -57,67 +59,34 @@ pub struct LoggingConfig {
     pub json: bool,
 }
 
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: default_log_level(),
-            file_path: None,
-            json: false,
-        }
-    }
-}
-
-fn default_timeout() -> u64 { 60 }
+fn default_model() -> String { "gemini-2.5-flash".to_string() }
+fn default_confirmation_timeout() -> u64 { 60 }
+fn default_ssh_verify() -> bool { true }
 fn default_ssh_timeout() -> u64 { 30 }
-fn default_true() -> bool { true }
 fn default_log_level() -> String { "info".to_string() }
-fn default_blocked_commands() -> Vec<String> {
-    vec!["rm -rf /".to_string(), "mkfs".to_string(), "dd".to_string()]
-}
 
 impl Config {
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .context("Failed to read config file")?;
-        
-        // Substitute environment variables
-        let substituted = substitute_env_vars(&content);
-        
-        let mut config: Config = serde_yaml::from_str(&substituted)
-            .context("Failed to parse config YAML")?;
-        
-        // ✅ SECURITY: Override with environment variable if set
-        if let Ok(env_key) = std::env::var("GEMINI_API_KEY") {
-            config.gemini_api_key = env_key;
+    pub fn load(path: Option<PathBuf>) -> Result<Self> {
+        let path = path.unwrap_or_else(|| {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".clide/config.yaml")
+        });
+
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read config file at {:?}", path))?;
+        let mut config: Config = serde_yaml::from_str(&content)
+            .context("Failed to parse YAML configuration")?;
+
+        // Expand ${ENV_VAR} placeholders
+        if config.gemini_api_key.starts_with("${") && config.gemini_api_key.ends_with("}") {
+            let var_name = &config.gemini_api_key[2..config.gemini_api_key.len()-1];
+            config.gemini_api_key = std::env::var(var_name)
+                .with_context(|| format!("Environment variable {} not set", var_name))?;
         }
-        
-        // ✅ Set default model if not specified
-        if config.gemini_model.is_none() {
-            config.gemini_model = Some("gemini-2.5-flash".to_string());
-        }
-            
+
         Ok(config)
     }
-    
-    /// Get the Gemini model to use (with fallback to default)
-    pub fn get_model(&self) -> String {
-        self.gemini_model
-            .clone()
-            .unwrap_or_else(|| "gemini-2.5-flash".to_string())
-    }
-}
 
-fn substitute_env_vars(text: &str) -> String {
-    let mut result = text.to_string();
-    let re = regex::Regex::new(r"\$\{([^}]+)\}").unwrap();
-    
-    for cap in re.captures_iter(text) {
-        let full_match = &cap[0];
-        let var_name = &cap[1];
-        
-        if let Ok(value) = std::env::var(var_name) {
-            result = result.replace(full_match, &value);
-        }
+    pub fn logging_level(&self) -> &str {
+        &self.logging.level
     }
-    result
 }
