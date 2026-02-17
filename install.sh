@@ -1,50 +1,54 @@
 #!/bin/bash
 
-# --- 1. Environment Check & Fix ---
 echo "✨ Starting Clide Installation..."
 
-# Prevent freezing by using -y for Termux/Debian
+# 1. Install dependencies without blocking (-y is key for Termux)
 if ! command -v cargo &> /dev/null; then
     echo "🦀 Installing Rust..."
-    pkg install rust -y || apt install rustc cargo -y
+    pkg install rust -y
 fi
 
 if ! command -v git &> /dev/null; then
     echo "📦 Installing Git..."
-    pkg install git -y || apt install git -y
+    pkg install git -y
 fi
 
-# --- 2. Build Process ---
-echo "🚀 Building Clide..."
-# Build the release version
+# 2. Smart Directory Handling
+REPO_NAME="Clide"
+if [ ! -f "Cargo.toml" ]; then
+    if [ -d "$REPO_NAME" ]; then
+        echo "📂 Moving into existing $REPO_NAME directory..."
+        cd "$REPO_NAME" || exit 1
+    else
+        echo "🌐 Cloning repository..."
+        git clone https://github.com/juanitto-maker/Clide.git
+        cd "$REPO_NAME" || exit 1
+    fi
+fi
+
+# 3. Build the project (Now that we are in the right folder)
+echo "🚀 Building Clide from source..."
 cargo build --release
 
-# --- 3. Optional API Key Setup ---
+# 4. Handle API Key (Optional)
 echo ""
 echo "🔑 Gemini API Key Setup"
-echo "Paste your key and press Enter, or just press Enter to SKIP (you can add it later):"
+echo "Paste your key and press Enter (or just press Enter to SKIP):"
 read -r api_key
 
 mkdir -p ~/.config/clide
-
 if [ -n "$api_key" ]; then
     echo "GEMINI_API_KEY=$api_key" > ~/.config/clide/config.env
     echo "✅ Key saved to ~/.config/clide/config.env"
 else
-    echo "⚠️  Skipped. Add your key manually to ~/.config/clide/config.env to use Clide."
+    echo "⚠️  Skipped. Add your key manually later."
 fi
 
-# --- 4. Install the Command ---
+# 5. Move to Path
 if [ -f "target/release/clide" ]; then
-    # In Termux, $PREFIX is /data/data/com.termux/files/usr
-    if [ -n "$PREFIX" ]; then
-        cp target/release/clide "$PREFIX/bin/"
-        chmod +x "$PREFIX/bin/clide"
-    else
-        # For standard Linux
-        sudo cp target/release/clide /usr/local/bin/ 2>/dev/null || cp target/release/clide ~/bin/
-    fi
-    echo "✨ Installation complete! You can now type 'clide' from anywhere."
+    cp target/release/clide "$PREFIX/bin/"
+    chmod +x "$PREFIX/bin/clide"
+    echo "✨ Done! Type 'clide' to start."
 else
-    echo "❌ Build failed. Please check the errors above."
+    echo "❌ Build failed. Cargo.toml was not found or build crashed."
 fi
