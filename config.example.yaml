@@ -1,11 +1,6 @@
-# ============================================
-# Clide Configuration File
-# ============================================
-
 gemini_api_key: "${GEMINI_API_KEY}"
 signal_number: "${SIGNAL_NUMBER}"
 
-authorized_numbers: []
 require_confirmation: false
 confirmation_timeout: 60
 allow_commands: true
