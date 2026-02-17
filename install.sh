@@ -144,7 +144,16 @@ echo ""
 echo "   Started at: $(date '+%H:%M:%S')"
 echo ""
 
-cargo build --release 2>&1 | while IFS= read -r line; do
+# Set Android/Termux build environment
+export CC="$PREFIX/bin/clang"
+export AR="$PREFIX/bin/llvm-ar"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$PREFIX/bin/clang"
+export OPENSSL_INCLUDE_DIR="$PREFIX/include"
+export OPENSSL_LIB_DIR="$PREFIX/lib"
+
+BUILD_LOG="$TMPDIR/clide_build.log"
+
+cargo build --release 2>&1 | tee "$BUILD_LOG" | while IFS= read -r line; do
     if echo "$line" | grep -qE "Compiling|Finished|error:|warning:"; then
         echo "   $line"
     fi
@@ -155,6 +164,16 @@ done
 
 echo ""
 echo ""
+
+# Check if binary actually exists
+if [ ! -f "target/release/clide" ]; then
+    echo "❌ Build FAILED! Errors:"
+    grep -E "^error" "$BUILD_LOG" | head -n 20
+    echo ""
+    echo "Full log: $BUILD_LOG"
+    exit 1
+fi
+
 echo "✅ Build completed at: $(date '+%H:%M:%S')"
 echo ""
 
