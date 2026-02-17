@@ -93,9 +93,49 @@ export PATH="$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin:$PATH"
 # Cleanup
 rm -f "$TMPDIR/signal-cli-${SIGNAL_VERSION}.tar.gz"
 
+# ============================================
+# Fix libsignal ARM64 (Android is aarch64,
+# signal-cli ships x86_64 lib by default)
+# ============================================
+echo "🔧 Fixing libsignal for ARM64..."
+SIGNAL_LIB_DIR="$HOME/.local/signal-cli-${SIGNAL_VERSION}/lib"
+LIBSIGNAL_JAR=$(ls "$SIGNAL_LIB_DIR"/libsignal-client-*.jar 2>/dev/null | head -n1)
+
+if [ ! -z "$LIBSIGNAL_JAR" ]; then
+    # Get the libsignal version from the jar filename
+    LIBSIGNAL_VERSION=$(basename "$LIBSIGNAL_JAR" | sed 's/libsignal-client-//' | sed 's/.jar//')
+    echo "   libsignal version: $LIBSIGNAL_VERSION"
+    
+    # Download ARM64 native library
+    ARM64_SO_URL="https://media.projektzentrisch.de/temp/signal-cli/tests/libsignal_jni_so${LIBSIGNAL_VERSION//./_}_ubuntu2004_arm64.gz"
+    ALT_URL="https://github.com/exquo/signal-libs-build/releases/download/libsignal_v${LIBSIGNAL_VERSION}/libsignal_jni.so-v${LIBSIGNAL_VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+    
+    echo "   Downloading ARM64 libsignal..."
+    if wget -q "$ALT_URL" -O "$TMPDIR/libsignal_arm64.tar.gz" 2>/dev/null; then
+        cd "$TMPDIR"
+        tar xf libsignal_arm64.tar.gz 2>/dev/null || true
+        SO_FILE=$(find "$TMPDIR" -name "libsignal_jni.so" | head -n1)
+        if [ ! -z "$SO_FILE" ]; then
+            # Inject ARM64 .so into the jar
+            cp "$LIBSIGNAL_JAR" "${LIBSIGNAL_JAR}.bak"
+            cd "$(dirname "$SO_FILE")"
+            zip -u "$LIBSIGNAL_JAR" libsignal_jni.so 2>/dev/null &&                 echo "✅ ARM64 libsignal injected!" ||                 echo "⚠️  Could not inject - signal-cli may not work on ARM64"
+            rm -f "$TMPDIR/libsignal_arm64.tar.gz"
+        else
+            echo "⚠️  ARM64 .so not found in archive"
+        fi
+        cd "$HOME"
+    else
+        echo "⚠️  ARM64 libsignal download failed"
+        echo "   signal-cli may show ARM64 warnings but can still work"
+    fi
+else
+    echo "⚠️  libsignal jar not found"
+fi
+
 # Verify signal-cli works
 if command -v signal-cli >/dev/null 2>&1; then
-    echo "✅ Signal-CLI installed: $(signal-cli --version | head -n1)"
+    echo "✅ Signal-CLI: $(signal-cli --version | head -n1)"
 else
     SIGNAL_BIN="$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin/signal-cli"
     if [ -f "$SIGNAL_BIN" ]; then
