@@ -68,7 +68,7 @@ echo ""
 
 pkg install -y openjdk-17 wget 2>&1 | tail -n 3
 
-SIGNAL_VERSION="0.13.1"
+SIGNAL_VERSION="0.12.8"  # Java 17 compatible (0.13.x requires Java 21)
 SIGNAL_URL="https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_VERSION}/signal-cli-${SIGNAL_VERSION}.tar.gz"
 
 cd "$TMPDIR"
@@ -93,7 +93,18 @@ export PATH="$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin:$PATH"
 # Cleanup
 rm -f "$TMPDIR/signal-cli-${SIGNAL_VERSION}.tar.gz"
 
-echo "✅ Signal-CLI installed"
+# Verify signal-cli works
+if command -v signal-cli >/dev/null 2>&1; then
+    echo "✅ Signal-CLI installed: $(signal-cli --version | head -n1)"
+else
+    SIGNAL_BIN="$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin/signal-cli"
+    if [ -f "$SIGNAL_BIN" ]; then
+        echo "✅ Signal-CLI at: $SIGNAL_BIN"
+        echo "   Run: source ~/.bashrc"
+    else
+        echo "❌ Signal-CLI installation failed"
+    fi
+fi
 echo ""
 
 # ============================================
