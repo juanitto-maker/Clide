@@ -1,3 +1,7 @@
+// ============================================
+// lib.rs - Library Root (CORRECTED)
+// ============================================
+
 pub mod bot;
 pub mod config;
 pub mod database;
