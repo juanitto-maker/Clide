@@ -24,7 +24,7 @@ impl client::Handler for ClientHandler {
         &mut self,
         _server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true) // Trust all hosts for now; configure for production
+        Ok(true)
     }
 }
 
@@ -51,19 +51,15 @@ impl SshClient {
         key_path: Option<&Path>,
     ) -> Result<SshOutput> {
         let (hostname, port) = parse_host(host);
-        
-        // FIXED: connection_timeout is no longer a field in russh::client::Config
-        let config = russh::client::Config {
-            ..Default::default()
-        };
-        let config = Arc::new(config);
+        let config = Arc::new(russh::client::Config::default());
         let sh = ClientHandler;
-        
-        // Wrap connection in a timeout
+
         let mut session = tokio::time::timeout(
             std::time::Duration::from_secs(self.timeout),
-            russh::client::connect(config, (hostname, port), sh)
-        ).await.context("SSH connection timed out")??;
+            russh::client::connect(config, (hostname, port), sh),
+        )
+        .await
+        .context("SSH connection timed out")??;
 
         let auth_res = if let Some(path) = key_path {
             let key_pair = load_private_key(path)?;
@@ -77,8 +73,6 @@ impl SshClient {
         }
 
         let mut channel = session.channel_open_session().await?;
-        
-        // FIXED: .exec requires &[u8] for the command
         channel.exec(true, command.as_bytes()).await?;
 
         let mut stdout = Vec::new();
