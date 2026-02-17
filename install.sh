@@ -1,68 +1,69 @@
 #!/usr/bin/env bash
-set -e
+# ============================================
+# Clide Installer - Single Step Installation
+# ============================================
 
-# ============================
-# Clide One-Run Installer with Prompt
-# ============================
+set -euo pipefail
 
-INSTALL_DIR="$HOME/.clide"
-BIN_DIR="$HOME/.local/bin"
+INSTALL_DIR="$HOME/.local/bin"
+CONFIG_DIR="$HOME/.clide"
+TMP_DIR="$HOME/.clide_tmp"
+
+BINARY_NAME="clide"
+GITHUB_REPO="juanitto-maker/Clide"
+ARCH="aarch64-linux-android"
+
+mkdir -p "$INSTALL_DIR"
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$TMP_DIR"
 
 echo "✨ Installing Clide..."
 
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$BIN_DIR"
+# Ask for API key and Signal number
+read -rp "Enter your Gemini API key (leave blank to skip): " GEMINI_API_KEY
+read -rp "Enter your Signal number (in international format, e.g., +1234567890): " SIGNAL_NUMBER
 
-# ============================
-# Download prebuilt binary & libs
-# ============================
-
-echo "📦 Downloading latest Clide binary..."
-
-TMP_TAR=$(mktemp)
-curl -fsSL "https://github.com/juanitto-maker/Clide/releases/latest/download/clide-static-aarch64.tar.gz" -o "$TMP_TAR"
-tar -xzf "$TMP_TAR" -C "$INSTALL_DIR"
-rm "$TMP_TAR"
-
-chmod +x "$INSTALL_DIR/clide"
-
-# Symlink binary
-ln -sf "$INSTALL_DIR/clide" "$BIN_DIR/clide"
-
-# ============================
-# Prompt user for API key & Signal number
-# ============================
-
-read -p "🔑 Enter your Gemini API key: " GEMINI_API_KEY
-read -p "📱 Enter your Signal number (with country code, e.g. +1234567890): " SIGNAL_NUMBER
-
-# ============================
-# Create configuration
-# ============================
-
-CONFIG_FILE="$INSTALL_DIR/config.yaml"
-
-echo "📝 Writing configuration..."
-
+# Prepare config.yaml
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
+if [ ! -f "$CONFIG_FILE" ]; then
 cat > "$CONFIG_FILE" <<EOL
-gemini_api_key: "$GEMINI_API_KEY"
-signal_number: "$SIGNAL_NUMBER"
+gemini_api_key: "${GEMINI_API_KEY}"
+signal_number: "${SIGNAL_NUMBER}"
+authorized_numbers: []
+require_confirmation: false
+confirmation_timeout: 60
+allow_commands: true
+deny_by_default: false
+allowed_commands: []
+blocked_commands:
+  - "rm -rf /"
+  - "mkfs"
+  - "dd"
+dry_run: false
+ssh_verify_host_keys: true
+allowed_ssh_hosts: []
+ssh_timeout: 30
 logging:
   level: "info"
   json: false
 EOL
+fi
 
-# ============================
-# Finish
-# ============================
+# Download latest binary from GitHub Releases
+echo "📦 Downloading latest Clide binary..."
 
-echo
-echo "✅ Clide installed successfully!"
-echo "Binary: $INSTALL_DIR/clide"
-echo "Config: $CONFIG_FILE"
-echo
-echo "Test Gemini API:"
-echo "  clide test-gemini 'hello'"
-echo
-echo "Start the bot:"
-echo "  clide start"
+LATEST_URL=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | \
+  grep "browser_download_url" | grep "$ARCH" | cut -d '"' -f 4)
+
+if [ -z "$LATEST_URL" ]; then
+    echo "❌ Failed to fetch latest release for $ARCH"
+    exit 1
+fi
+
+curl -fsSL "$LATEST_URL" -o "$TMP_DIR/$BINARY_NAME"
+chmod +x "$TMP_DIR/$BINARY_NAME"
+mv "$TMP_DIR/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+
+echo "✅ Clide installed to $INSTALL_DIR/$BINARY_NAME"
+echo "📚 Config file: $CONFIG_FILE"
+echo "🎉 Run 'clide start' to launch the bot"
