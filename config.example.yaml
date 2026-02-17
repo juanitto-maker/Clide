@@ -2,82 +2,25 @@
 # Clide Configuration File
 # ============================================
 
-# ============================================
-# 🔑 API Configuration
-# ============================================
-
-# Gemini API Key
-# ⚠️ SECURITY: For better security, use environment variable:
-#    export GEMINI_API_KEY="your-key-here"
-#    Then use placeholder: gemini_api_key: "${GEMINI_API_KEY}"
 gemini_api_key: "${GEMINI_API_KEY}"
+signal_number: "${SIGNAL_NUMBER}"
 
-# Optional: Override the default model (default: gemini-2.5-flash)
-# gemini_model: "gemini-2.5-flash"
-
-# ============================================
-# 📱 Signal Configuration
-# ============================================
-
-signal_number: "+1234567890"
-
-# ============================================
-# 🔒 Security Settings
-# ============================================
-
-# List of authorized Signal numbers (empty = all allowed)
 authorized_numbers: []
-
-# Require confirmation before executing commands
 require_confirmation: false
-
-# Timeout for confirmations (seconds)
 confirmation_timeout: 60
-
-# Allow bot to execute shell commands
 allow_commands: true
-
-# Deny commands by default (only run if in allowed_commands)
 deny_by_default: false
-
-# Explicitly allowed commands (when deny_by_default is true)
 allowed_commands: []
-
-# Blocked commands (always denied)
 blocked_commands:
   - "rm -rf /"
   - "mkfs"
   - "dd"
-
-# Dry run mode (show commands but don't execute)
 dry_run: false
 
-# ============================================
-# 🔌 SSH Configuration
-# ============================================
-
-# Path to SSH private key (optional)
-# ssh_key_path: "~/.ssh/id_rsa"
-
-# Verify SSH host keys
 ssh_verify_host_keys: true
-
-# Allowed SSH hosts (empty = all allowed)
 allowed_ssh_hosts: []
-
-# SSH connection timeout (seconds)
 ssh_timeout: 30
 
-# ============================================
-# 📝 Logging Configuration
-# ============================================
-
 logging:
-  # Log level: trace, debug, info, warn, error
   level: "info"
-  
-  # Optional: Log to file
-  # file_path: "~/.clide/logs/clide.log"
-  
-  # Use JSON format for logs
   json: false
