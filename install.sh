@@ -178,8 +178,8 @@ echo ""
 # 11. Interactive Configuration
 # ============================================
 
-# Redirect stdin from terminal for interactive prompts
-exec < /dev/tty 2>/dev/null || true
+# Redirect stdin AND stdout to terminal for interactive prompts
+exec < /dev/tty > /dev/tty 2>&1 || true
 
 echo "═══════════════════════════════════════"
 echo "🔑 Gemini API Key Setup"
