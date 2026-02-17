@@ -1,80 +1,55 @@
 // ============================================
-// bot.rs - Clide Bot Core (UPDATED)
+// bot.rs - Clide Bot (CORRECTED)
 // ============================================
 
-use anyhow::{Context, Result};
-use tracing::{error, info, warn};
+use anyhow::Result;
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::gemini::{CommandAnalysis, GeminiClient};
-use crate::memory::Memory;
-use crate::skills::SkillManager;
 use crate::executor::Executor;
+use crate::gemini::{CommandAnalysis, GeminiClient};
 
 pub struct Bot {
     pub config: Config,
-    pub memory: Memory,
-    pub gemini: GeminiClient,
     pub executor: Executor,
-    pub skills: SkillManager,
+    pub gemini: GeminiClient,
 }
 
 impl Bot {
-    pub fn new(
-        config: Config,
-        memory: Memory,
-        executor: Executor,
-        skills: SkillManager,
-    ) -> Result<Self> {
-        let model = config.get_model(); // now uses Config method
-        let api_key = config.gemini_api_key.clone();
-
+    pub fn new(config: Config, executor: Executor) -> Self {
+        let gemini_model = config.get_model().to_string();
         let gemini = GeminiClient::new(
-            api_key,
-            model,
-            0.0,     // temperature
-            1024,    // max_tokens
-            "Analyze user input and decide if safe to run as a shell command.".to_string(),
+            config.gemini_api_key.clone(),
+            gemini_model,
+            0.7,
+            1024,
+            "You are a safe assistant.".to_string(),
         );
 
-        Ok(Self {
+        Self {
             config,
-            memory,
-            gemini,
             executor,
-            skills,
-        })
+            gemini,
+        }
     }
 
     pub fn is_authorized(&self, sender: &str) -> bool {
         if self.config.authorized_numbers.is_empty() {
-            return true; // empty = allow all
+            true
+        } else {
+            self.config.authorized_numbers.contains(&sender.to_string())
         }
-        self.config.authorized_numbers.contains(&sender.to_string())
     }
 
     pub async fn analyze_command(&self, command: &str, context: &str) -> Result<CommandAnalysis> {
         self.gemini.analyze_command(command, context).await
     }
 
-    pub async fn execute_skill(
-        &self,
-        skill_name: &str,
-        params: &std::collections::HashMap<String, String>,
-    ) -> Result<()> {
-        let res = self.skills.execute_skill(skill_name, params, &self.executor).await?;
-        if res.success {
-            info!("Skill '{}' executed successfully.", skill_name);
-        } else {
-            warn!("Skill '{}' failed during execution.", skill_name);
+    pub async fn execute(&self, command: &str) -> Result<String> {
+        if !self.config.allow_commands {
+            return Err(anyhow::anyhow!("Command execution not allowed"));
         }
-        Ok(())
-    }
-}
-
-// --- Helper extension for Config ---
-impl Config {
-    pub fn get_model(&self) -> String {
-        self.gemini_model.clone().unwrap_or_else(|| "gemini-2.5-flash".to_string())
+        let res = self.executor.execute(command).await?;
+        Ok(res.output())
     }
 }
