@@ -1,57 +1,57 @@
 #!/usr/bin/env bash
 # ============================================
-# Clide Installer - Option 2 (Build from Source)
+# install.sh - Clide Installer
 # ============================================
 
 set -euo pipefail
 
 echo "✨ Installing Clide..."
 
-# 1️⃣ Prompt for Gemini API Key
-read -rp "Enter your Gemini API Key (or leave blank to skip): " GEMINI_API_KEY
+# --- User input: Gemini API key ---
+read -rp "Enter your Gemini API key (or leave empty to skip): " GEMINI_API_KEY
+if [[ -z "$GEMINI_API_KEY" ]]; then
+    GEMINI_API_KEY="__SKIP__"
+fi
 
-# 2️⃣ Prompt for Signal Number
+# --- User input: Signal number ---
 read -rp "Enter your Signal number (e.g., +1234567890): " SIGNAL_NUMBER
+if [[ -z "$SIGNAL_NUMBER" ]]; then
+    echo "❌ Signal number is required!"
+    exit 1
+fi
 
-# 3️⃣ Set install paths
-CLIDE_SRC="$HOME/Clide_Source"
-CLIDE_BIN="$HOME/.local/bin"
+# --- Prepare directories ---
+INSTALL_DIR="$HOME/Clide_Source"
 CONFIG_DIR="$HOME/.clide"
+BIN_DIR="$HOME/.local/bin"
 
-mkdir -p "$CLIDE_SRC" "$CLIDE_BIN" "$CONFIG_DIR"
+mkdir -p "$INSTALL_DIR"
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$BIN_DIR"
 
-# 4️⃣ Clone or update repository
-if [ -d "$CLIDE_SRC/.git" ]; then
-    echo "🔄 Updating existing source..."
-    git -C "$CLIDE_SRC" pull --rebase
+# --- Download source code ---
+echo "📦 Downloading Clide source code..."
+cd "$HOME"
+if command -v git >/dev/null 2>&1; then
+    git clone --depth 1 https://github.com/juanitto-maker/Clide.git Clide_Source || true
 else
-    echo "📥 Cloning Clide repository..."
-    git clone https://github.com/juanitto-maker/Clide.git "$CLIDE_SRC"
+    echo "⚠️ Git not found, downloading ZIP..."
+    curl -fsSL -o Clide.zip https://github.com/juanitto-maker/Clide/archive/refs/heads/main.zip
+    unzip -o Clide.zip -d .
+    mv Clide-main Clide_Source
 fi
 
-# 5️⃣ Ensure Rust is installed
-if ! command -v cargo >/dev/null 2>&1; then
-    echo "⚠️ Rust is not installed. Installing..."
-    pkg install -y rust
-fi
+cd "$INSTALL_DIR"
 
-# 6️⃣ Build Clide binary
-echo "⚙️  Building Clide..."
-cd "$CLIDE_SRC"
-cargo build --release
-
-# 7️⃣ Install binary
-cp -f target/release/clide "$CLIDE_BIN/"
-chmod +x "$CLIDE_BIN/clide"
-
-# 8️⃣ Write default config.yaml
+# --- Write config.yaml ---
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
-if [ ! -f "$CONFIG_FILE" ]; then
-cat > "$CONFIG_FILE" <<EOL
+echo "📝 Writing default configuration..."
+cat > "$CONFIG_FILE" <<EOF
 gemini_api_key: "${GEMINI_API_KEY}"
+gemini_model: "gemini-2.5-flash"
+
 signal_number: "${SIGNAL_NUMBER}"
 
-# Security
 require_confirmation: false
 confirmation_timeout: 60
 allow_commands: true
@@ -63,27 +63,44 @@ blocked_commands:
   - "dd"
 dry_run: false
 
-# SSH
+ssh_key_path: null
 ssh_verify_host_keys: true
 allowed_ssh_hosts: []
 ssh_timeout: 30
 
-# Logging
 logging:
   level: "info"
+  file_path: null
   json: false
-EOL
-    echo "📝 Created default config at $CONFIG_FILE"
-else
-    echo "⚠️ Config already exists at $CONFIG_FILE, skipping creation"
+  with_timestamps: true
+  with_caller: false
+EOF
+
+chmod 600 "$CONFIG_FILE"
+
+# --- Ensure Rust toolchain ---
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "📦 Rust not found, installing Rust..."
+    pkg install -y rust
 fi
 
-# 9️⃣ Add local bin to PATH if not already
-if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    export PATH="$HOME/.local/bin:$PATH"
-    echo "✅ Added $HOME/.local/bin to PATH"
-fi
+# --- Build Clide ---
+echo "🔨 Building Clide..."
+cargo build --release
 
+# --- Install binary ---
+echo "🚀 Installing Clide binary..."
+cp -f target/release/clide "$BIN_DIR/clide"
+chmod +x "$BIN_DIR/clide"
+
+# --- Success message ---
+echo ""
 echo "🎉 Clide installation complete!"
-echo "Try: clide test-gemini 'hello' or clide start"
+echo "Binary: $BIN_DIR/clide"
+echo "Config: $CONFIG_FILE"
+echo ""
+echo "Try these commands:"
+echo "  clide test-gemini 'hello'   # Test Gemini API"
+echo "  clide status                # Check system"
+echo "  clide start                 # Start Signal bot"
+echo ""
