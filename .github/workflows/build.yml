@@ -1,0 +1,39 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install musl target
+        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+      - name: Build static binary (aarch64)
+        run: |
+          cargo build --release --target aarch64-unknown-linux-musl
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-musl/release/clide dist/
+
+      - name: Create tar.gz for release
+        run: |
+          tar -czf dist/clide-static-aarch64.tar.gz -C dist clide
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/clide-static-aarch64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
