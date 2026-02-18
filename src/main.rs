@@ -72,7 +72,11 @@ async fn run_bot() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::load().map_err(|e| {
         eprintln!("{} {}", "Config error:".red(), e);
-        eprintln!("Copy {} to {}", "config.example.yaml".yellow(), "~/.clide/config.yaml".cyan());
+        eprintln!(
+            "Copy {} to {}",
+            "config.example.yaml".yellow(),
+            "~/.clide/config.yaml".cyan()
+        );
         e
     })?;
 

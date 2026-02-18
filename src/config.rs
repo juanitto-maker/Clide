@@ -55,7 +55,13 @@ impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::path();
         let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Cannot read config {:?}: {}\nRun installer or copy config.example.yaml", path, e))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Cannot read config {:?}: {}\nRun installer or copy config.example.yaml",
+                    path,
+                    e,
+                )
+            })?;
         let mut cfg: Config = serde_yaml::from_str(&content)?;
 
         // Allow env var to override API key
