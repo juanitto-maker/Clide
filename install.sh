@@ -101,7 +101,11 @@ export PATH="$SIGNAL_DEST/bin:$PATH"
 #   The JVM extracts libsignal_jni.so to a tmpdir and loads it via Android's
 #   bionic linker "default" namespace, which does NOT include $PREFIX/lib.
 #   A symlink in $PREFIX/lib cannot help — the dependency must be stripped
-#   from the .so itself using termux-elf-cleaner or patchelf.
+#   from the .so itself using patchelf/termux-elf-cleaner.
+#
+# Belt-and-suspenders: we ALSO compile a stub libgcc_s.so.1 and wrap the
+# signal-cli launcher with LD_PRELOAD, so even if JAR patching is incomplete
+# the library loads at runtime.
 
 SIGNAL_LIB_DIR="$SIGNAL_DEST/lib"
 LIBSIGNAL_JAR=$(ls "$SIGNAL_LIB_DIR"/libsignal-client-*.jar 2>/dev/null | head -n1 || true)
@@ -110,8 +114,8 @@ if [ -n "$LIBSIGNAL_JAR" ]; then
     LIBSIGNAL_VER=$(basename "$LIBSIGNAL_JAR" | sed 's/libsignal-client-//' | sed 's/\.jar//')
     echo "   libsignal version: $LIBSIGNAL_VER"
 
-    # Install stripping tools up front so both strategies can use them
-    pkg install -y termux-elf-cleaner zip unzip 2>/dev/null | tail -1 || true
+    # Install ALL patching/stripping tools
+    pkg install -y patchelf termux-elf-cleaner zip unzip 2>/dev/null | tail -1 || true
 
     LIB_WORK="$TMPDIR/libsignal_fix"
     rm -rf "$LIB_WORK"; mkdir -p "$LIB_WORK"
@@ -155,18 +159,21 @@ if [ -n "$LIBSIGNAL_JAR" ]; then
     fi
 
     if [ -n "$SO_FILE" ]; then
-        # Strip libgcc_s.so.1 (and other non-Android ELF deps) from the .so.
-        # This MUST happen regardless of which strategy provided the file.
+        # Strip libgcc_s.so.1 — run patchelf (precise) AND termux-elf-cleaner (broad).
+        # Both run unconditionally; patchelf first because it targets the exact dep.
         STRIPPED=false
-        if command -v termux-elf-cleaner >/dev/null 2>&1; then
-            termux-elf-cleaner "$SO_FILE" 2>&1 || true
-            STRIPPED=true
-            echo "   GCC dependency stripped via termux-elf-cleaner"
-        elif command -v patchelf >/dev/null 2>&1; then
-            patchelf --remove-needed libgcc_s.so.1 "$SO_FILE" 2>/dev/null && STRIPPED=true
-            $STRIPPED && echo "   GCC dependency stripped via patchelf"
+        if command -v patchelf >/dev/null 2>&1; then
+            if patchelf --remove-needed libgcc_s.so.1 "$SO_FILE" 2>/dev/null; then
+                echo "   libgcc_s.so.1 removed via patchelf"
+                STRIPPED=true
+            fi
         fi
-        $STRIPPED || echo "⚠️  Could not strip GCC dep (termux-elf-cleaner/patchelf not available)"
+        if command -v termux-elf-cleaner >/dev/null 2>&1; then
+            termux-elf-cleaner "$SO_FILE" 2>/dev/null || true
+            echo "   ELF cleaned via termux-elf-cleaner"
+            STRIPPED=true
+        fi
+        $STRIPPED || echo "⚠️  No stripping tools ran — libgcc dep may remain in JAR"
 
         # Re-pack at the original in-JAR path so the JVM loader finds it.
         REL_SO="${SO_IN_JAR:-libsignal_jni.so}"
@@ -180,10 +187,47 @@ if [ -n "$LIBSIGNAL_JAR" ]; then
             echo "⚠️  Could not update JAR (bot may fail to start)"
     else
         echo "⚠️  Skipping JAR patch — could not obtain libsignal_jni.so"
-        echo "   If signal-cli fails, run:  bash fix-libsignal.sh"
     fi
 else
     echo "⚠️  libsignal JAR not found in $SIGNAL_LIB_DIR"
+fi
+
+# ─── 3b. LD_PRELOAD safety net ────────────────────────────────────────────────
+# Compile a minimal stub shared library with SONAME=libgcc_s.so.1 using Termux's
+# clang, then wrap the signal-cli launcher to LD_PRELOAD it before the JVM starts.
+# This satisfies the DT_NEEDED dependency at the bionic linker level, bypassing
+# the namespace restriction entirely — no JAR modification needed.
+
+STUB_LIB="$PREFIX/lib/libgcc_s.so.1"
+SIGNAL_BIN="$SIGNAL_DEST/bin/signal-cli"
+SIGNAL_BIN_REAL="$SIGNAL_DEST/bin/signal-cli.real"
+
+if [ ! -f "$STUB_LIB" ]; then
+    if command -v clang >/dev/null 2>&1; then
+        printf 'void __libgcc_stub(void){}\n' \
+            | clang -shared -fPIC -Wl,-soname,libgcc_s.so.1 \
+                    -o "$STUB_LIB" -x c - 2>/dev/null \
+            && echo "✅ libgcc_s.so.1 stub compiled" \
+            || echo "⚠️  clang stub compilation failed"
+    fi
+    # Fallback: symlink an existing GCC lib if one is available
+    if [ ! -f "$STUB_LIB" ]; then
+        for _src in "$PREFIX/lib/libgcc.so" "$PREFIX/lib/libgcc_s.so" \
+                    /system/lib64/libgcc.so /system/lib/libgcc.so; do
+            [ -f "$_src" ] && ln -sf "$_src" "$STUB_LIB" \
+                && echo "✅ libgcc_s.so.1 → $(basename "$_src")" && break || true
+        done
+    fi
+fi
+
+if [ -f "$STUB_LIB" ] && [ -f "$SIGNAL_BIN" ] && [ ! -f "$SIGNAL_BIN_REAL" ]; then
+    mv "$SIGNAL_BIN" "$SIGNAL_BIN_REAL"
+    printf '#!/bin/sh\n# Termux: preload libgcc_s stub so bionic resolves it for libsignal_jni.so\nexport LD_PRELOAD="%s${LD_PRELOAD:+:$LD_PRELOAD}"\nexec "%s" "$@"\n' \
+        "$STUB_LIB" "$SIGNAL_BIN_REAL" > "$SIGNAL_BIN"
+    chmod +x "$SIGNAL_BIN"
+    echo "✅ signal-cli wrapped with LD_PRELOAD=$STUB_LIB"
+elif [ -f "$SIGNAL_BIN_REAL" ]; then
+    echo "✅ signal-cli LD_PRELOAD wrapper already in place"
 fi
 
 # Verify
@@ -380,15 +424,20 @@ if [[ ! "$DO_PAIR" =~ ^[Nn] ]]; then
     done
 
     if [ -n "$LINK_URI" ]; then
-        echo "   Scan this QR code:" >/dev/tty
+        # Always print the raw URI first — paste it into any QR-code generator app
+        # (e.g. QR & Barcode Scanner, or qr.io) if you can't scan the terminal QR.
+        echo "" >/dev/tty
+        echo "┌─────────────────────────────────────────────────┐" >/dev/tty
+        echo "│  Pairing URI (copy → QR generator app if needed) │" >/dev/tty
+        echo "└─────────────────────────────────────────────────┘" >/dev/tty
+        echo "$LINK_URI" >/dev/tty
         echo "" >/dev/tty
         if command -v qrencode >/dev/null 2>&1; then
+            echo "   Terminal QR code (scan directly if your camera app supports it):" >/dev/tty
             qrencode -t ansiutf8 "$LINK_URI" >/dev/tty
-        else
-            # No qrencode: print the raw URI (can paste into Signal on desktop)
-            echo "$LINK_URI" >/dev/tty
         fi
         echo "" >/dev/tty
+        echo "   On your phone: Signal → Settings → Linked Devices → Link New Device" >/dev/tty
         echo "   Waiting for scan... (Ctrl+C to skip, pair later)" >/dev/tty
         if wait "$LINK_PID" 2>/dev/null; then
             echo "✅ Signal device linked!" >/dev/tty

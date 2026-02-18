@@ -68,7 +68,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 # ── Install helpers ──────────────────────────────────────────
 
 step "Installing helper packages"
-pkg install -y termux-elf-cleaner zip unzip 2>/dev/null \
+pkg install -y patchelf termux-elf-cleaner zip unzip 2>/dev/null \
     | grep -E "^(Unpacking|Setting up|already)" | sed 's/^/   /' || true
 ok "Done"
 
@@ -138,27 +138,27 @@ fi
 step "Stripping libgcc_s.so.1 ELF dependency"
 STRIPPED=false
 
-# Preferred tool: termux-elf-cleaner (removes ALL non-Android ELF deps)
-if command -v termux-elf-cleaner >/dev/null 2>&1; then
-    echo "   Using termux-elf-cleaner..."
-    # termux-elf-cleaner sometimes exits non-zero but still patches; treat as success
-    termux-elf-cleaner "$SO_FILE" 2>&1 || true
-    STRIPPED=true
-    ok "GCC dependency removed via termux-elf-cleaner"
-fi
-
-# Alternative: patchelf --remove-needed
-if ! $STRIPPED && command -v patchelf >/dev/null 2>&1; then
-    echo "   Using patchelf..."
-    if patchelf --remove-needed libgcc_s.so.1 "$SO_FILE" 2>&1; then
+# Run patchelf first — it targets the exact dependency (most precise).
+if command -v patchelf >/dev/null 2>&1; then
+    echo "   Using patchelf --remove-needed libgcc_s.so.1..."
+    if patchelf --remove-needed libgcc_s.so.1 "$SO_FILE" 2>/dev/null; then
+        ok "libgcc_s.so.1 removed via patchelf"
         STRIPPED=true
-        ok "GCC dependency removed via patchelf"
     else
-        warn "patchelf also failed"
+        warn "patchelf: dep not found or already absent (continuing)"
+        STRIPPED=true  # not an error if the dep was already gone
     fi
 fi
 
-$STRIPPED || warn "Could not strip GCC dependency — the fix may not work."
+# Also run termux-elf-cleaner — it strips ALL non-Android ELF deps.
+if command -v termux-elf-cleaner >/dev/null 2>&1; then
+    echo "   Using termux-elf-cleaner..."
+    termux-elf-cleaner "$SO_FILE" 2>/dev/null || true
+    ok "ELF cleaned via termux-elf-cleaner"
+    STRIPPED=true
+fi
+
+$STRIPPED || warn "No stripping tools ran — libgcc dep may still be present."
 
 # ── Re-inject .so into the JAR at its original path ──────────
 
@@ -189,6 +189,46 @@ fi
 ( cd "$WORK_DIR" && zip -u "$LIBSIGNAL_JAR" "$REL_SO" 2>/dev/null ) && \
     ok "Patched JAR: $LIBSIGNAL_JAR" || \
     die "zip failed — could not update the JAR"
+
+# ── LD_PRELOAD safety net ─────────────────────────────────────
+# Compile a stub libgcc_s.so.1 and wrap signal-cli to preload it.
+# This is belt-and-suspenders: even if JAR patching is incomplete,
+# the bionic linker will find the stub in the preloaded library set.
+
+step "LD_PRELOAD safety net (stub + signal-cli wrapper)"
+
+STUB_LIB="$PREFIX/lib/libgcc_s.so.1"
+SIGNAL_BIN="$SIGNAL_DEST/bin/signal-cli"
+SIGNAL_BIN_REAL="$SIGNAL_DEST/bin/signal-cli.real"
+
+if [ ! -f "$STUB_LIB" ]; then
+    if command -v clang >/dev/null 2>&1; then
+        printf 'void __libgcc_stub(void){}\n' \
+            | clang -shared -fPIC -Wl,-soname,libgcc_s.so.1 \
+                    -o "$STUB_LIB" -x c - 2>/dev/null \
+            && ok "libgcc_s.so.1 stub compiled" \
+            || warn "clang stub compilation failed"
+    fi
+    if [ ! -f "$STUB_LIB" ]; then
+        for _src in "$PREFIX/lib/libgcc.so" "$PREFIX/lib/libgcc_s.so" \
+                    /system/lib64/libgcc.so /system/lib/libgcc.so; do
+            [ -f "$_src" ] && ln -sf "$_src" "$STUB_LIB" \
+                && ok "libgcc_s.so.1 → $(basename "$_src")" && break || true
+        done
+    fi
+fi
+
+if [ -f "$STUB_LIB" ] && [ -f "$SIGNAL_BIN" ] && [ ! -f "$SIGNAL_BIN_REAL" ]; then
+    mv "$SIGNAL_BIN" "$SIGNAL_BIN_REAL"
+    printf '#!/bin/sh\n# Termux: preload libgcc_s stub so bionic resolves it for libsignal_jni.so\nexport LD_PRELOAD="%s${LD_PRELOAD:+:$LD_PRELOAD}"\nexec "%s" "$@"\n' \
+        "$STUB_LIB" "$SIGNAL_BIN_REAL" > "$SIGNAL_BIN"
+    chmod +x "$SIGNAL_BIN"
+    ok "signal-cli wrapped with LD_PRELOAD=$STUB_LIB"
+elif [ -f "$SIGNAL_BIN_REAL" ]; then
+    ok "signal-cli LD_PRELOAD wrapper already in place"
+elif [ ! -f "$STUB_LIB" ]; then
+    warn "Could not create stub — install clang with: pkg install clang"
+fi
 
 # ── Summary ───────────────────────────────────────────────────
 
