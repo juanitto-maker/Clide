@@ -37,6 +37,18 @@ ask() {
 
 step() { echo ""; echo "── $1 ──────────────────────────────────────────"; }
 
+# Show a simple spinner while a background PID is running
+spinner() {
+    local pid=$1 msg="${2:-please wait}"
+    local i=0 frames='|/-\'
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r   [%s] %s..." "${frames:$((i%4)):1}" "$msg" >/dev/tty
+        sleep 0.3
+        i=$((i+1))
+    done
+    printf "\r%-70s\r" "" >/dev/tty   # clear the spinner line
+}
+
 # ─── 1. System packages ───────────────────────────────────────────────────────
 
 step "Updating packages"
@@ -100,6 +112,14 @@ if [ -n "$LIBSIGNAL_JAR" ]; then
         SO_FILE=$(find "$TMPDIR" -name "libsignal_jni.so" 2>/dev/null | head -n1 || true)
         if [ -n "$SO_FILE" ]; then
             cd "$(dirname "$SO_FILE")"
+
+            # Strip GCC runtime deps (libgcc_s.so.1 isn't on Android/Termux)
+            pkg install -y termux-elf-cleaner 2>/dev/null | tail -1 || true
+            if command -v termux-elf-cleaner >/dev/null 2>&1; then
+                termux-elf-cleaner libsignal_jni.so 2>/dev/null && \
+                    echo "   Removed GCC dependency from native lib" || true
+            fi
+
             pkg install -y zip 2>/dev/null | tail -1 || true
             zip -d "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null || true
             zip -uj "$LIBSIGNAL_JAR" libsignal_jni.so 2>/dev/null && \
@@ -116,10 +136,24 @@ else
     echo "⚠️  libsignal JAR not found in $SIGNAL_LIB_DIR"
 fi
 
-# Fix libgcc_s.so.1 symlink (needed by Java on Termux)
-if [ ! -f "$PREFIX/lib/libgcc_s.so.1" ] && [ -f "$PREFIX/lib/libgcc_s.so" ]; then
-    ln -sf "$PREFIX/lib/libgcc_s.so" "$PREFIX/lib/libgcc_s.so.1"
-    echo "✅ libgcc_s.so.1 symlink created"
+# Fix libgcc_s.so.1 symlink (needed by signal-cli native libs on Termux)
+if [ ! -f "$PREFIX/lib/libgcc_s.so.1" ]; then
+    LIBGCC_SRC=""
+    for _f in "$PREFIX/lib/libgcc_s.so" \
+              "$PREFIX/lib/libgcc.so" \
+              /system/lib64/libgcc.so \
+              /system/lib/libgcc.so; do
+        [ -f "$_f" ] && LIBGCC_SRC="$_f" && break
+    done
+    if [ -n "$LIBGCC_SRC" ]; then
+        ln -sf "$LIBGCC_SRC" "$PREFIX/lib/libgcc_s.so.1"
+        echo "✅ libgcc_s.so.1 symlink → $(basename "$LIBGCC_SRC")"
+    elif command -v termux-elf-cleaner >/dev/null 2>&1; then
+        echo "✅ GCC dependency stripped via termux-elf-cleaner (above)"
+    else
+        echo "⚠️  libgcc_s.so.1 not found. If signal-cli fails, run:"
+        echo "     pkg install termux-elf-cleaner && bash install.sh"
+    fi
 fi
 
 # Verify
@@ -143,25 +177,32 @@ LATEST_TAG=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>
 
 if [ -n "$LATEST_TAG" ]; then
     BIN_URL="https://github.com/${REPO}/releases/download/v${LATEST_TAG}/clide-aarch64"
-    echo "   Downloading clide v${LATEST_TAG}..."
-    if wget -q --show-progress "$BIN_URL" -O "$PREFIX/bin/clide" 2>/dev/null; then
+    echo "   Trying pre-built binary for v${LATEST_TAG}..."
+    if wget -q "$BIN_URL" -O "$PREFIX/bin/clide" 2>/dev/null; then
         chmod +x "$PREFIX/bin/clide"
         echo "✅ Pre-built binary installed (v${LATEST_TAG})"
         CLIDE_INSTALLED=true
     else
-        echo "   No pre-built binary found, will build from source..."
+        echo "   No aarch64 binary in release v${LATEST_TAG} — will build from source."
         rm -f "$PREFIX/bin/clide"
     fi
 else
-    echo "   No release found, will build from source..."
+    echo "   No release found — will build from source."
 fi
 
 # 4b. Build from source (fallback)
 if [ "$CLIDE_INSTALLED" = false ]; then
     step "Building Clide from source"
-    echo "   Installing Rust..."
-    pkg install -y rust binutils pkg-config openssl 2>&1 | \
-        grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
+    echo "   ⚠️  No pre-built binary — compiling from source."
+    echo "   This takes 10-15 min on most devices. Keep Termux open."
+    echo ""
+
+    pkg install -y rust binutils pkg-config openssl \
+        >"$TMPDIR/pkg_rust.log" 2>&1 &
+    spinner $! "Installing Rust toolchain"
+    wait $! || { echo "❌ Rust install failed"; cat "$TMPDIR/pkg_rust.log"; exit 1; }
+    grep -E "^(Unpacking|Setting up)" "$TMPDIR/pkg_rust.log" | \
+        sed 's/^/   /' | tail -3 || true
 
     if ! command -v cargo >/dev/null 2>&1; then
         echo "❌ Rust installation failed"
@@ -185,12 +226,11 @@ if [ "$CLIDE_INSTALLED" = false ]; then
     export OPENSSL_INCLUDE_DIR="$PREFIX/include"
     export OPENSSL_LIB_DIR="$PREFIX/lib"
 
-    echo "   Building (this takes ~10 minutes)..."
-    echo "   Started: $(date '+%H:%M:%S')"
+    echo "   Compiling Clide... (started $(date '+%H:%M:%S'), this will take a while)"
     BUILD_LOG="$TMPDIR/clide_build.log"
 
     cargo build --release 2>&1 | tee "$BUILD_LOG" | \
-        grep -E "^(   Compiling|   Finished|error\[)" | head -80 || true
+        grep -E "^(   Compiling|   Finished|  Downloaded|  Downloading|error\[)" || true
 
     if [ ! -f "target/release/clide" ]; then
         echo "❌ Build failed. Log: $BUILD_LOG"
@@ -221,7 +261,7 @@ elif [ ! -f ~/.clide/config.yaml ]; then
     cat >~/.clide/config.yaml <<'YAML'
 # Clide configuration - edit as needed
 gemini_api_key: ""        # Set via GEMINI_API_KEY env var or enter below
-gemini_model: "gemini-1.5-flash"
+gemini_model: "gemini-2.0-flash"
 signal_number: ""         # Your Signal phone number e.g. +1234567890
 require_confirmation: false
 confirmation_timeout: 60

@@ -54,7 +54,10 @@ impl Bot {
     /// Start the bot loop - polls Signal and replies via Gemini
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Clide bot...");
-        println!("Bot running. Send a message via Signal to {}. Ctrl+C to stop.", self.config.signal_number);
+        println!(
+            "Bot running. Send a message via Signal to {}. Ctrl+C to stop.",
+            self.config.signal_number
+        );
 
         loop {
             match self.signal.receive_messages() {
