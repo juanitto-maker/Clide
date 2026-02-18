@@ -15,8 +15,12 @@ cd clide
 
 ### 2. Set Up Development Environment
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# Build the project
+cargo build
 
 # Copy config example
 cp config.example.yaml config.yaml
@@ -90,56 +94,64 @@ Then create a PR on GitHub with a clear description of your changes.
 
 ## 📝 Code Guidelines
 
-### Python Style
-- Follow PEP 8 style guide
-- Use meaningful variable names
-- Keep functions focused and small (< 50 lines ideally)
-- Add docstrings to functions and classes
+### Rust Style
+- Follow the official [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+- Run `cargo fmt` before committing (enforced by CI)
+- Address all `cargo clippy -- -D warnings` lints
+- Use meaningful variable and function names
+- Keep functions focused and small
 
 **Example:**
-```python
-def execute_command(command: str, dry_run: bool = False) -> dict:
-    """
-    Execute a shell command with safety checks.
-    
-    Args:
-        command: The shell command to execute
-        dry_run: If True, only simulate execution
-        
-    Returns:
-        dict: Execution result with stdout, stderr, and return code
-        
-    Raises:
-        SecurityError: If command is deemed unsafe
-    """
-    # Implementation here
-    pass
+```rust
+/// Execute a shell command with safety checks.
+///
+/// Returns an error if the command matches a blocked pattern or
+/// if the executor is in dry-run mode.
+pub async fn execute_command(command: &str, dry_run: bool) -> anyhow::Result<CommandResult> {
+    if is_blocked(command) {
+        anyhow::bail!("Command blocked by safety rules: {command}");
+    }
+    if dry_run {
+        tracing::info!("[DRY-RUN] Would execute: {command}");
+        return Ok(CommandResult::dry_run());
+    }
+    // ... actual execution
+}
 ```
 
 ### File Organization
 ```
 src/
-├── clide.py         # Main entry point - keep minimal
-├── bot.py           # Messenger integration - one class per messenger
-├── memory.py        # Database operations - well-documented queries
-├── brain.py         # LLM integration - model-agnostic design
-├── executor.py      # Command execution - safety-first
-├── safety.py        # Security checks - paranoid is good
-└── logger.py        # Logging - structured and searchable
+├── main.rs          # Entry point — keep minimal
+├── bot.rs           # Signal message handling
+├── gemini.rs        # Gemini API client
+├── executor.rs      # Command execution — safety-first
+├── config.rs        # Config loading and validation
+└── logger.rs        # Logging setup (tracing)
 ```
 
 ### Testing
 - Write tests for new features
-- Ensure existing tests pass
-- Test on Termux if possible (or mention you couldn't)
+- Run the full test suite with `cargo test`
+- Test on Termux if possible (or note in the PR that you couldn't)
 
-```python
-# Example test structure
-def test_safety_check_dangerous_command():
-    """Test that rm -rf / is blocked"""
-    result = safety.check_command("rm -rf /")
-    assert result.is_dangerous == True
-    assert result.requires_confirmation == True
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dangerous_command_is_blocked() {
+        assert!(is_blocked("rm -rf /"));
+        assert!(is_blocked("mkfs /dev/sda"));
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_does_not_execute() {
+        let result = execute_command("echo hello", true).await.unwrap();
+        assert!(result.is_dry_run);
+    }
+}
 ```
 
 ---
