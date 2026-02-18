@@ -1,30 +1,39 @@
 # ============================================
-# Clide Configuration File
+# Clide Configuration (~/.clide/config.yaml)
 # ============================================
+# Copy this file to ~/.clide/config.yaml and edit.
+# The installer does this automatically.
 
-gemini_api_key: "${GEMINI_API_KEY}"
-gemini_model: "gemini-2.5-flash"
+# Gemini API key (get one free at https://makersuite.google.com/app/apikey)
+# Can also be set via the GEMINI_API_KEY environment variable.
+gemini_api_key: ""
+
+# Gemini model to use
+gemini_model: "gemini-1.5-flash"
+
+# Your Signal phone number (format: +CountryCodeNumber)
+# This is the number signal-cli is registered/linked with.
 signal_number: "+1234567890"
 
+# --- Bot behaviour ---
+
+# If true, bot asks "YES to proceed?" before replying
 require_confirmation: false
+
+# How long (seconds) to wait for YES/NO reply
 confirmation_timeout: 60
-allow_commands: true
-deny_by_default: false
-allowed_commands: []
+
+# Numbers allowed to send commands to the bot.
+# Leave empty ([]) to allow messages from anyone.
+authorized_numbers: []
+  # - "+1234567890"
+
+# Shell command patterns to block (executor safety)
 blocked_commands:
   - "rm -rf /"
   - "mkfs"
-  - "dd"
-dry_run: false
+  - "dd if="
 
-ssh_key_path: "~/.ssh/id_rsa"
-ssh_verify_host_keys: true
-allowed_ssh_hosts: []
-ssh_timeout: 30
-
+# --- Logging ---
 logging:
-  level: "info"
-  file_path: "~/.clide/logs/clide.log"
-  json: false
-
-authorized_numbers: []
+  level: "info"   # trace | debug | info | warn | error
