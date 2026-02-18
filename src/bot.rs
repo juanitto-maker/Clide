@@ -84,6 +84,13 @@ impl Bot {
     async fn handle_message(&mut self, sender: String, text: String) -> Result<()> {
         info!("Message from {}: {}", sender, text);
 
+        // Self-response guard: ignore messages sent by the bot itself to prevent
+        // an infinite loop when running with a personal account access token.
+        if sender == self.config.matrix_user {
+            info!("Ignoring own message from {} to prevent self-response loop.", sender);
+            return Ok(());
+        }
+
         // Authorization check (skip if no authorized users configured)
         if !self.config.authorized_users.is_empty() && !self.config.is_authorized(&sender) {
             warn!("Unauthorized sender: {}", sender);
