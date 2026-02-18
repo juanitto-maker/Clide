@@ -94,7 +94,14 @@ fi
 export PATH="$SIGNAL_DEST/bin:$PATH"
 
 # ─── 3. Fix libsignal for ARM64 ───────────────────────────────────────────────
-# signal-cli ships an x86_64 native lib; replace it with ARM64 build
+# signal-cli ships an x86_64 native lib; we need an ARM64 one, and we must
+# strip the libgcc_s.so.1 ELF dependency from it.
+#
+# Root cause of "libgcc_s.so.1 not found":
+#   The JVM extracts libsignal_jni.so to a tmpdir and loads it via Android's
+#   bionic linker "default" namespace, which does NOT include $PREFIX/lib.
+#   A symlink in $PREFIX/lib cannot help — the dependency must be stripped
+#   from the .so itself using termux-elf-cleaner or patchelf.
 
 SIGNAL_LIB_DIR="$SIGNAL_DEST/lib"
 LIBSIGNAL_JAR=$(ls "$SIGNAL_LIB_DIR"/libsignal-client-*.jar 2>/dev/null | head -n1 || true)
@@ -103,57 +110,62 @@ if [ -n "$LIBSIGNAL_JAR" ]; then
     LIBSIGNAL_VER=$(basename "$LIBSIGNAL_JAR" | sed 's/libsignal-client-//' | sed 's/\.jar//')
     echo "   libsignal version: $LIBSIGNAL_VER"
 
+    # Install stripping tools up front so both strategies can use them
+    pkg install -y termux-elf-cleaner zip unzip 2>/dev/null | tail -1 || true
+
+    LIB_WORK="$TMPDIR/libsignal_fix"
+    rm -rf "$LIB_WORK"; mkdir -p "$LIB_WORK"
+    SO_FILE=""
+
+    # Strategy 1: download a pre-built ARM64 .so from exquo/signal-libs-build
     ARM64_URL="https://github.com/exquo/signal-libs-build/releases/download/libsignal_v${LIBSIGNAL_VER}/libsignal_jni.so-v${LIBSIGNAL_VER}-aarch64-unknown-linux-gnu.tar.gz"
-
     echo "   Fetching ARM64 libsignal..."
-    if wget -q "$ARM64_URL" -O "$TMPDIR/libsignal_arm64.tar.gz" 2>/dev/null; then
-        cd "$TMPDIR"
-        tar xf libsignal_arm64.tar.gz 2>/dev/null || true
-        SO_FILE=$(find "$TMPDIR" -name "libsignal_jni.so" 2>/dev/null | head -n1 || true)
-        if [ -n "$SO_FILE" ]; then
-            cd "$(dirname "$SO_FILE")"
-
-            # Strip GCC runtime deps (libgcc_s.so.1 isn't on Android/Termux)
-            pkg install -y termux-elf-cleaner 2>/dev/null | tail -1 || true
-            if command -v termux-elf-cleaner >/dev/null 2>&1; then
-                termux-elf-cleaner libsignal_jni.so 2>/dev/null && \
-                    echo "   Removed GCC dependency from native lib" || true
-            fi
-
-            pkg install -y zip 2>/dev/null | tail -1 || true
-            zip -d "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null || true
-            zip -uj "$LIBSIGNAL_JAR" libsignal_jni.so 2>/dev/null && \
-                echo "✅ ARM64 libsignal injected" || \
-                echo "⚠️  Could not inject ARM64 lib (bot may not start)"
-            rm -f "$TMPDIR/libsignal_arm64.tar.gz"
-        else
-            echo "⚠️  libsignal_jni.so not found in archive"
-        fi
+    if wget -q --timeout=30 "$ARM64_URL" -O "$LIB_WORK/libsignal_arm64.tar.gz" 2>/dev/null; then
+        tar xf "$LIB_WORK/libsignal_arm64.tar.gz" -C "$LIB_WORK" 2>/dev/null || true
+        SO_FILE=$(find "$LIB_WORK" -name "libsignal_jni.so" | head -n1 || true)
+        [ -n "$SO_FILE" ] && echo "   ARM64 lib downloaded from exquo" || \
+            echo "⚠️  Archive downloaded but .so not found inside"
     else
-        echo "⚠️  ARM64 libsignal not available for v${LIBSIGNAL_VER} (continuing anyway)"
+        echo "   ARM64 build not on exquo for v${LIBSIGNAL_VER} — extracting from JAR instead"
+    fi
+
+    # Strategy 2: extract whatever .so is already packed in the JAR
+    if [ -z "$SO_FILE" ]; then
+        cd "$LIB_WORK"
+        unzip -o "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null || true
+        SO_FILE=$(find "$LIB_WORK" -name "libsignal_jni.so" | head -n1 || true)
+        [ -n "$SO_FILE" ] && echo "   Using .so extracted from JAR (will strip GCC dep)" || \
+            echo "⚠️  libsignal_jni.so not found in archive or JAR"
+    fi
+
+    if [ -n "$SO_FILE" ]; then
+        cd "$(dirname "$SO_FILE")"
+        SO_NAME="$(basename "$SO_FILE")"
+
+        # Strip libgcc_s.so.1 (and other non-Android ELF deps) from the .so.
+        # This MUST happen regardless of which strategy provided the file.
+        STRIPPED=false
+        if command -v termux-elf-cleaner >/dev/null 2>&1; then
+            termux-elf-cleaner "$SO_NAME" 2>&1 && STRIPPED=true || STRIPPED=true
+            # termux-elf-cleaner often exits non-zero but still patches; treat as success
+            echo "   GCC dependency stripped via termux-elf-cleaner"
+        elif command -v patchelf >/dev/null 2>&1; then
+            patchelf --remove-needed libgcc_s.so.1 "$SO_NAME" 2>/dev/null && STRIPPED=true
+            $STRIPPED && echo "   GCC dependency stripped via patchelf"
+        fi
+        $STRIPPED || echo "⚠️  Could not strip GCC dep (termux-elf-cleaner/patchelf not available)"
+
+        # Re-pack the (stripped) .so into the JAR
+        zip -d "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null || true
+        zip -uj "$LIBSIGNAL_JAR" "$SO_NAME" 2>/dev/null && \
+            echo "✅ ARM64 libsignal injected into JAR" || \
+            echo "⚠️  Could not update JAR (bot may fail to start)"
+    else
+        echo "⚠️  Skipping JAR patch — could not obtain libsignal_jni.so"
+        echo "   If signal-cli fails, run:  bash fix-libsignal.sh"
     fi
 else
     echo "⚠️  libsignal JAR not found in $SIGNAL_LIB_DIR"
-fi
-
-# Fix libgcc_s.so.1 symlink (needed by signal-cli native libs on Termux)
-if [ ! -f "$PREFIX/lib/libgcc_s.so.1" ]; then
-    LIBGCC_SRC=""
-    for _f in "$PREFIX/lib/libgcc_s.so" \
-              "$PREFIX/lib/libgcc.so" \
-              /system/lib64/libgcc.so \
-              /system/lib/libgcc.so; do
-        [ -f "$_f" ] && LIBGCC_SRC="$_f" && break
-    done
-    if [ -n "$LIBGCC_SRC" ]; then
-        ln -sf "$LIBGCC_SRC" "$PREFIX/lib/libgcc_s.so.1"
-        echo "✅ libgcc_s.so.1 symlink → $(basename "$LIBGCC_SRC")"
-    elif command -v termux-elf-cleaner >/dev/null 2>&1; then
-        echo "✅ GCC dependency stripped via termux-elf-cleaner (above)"
-    else
-        echo "⚠️  libgcc_s.so.1 not found. If signal-cli fails, run:"
-        echo "     pkg install termux-elf-cleaner && bash install.sh"
-    fi
 fi
 
 # Verify
@@ -343,6 +355,9 @@ echo "Signal bot setup:"
 echo "  1. source ~/.bashrc"
 echo "  2. signal-cli link -n \"clide-bot\"   # Scan QR with Signal app"
 echo "  3. clide bot                         # Start bot"
+echo ""
+echo "If signal-cli fails with 'libgcc_s.so.1 not found', run:"
+echo "  bash fix-libsignal.sh"
 echo ""
 echo "Config file: ~/.clide/config.yaml"
 echo "API key file: ~/.config/clide/config.env"
