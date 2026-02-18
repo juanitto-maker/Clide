@@ -90,7 +90,7 @@ async fn run_bot() -> Result<(), Box<dyn std::error::Error>> {
 async fn call_gemini(api_key: &str, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
     let client = Client::new();
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}",
         api_key
     );
 
