@@ -117,6 +117,14 @@ if [ -n "$LIBSIGNAL_JAR" ]; then
     rm -rf "$LIB_WORK"; mkdir -p "$LIB_WORK"
     SO_FILE=""
 
+    # Discover the exact in-JAR path of libsignal_jni.so upfront.
+    # It can be at root ("libsignal_jni.so") or in a subdir like
+    # "linux/aarch64/libsignal_jni.so" depending on libsignal version.
+    # We need this path for BOTH extraction and re-packing.
+    SO_IN_JAR=$(unzip -l "$LIBSIGNAL_JAR" 2>/dev/null \
+        | awk '{print $NF}' | grep 'libsignal_jni\.so$' | head -n1 || true)
+    echo "   .so path in JAR: ${SO_IN_JAR:-<unknown, will try common locations>}"
+
     # Strategy 1: download a pre-built ARM64 .so from exquo/signal-libs-build
     ARM64_URL="https://github.com/exquo/signal-libs-build/releases/download/libsignal_v${LIBSIGNAL_VER}/libsignal_jni.so-v${LIBSIGNAL_VER}-aarch64-unknown-linux-gnu.tar.gz"
     echo "   Fetching ARM64 libsignal..."
@@ -129,36 +137,46 @@ if [ -n "$LIBSIGNAL_JAR" ]; then
         echo "   ARM64 build not on exquo for v${LIBSIGNAL_VER} — extracting from JAR instead"
     fi
 
-    # Strategy 2: extract whatever .so is already packed in the JAR
+    # Strategy 2: extract whatever .so is already packed in the JAR.
+    # (signal-cli 0.12.x JARs already carry an ARM64 .so — the only problem
+    #  is the libgcc_s.so.1 ELF dep that we strip below.)
     if [ -z "$SO_FILE" ]; then
-        cd "$LIB_WORK"
-        unzip -o "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null || true
+        echo "   Extracting .so from JAR (will strip GCC dep)..."
+        if [ -n "$SO_IN_JAR" ]; then
+            unzip -o "$LIBSIGNAL_JAR" "$SO_IN_JAR" -d "$LIB_WORK" 2>/dev/null || true
+        else
+            for _cand in "libsignal_jni.so" "linux/libsignal_jni.so" "linux/aarch64/libsignal_jni.so"; do
+                unzip -o "$LIBSIGNAL_JAR" "$_cand" -d "$LIB_WORK" 2>/dev/null && break || true
+            done
+        fi
         SO_FILE=$(find "$LIB_WORK" -name "libsignal_jni.so" | head -n1 || true)
-        [ -n "$SO_FILE" ] && echo "   Using .so extracted from JAR (will strip GCC dep)" || \
+        [ -n "$SO_FILE" ] && echo "   Using .so extracted from JAR" || \
             echo "⚠️  libsignal_jni.so not found in archive or JAR"
     fi
 
     if [ -n "$SO_FILE" ]; then
-        cd "$(dirname "$SO_FILE")"
-        SO_NAME="$(basename "$SO_FILE")"
-
         # Strip libgcc_s.so.1 (and other non-Android ELF deps) from the .so.
         # This MUST happen regardless of which strategy provided the file.
         STRIPPED=false
         if command -v termux-elf-cleaner >/dev/null 2>&1; then
-            termux-elf-cleaner "$SO_NAME" 2>&1 && STRIPPED=true || STRIPPED=true
-            # termux-elf-cleaner often exits non-zero but still patches; treat as success
+            termux-elf-cleaner "$SO_FILE" 2>&1 || true
+            STRIPPED=true
             echo "   GCC dependency stripped via termux-elf-cleaner"
         elif command -v patchelf >/dev/null 2>&1; then
-            patchelf --remove-needed libgcc_s.so.1 "$SO_NAME" 2>/dev/null && STRIPPED=true
+            patchelf --remove-needed libgcc_s.so.1 "$SO_FILE" 2>/dev/null && STRIPPED=true
             $STRIPPED && echo "   GCC dependency stripped via patchelf"
         fi
         $STRIPPED || echo "⚠️  Could not strip GCC dep (termux-elf-cleaner/patchelf not available)"
 
-        # Re-pack the (stripped) .so into the JAR
-        zip -d "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null || true
-        zip -uj "$LIBSIGNAL_JAR" "$SO_NAME" 2>/dev/null && \
-            echo "✅ ARM64 libsignal injected into JAR" || \
+        # Re-pack at the original in-JAR path so the JVM loader finds it.
+        REL_SO="${SO_IN_JAR:-libsignal_jni.so}"
+        if [ ! -f "$LIB_WORK/$REL_SO" ]; then
+            mkdir -p "$LIB_WORK/$(dirname "$REL_SO")"
+            cp "$SO_FILE" "$LIB_WORK/$REL_SO"
+        fi
+        zip -d "$LIBSIGNAL_JAR" "$REL_SO" 2>/dev/null || true
+        ( cd "$LIB_WORK" && zip -u "$LIBSIGNAL_JAR" "$REL_SO" ) 2>/dev/null && \
+            echo "✅ libsignal patched and injected into JAR" || \
             echo "⚠️  Could not update JAR (bot may fail to start)"
     else
         echo "⚠️  Skipping JAR patch — could not obtain libsignal_jni.so"
@@ -326,11 +344,67 @@ echo "   Format: +CountryCodeNumber (e.g. +12025551234)" >/dev/tty
 echo "" >/dev/tty
 ask "Enter your Signal number (or press Enter to skip): " SIGNAL_NUM
 
+SIGNAL_PAIRED=false
+
 if [ -n "$SIGNAL_NUM" ]; then
     sed -i "s|signal_number:.*|signal_number: \"$SIGNAL_NUM\"|" ~/.clide/config.yaml
     echo "✅ Signal number saved" >/dev/tty
 else
     echo "⚠️  Skipped. Edit ~/.clide/config.yaml later." >/dev/tty
+fi
+
+# ── Optional: pair with Signal now ───────────────────────────────────────────
+echo "" >/dev/tty
+echo "🔗 Signal Device Pairing" >/dev/tty
+echo "   Link this device to your Signal account right now?" >/dev/tty
+echo "   (You need Signal installed on your phone.)" >/dev/tty
+ask "Pair now? [Y/n]: " DO_PAIR
+
+if [[ ! "$DO_PAIR" =~ ^[Nn] ]]; then
+    pkg install -y qrencode 2>/dev/null | tail -1 || true
+
+    echo "" >/dev/tty
+    echo "   On your phone: Signal → Settings → Linked Devices → Link New Device" >/dev/tty
+    echo "" >/dev/tty
+
+    LINK_LOG="$TMPDIR/signal_link_$$.log"
+    signal-cli link -n "clide-bot" > "$LINK_LOG" 2>&1 &
+    LINK_PID=$!
+
+    # Wait up to 15 s for signal-cli to emit the tsdevice:/ URI
+    LINK_URI=""
+    for _i in $(seq 1 30); do
+        LINK_URI=$(grep -o 'tsdevice:[^[:space:]]*' "$LINK_LOG" 2>/dev/null | head -1 || true)
+        [ -n "$LINK_URI" ] && break
+        sleep 0.5
+    done
+
+    if [ -n "$LINK_URI" ]; then
+        echo "   Scan this QR code:" >/dev/tty
+        echo "" >/dev/tty
+        if command -v qrencode >/dev/null 2>&1; then
+            qrencode -t ansiutf8 "$LINK_URI" >/dev/tty
+        else
+            # No qrencode: print the raw URI (can paste into Signal on desktop)
+            echo "$LINK_URI" >/dev/tty
+        fi
+        echo "" >/dev/tty
+        echo "   Waiting for scan... (Ctrl+C to skip, pair later)" >/dev/tty
+        if wait "$LINK_PID" 2>/dev/null; then
+            echo "✅ Signal device linked!" >/dev/tty
+            SIGNAL_PAIRED=true
+        else
+            echo "⚠️  Pairing timed out or was cancelled." >/dev/tty
+            echo "   Run later: signal-cli link -n 'clide-bot'" >/dev/tty
+        fi
+    else
+        kill "$LINK_PID" 2>/dev/null || true
+        echo "⚠️  signal-cli link did not produce a pairing URI." >/dev/tty
+        head -3 "$LINK_LOG" 2>/dev/null >/dev/tty || true
+        echo "   If you see a libsignal error above, run: bash fix-libsignal.sh" >/dev/tty
+        echo "   Then retry: signal-cli link -n 'clide-bot'" >/dev/tty
+    fi
+    rm -f "$LINK_LOG"
 fi
 
 # ─── 7. Summary ───────────────────────────────────────────────────────────────
@@ -351,13 +425,14 @@ echo "  clide              # Chat with Gemini (REPL)"
 echo "  clide bot          # Start Signal bot"
 echo "  clide --version    # Show version"
 echo ""
-echo "Signal bot setup:"
-echo "  1. source ~/.bashrc"
-echo "  2. signal-cli link -n \"clide-bot\"   # Scan QR with Signal app"
-echo "  3. clide bot                         # Start bot"
-echo ""
-echo "If signal-cli fails with 'libgcc_s.so.1 not found', run:"
-echo "  bash fix-libsignal.sh"
+echo "Next steps:"
+echo "  source ~/.bashrc"
+if $SIGNAL_PAIRED; then
+    echo "  clide bot   # Start the bot (device already paired!)"
+else
+    echo "  signal-cli link -n \"clide-bot\"   # Scan QR: Signal → Settings → Linked Devices"
+    echo "  clide bot                         # Start the bot"
+fi
 echo ""
 echo "Config file: ~/.clide/config.yaml"
 echo "API key file: ~/.config/clide/config.env"
