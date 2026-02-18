@@ -239,7 +239,7 @@ logging:
 gemini_api_key: ""
 
 # Gemini model to use
-gemini_model: "gemini-2.0-flash"
+gemini_model: "gemini-2.5-flash"
 
 # Your Signal phone number
 signal_number: "+1234567890"
