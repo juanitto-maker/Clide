@@ -248,10 +248,14 @@ if [ -n "$MATRIX_HS" ]; then
 
         # ── Password → login to get access token ─────────────────────────────
         echo "" >/dev/tty
-        echo "   Enter password to obtain an access token automatically." >/dev/tty
+        echo "   Option A – enter your Matrix account PASSWORD to get a token automatically." >/dev/tty
+        echo "   Option B – press Enter here, then paste your access token on the next prompt." >/dev/tty
+        echo "" >/dev/tty
+        echo "   ⚠️  Enter your ACCOUNT PASSWORD here, NOT an access token." >/dev/tty
+        echo "      If you already have an access token, press Enter to skip to Option B." >/dev/tty
         echo "   (Password is sent only to your homeserver and never stored.)" >/dev/tty
         echo "" >/dev/tty
-        ask "Matrix password (or press Enter to skip and enter token manually): " MATRIX_PASS secret
+        ask "Matrix account password (Enter to skip → enter token directly): " MATRIX_PASS secret
 
         if [ -n "$MATRIX_PASS" ]; then
             # Strip @prefix: and take just the localpart for the login identifier
