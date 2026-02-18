@@ -35,7 +35,7 @@ pub struct Config {
 }
 
 fn default_model() -> String {
-    "gemini-3.0-flash".to_string()
+    "gemini-2.0-flash".to_string()
 }
 
 fn default_timeout() -> u64 {
