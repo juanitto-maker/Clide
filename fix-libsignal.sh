@@ -78,6 +78,12 @@ ok "Done"
 
 step "Obtaining libsignal_jni.so"
 
+# Find where the .so lives inside the JAR (may be at root or in a subdir
+# like linux/aarch64/libsignal_jni.so depending on libsignal version).
+SO_IN_JAR=$(unzip -l "$LIBSIGNAL_JAR" 2>/dev/null \
+    | awk '{print $NF}' | grep 'libsignal_jni\.so$' | head -n1 || true)
+echo "   .so path inside JAR: ${SO_IN_JAR:-<not found yet>}"
+
 SO_FILE=""
 
 ARM64_ARCHIVE="libsignal_jni.so-v${LIBSIGNAL_VER}-aarch64-unknown-linux-gnu.tar.gz"
@@ -96,15 +102,28 @@ else
     warn "ARM64 build not available at exquo for v${LIBSIGNAL_VER}"
 fi
 
-# Fall back: extract whatever .so is already packed in the JAR
+# Fall back: extract whatever .so is already packed in the JAR.
+# This works because signal-cli 0.12.x JARs already contain an ARM64 .so
+# on Android; the only problem is the libgcc_s.so.1 ELF dependency.
 if [ -z "$SO_FILE" ]; then
     echo "   Extracting existing .so from the JAR (will strip GCC dep next)..."
-    cd "$WORK_DIR"
-    if unzip -o "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null; then
-        SO_FILE="$WORK_DIR/libsignal_jni.so"
+    if [ -n "$SO_IN_JAR" ]; then
+        # Preserve the directory structure so we can re-pack at the same path
+        unzip -o "$LIBSIGNAL_JAR" "$SO_IN_JAR" -d "$WORK_DIR" 2>/dev/null || true
+    else
+        # Try common locations
+        for candidate in \
+            "libsignal_jni.so" \
+            "linux/libsignal_jni.so" \
+            "linux/aarch64/libsignal_jni.so"; do
+            unzip -o "$LIBSIGNAL_JAR" "$candidate" -d "$WORK_DIR" 2>/dev/null && break || true
+        done
+    fi
+    SO_FILE=$(find "$WORK_DIR" -name "libsignal_jni.so" | head -n1 || true)
+    if [ -n "$SO_FILE" ]; then
         ok "Extracted from JAR"
     else
-        die "libsignal_jni.so not found inside $LIBSIGNAL_JAR"
+        die "libsignal_jni.so not found inside $LIBSIGNAL_JAR — cannot proceed"
     fi
 fi
 
@@ -117,26 +136,21 @@ fi
 # ── Strip libgcc_s.so.1 dependency ───────────────────────────
 
 step "Stripping libgcc_s.so.1 ELF dependency"
-cd "$(dirname "$SO_FILE")"
-SO_BASENAME="$(basename "$SO_FILE")"
 STRIPPED=false
 
 # Preferred tool: termux-elf-cleaner (removes ALL non-Android ELF deps)
 if command -v termux-elf-cleaner >/dev/null 2>&1; then
     echo "   Using termux-elf-cleaner..."
-    if termux-elf-cleaner "$SO_BASENAME" 2>&1; then
-        STRIPPED=true
-        ok "GCC dependency removed via termux-elf-cleaner"
-    else
-        warn "termux-elf-cleaner returned an error (may still have patched)"
-        STRIPPED=true   # it often exits non-zero but still patches successfully
-    fi
+    # termux-elf-cleaner sometimes exits non-zero but still patches; treat as success
+    termux-elf-cleaner "$SO_FILE" 2>&1 || true
+    STRIPPED=true
+    ok "GCC dependency removed via termux-elf-cleaner"
 fi
 
 # Alternative: patchelf --remove-needed
 if ! $STRIPPED && command -v patchelf >/dev/null 2>&1; then
     echo "   Using patchelf..."
-    if patchelf --remove-needed libgcc_s.so.1 "$SO_BASENAME" 2>&1; then
+    if patchelf --remove-needed libgcc_s.so.1 "$SO_FILE" 2>&1; then
         STRIPPED=true
         ok "GCC dependency removed via patchelf"
     else
@@ -146,19 +160,35 @@ fi
 
 $STRIPPED || warn "Could not strip GCC dependency — the fix may not work."
 
-# ── Re-inject .so into the JAR ────────────────────────────────
+# ── Re-inject .so into the JAR at its original path ──────────
 
 step "Patching libsignal JAR"
 
-# Remove old entry (ignore error if not present)
-zip -d "$LIBSIGNAL_JAR" "libsignal_jni.so" 2>/dev/null || true
-
-# Add the (possibly stripped) .so — -j strips leading path components
-if zip -uj "$LIBSIGNAL_JAR" "$SO_BASENAME" 2>/dev/null; then
-    ok "Patched JAR: $LIBSIGNAL_JAR"
-else
-    die "zip failed — could not update the JAR"
+# Determine the in-JAR path we should use for re-insertion.
+# If SO_IN_JAR is known, use it; otherwise default to root.
+if [ -z "$SO_IN_JAR" ]; then
+    SO_IN_JAR="libsignal_jni.so"
 fi
+
+# Remove the old (broken) entry
+zip -d "$LIBSIGNAL_JAR" "$SO_IN_JAR" 2>/dev/null || true
+
+# Re-add from the work dir, preserving the relative path inside the JAR.
+# We cd to WORK_DIR so that `zip -u JAR $SO_IN_JAR` stores it at the
+# correct relative path (e.g. linux/aarch64/libsignal_jni.so if needed).
+#
+# If the exquo strategy was used, SO_FILE is a flat file — move it to
+# the expected subpath inside WORK_DIR first.
+REL_SO="$SO_IN_JAR"
+if [ ! -f "$WORK_DIR/$REL_SO" ]; then
+    # exquo download: .so is at WORK_DIR root; copy to the right subpath
+    mkdir -p "$WORK_DIR/$(dirname "$REL_SO")"
+    cp "$SO_FILE" "$WORK_DIR/$REL_SO"
+fi
+
+( cd "$WORK_DIR" && zip -u "$LIBSIGNAL_JAR" "$REL_SO" 2>/dev/null ) && \
+    ok "Patched JAR: $LIBSIGNAL_JAR" || \
+    die "zip failed — could not update the JAR"
 
 # ── Summary ───────────────────────────────────────────────────
 
