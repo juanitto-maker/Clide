@@ -9,7 +9,7 @@
 gemini_api_key: ""
 
 # Gemini model to use
-gemini_model: "gemini-3.0-flash"
+gemini_model: "gemini-2.5-flash"
 
 # --- Matrix/Element settings ---
 
