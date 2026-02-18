@@ -3,7 +3,7 @@
 // ============================================
 
 use anyhow::Result;
-use log::{info, warn};
+use log::{info, warn, error};
 use rusqlite::Connection;
 
 use crate::config::Config;
@@ -58,6 +58,20 @@ impl Bot {
     /// Start the bot loop - polls Matrix room and replies via Gemini
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Clide bot...");
+
+        // Resolve the bot's actual Matrix user ID so the self-response guard
+        // works correctly even if matrix_user in config has wrong casing or
+        // a minor typo.
+        match self.matrix.fetch_bot_user_id().await {
+            Ok(id) => info!("Bot authenticated as: {}", id),
+            Err(e) => error!(
+                "Could not fetch bot user ID via /whoami ({}); \
+                 falling back to config matrix_user for self-response detection. \
+                 Ensure matrix_user in config matches exactly to avoid self-loops.",
+                e
+            ),
+        }
+
         println!(
             "Bot running. Send a message in Matrix room {}. Ctrl+C to stop.",
             self.config.matrix_room_id
@@ -86,7 +100,9 @@ impl Bot {
 
         // Self-response guard: ignore messages sent by the bot itself to prevent
         // an infinite loop when running with a personal account access token.
-        if sender == self.config.matrix_user {
+        // Uses the user ID fetched from /whoami (case-insensitive) so a casing
+        // mismatch in config cannot break this check.
+        if self.matrix.is_bot_sender(&sender, &self.config.matrix_user) {
             info!("Ignoring own message from {} to prevent self-response loop.", sender);
             return Ok(());
         }
