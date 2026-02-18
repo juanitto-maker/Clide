@@ -85,6 +85,11 @@ impl Bot {
                             eprintln!("Error handling message: {}", e);
                         }
                     }
+                    // Brief pause between successful poll cycles. The /sync call already
+                    // long-polls for up to 5 s when idle, so this only adds latency in
+                    // high-traffic situations and prevents runaway tight loops if
+                    // self-response filtering somehow breaks down.
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
                 Err(e) => {
                     eprintln!("Error receiving messages: {}", e);

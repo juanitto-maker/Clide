@@ -132,6 +132,13 @@ impl MatrixClient {
                         event["sender"].as_str(),
                         event["content"]["body"].as_str(),
                     ) {
+                        // Skip messages sent by the bot itself to prevent self-response loops.
+                        // Uses the user ID cached from /whoami (set via fetch_bot_user_id).
+                        if let Some(ref bot_id) = self.bot_user_id {
+                            if sender.trim().to_lowercase() == bot_id.trim().to_lowercase() {
+                                continue;
+                            }
+                        }
                         let text = text.trim();
                         if !text.is_empty() {
                             messages.push(MatrixMessage {
