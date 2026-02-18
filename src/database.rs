@@ -3,7 +3,7 @@
 // ============================================
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, NO_PARAMS};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

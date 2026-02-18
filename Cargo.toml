@@ -1,21 +1,21 @@
 [package]
 name = "clide"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["juanitto-maker"]
-description = "Terminal-based Gemini AI client with SSH and SQLite memory"
+description = "AI bot for Termux - chat via Signal, powered by Gemini"
 
 [dependencies]
 # Async and HTTP
 tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.11", features = ["json"] }
+# native-tls is required for HTTPS on Android/Termux (no rustls support by default)
+reqwest = { version = "0.11", features = ["json", "native-tls"] }
 async-trait = "0.1"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-toml = "0.5"
 
 # Database and Environment
 rusqlite = { version = "0.29", features = ["bundled"] }
@@ -23,11 +23,11 @@ dotenvy = "0.15"
 
 # Logging and Tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry", "util"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 tracing-appender = "0.2"
 log = "0.4"
 
-# SSH and Keys
+# SSH (optional but included for completeness)
 russh = "0.38"
 russh-keys = "0.38"
 
