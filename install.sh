@@ -58,85 +58,56 @@ step "Installing dependencies"
 pkg install -y git wget curl 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
 echo "✅ Done"
 
-# ─── 2. Install Clide binary ──────────────────────────────────────────────────
+# ─── 2. Build and install Clide ───────────────────────────────────────────────
 
-step "Installing Clide binary"
+step "Building Clide from source"
 mkdir -p "$PREFIX/bin"
+echo "   This takes 10-15 min on most devices. Keep Termux open."
+echo ""
 
-CLIDE_INSTALLED=false
+pkg install -y rust binutils pkg-config openssl \
+    >"$TMPDIR/pkg_rust.log" 2>&1 &
+spinner $! "Installing Rust toolchain"
+wait $! || { echo "❌ Rust install failed"; cat "$TMPDIR/pkg_rust.log"; exit 1; }
+grep -E "^(Unpacking|Setting up)" "$TMPDIR/pkg_rust.log" | \
+    sed 's/^/   /' | tail -3 || true
 
-# 2a. Try pre-built binary from GitHub Releases (fast path, skips Rust build)
-echo "   Checking for pre-built binary..."
-LATEST_TAG=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-    | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/' | head -1 || true)
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "❌ Rust installation failed"
+    exit 1
+fi
+echo "✅ $(rustc --version)"
 
-if [ -n "$LATEST_TAG" ]; then
-    BIN_URL="https://github.com/${REPO}/releases/download/v${LATEST_TAG}/clide-aarch64"
-    echo "   Trying pre-built binary for v${LATEST_TAG}..."
-    if wget -q "$BIN_URL" -O "$PREFIX/bin/clide" 2>/dev/null; then
-        chmod +x "$PREFIX/bin/clide"
-        echo "✅ Pre-built binary installed (v${LATEST_TAG})"
-        CLIDE_INSTALLED=true
-    else
-        echo "   No aarch64 binary in release v${LATEST_TAG} — will build from source."
-        rm -f "$PREFIX/bin/clide"
-    fi
+if [ -d "$INSTALL_DIR" ]; then
+    echo "   Updating existing source..."
+    git -C "$INSTALL_DIR" pull --ff-only origin main 2>/dev/null || true
 else
-    echo "   No release found — will build from source."
+    echo "   Cloning repository..."
+    git clone "https://github.com/${REPO}.git" "$INSTALL_DIR" 2>&1 | \
+        grep -E "^(Cloning|Receiving|Resolving)" || true
+fi
+cd "$INSTALL_DIR"
+
+# Termux build environment
+export CC="$PREFIX/bin/clang"
+export AR="$PREFIX/bin/llvm-ar"
+export OPENSSL_INCLUDE_DIR="$PREFIX/include"
+export OPENSSL_LIB_DIR="$PREFIX/lib"
+
+echo "   Compiling Clide... (started $(date '+%H:%M:%S'), this will take a while)"
+BUILD_LOG="$TMPDIR/clide_build.log"
+
+cargo build --release 2>&1 | tee "$BUILD_LOG" | \
+    grep -E "^(   Compiling|   Finished|  Downloaded|  Downloading|error\[)" || true
+
+if [ ! -f "target/release/clide" ]; then
+    echo "❌ Build failed. Log: $BUILD_LOG"
+    exit 1
 fi
 
-# 2b. Build from source (fallback)
-if [ "$CLIDE_INSTALLED" = false ]; then
-    step "Building Clide from source"
-    echo "   ⚠️  No pre-built binary — compiling from source."
-    echo "   This takes 10-15 min on most devices. Keep Termux open."
-    echo ""
-
-    pkg install -y rust binutils pkg-config openssl \
-        >"$TMPDIR/pkg_rust.log" 2>&1 &
-    spinner $! "Installing Rust toolchain"
-    wait $! || { echo "❌ Rust install failed"; cat "$TMPDIR/pkg_rust.log"; exit 1; }
-    grep -E "^(Unpacking|Setting up)" "$TMPDIR/pkg_rust.log" | \
-        sed 's/^/   /' | tail -3 || true
-
-    if ! command -v cargo >/dev/null 2>&1; then
-        echo "❌ Rust installation failed"
-        exit 1
-    fi
-    echo "✅ $(rustc --version)"
-
-    if [ -d "$INSTALL_DIR" ]; then
-        echo "   Updating existing source..."
-        git -C "$INSTALL_DIR" pull --ff-only origin main 2>/dev/null || true
-    else
-        echo "   Cloning repository..."
-        git clone "https://github.com/${REPO}.git" "$INSTALL_DIR" 2>&1 | \
-            grep -E "^(Cloning|Receiving|Resolving)" || true
-    fi
-    cd "$INSTALL_DIR"
-
-    # Termux build environment
-    export CC="$PREFIX/bin/clang"
-    export AR="$PREFIX/bin/llvm-ar"
-    export OPENSSL_INCLUDE_DIR="$PREFIX/include"
-    export OPENSSL_LIB_DIR="$PREFIX/lib"
-
-    echo "   Compiling Clide... (started $(date '+%H:%M:%S'), this will take a while)"
-    BUILD_LOG="$TMPDIR/clide_build.log"
-
-    cargo build --release 2>&1 | tee "$BUILD_LOG" | \
-        grep -E "^(   Compiling|   Finished|  Downloaded|  Downloading|error\[)" || true
-
-    if [ ! -f "target/release/clide" ]; then
-        echo "❌ Build failed. Log: $BUILD_LOG"
-        exit 1
-    fi
-
-    cp target/release/clide "$PREFIX/bin/clide"
-    chmod +x "$PREFIX/bin/clide"
-    echo "✅ Built and installed. Finished: $(date '+%H:%M:%S')"
-    CLIDE_INSTALLED=true
-fi
+cp target/release/clide "$PREFIX/bin/clide"
+chmod +x "$PREFIX/bin/clide"
+echo "✅ Built and installed. Finished: $(date '+%H:%M:%S')"
 
 # ─── 3. Configuration ─────────────────────────────────────────────────────────
 
