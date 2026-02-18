@@ -8,7 +8,6 @@ set -e
 
 REPO="juanitto-maker/Clide"
 INSTALL_DIR="$HOME/Clide_Source"
-SIGNAL_VERSION="0.12.8"  # Last version requiring Java 17 (Termux-compatible)
 
 # ─── Guards ───────────────────────────────────────────────────────────────────
 
@@ -46,7 +45,7 @@ spinner() {
         sleep 0.3
         i=$((i+1))
     done
-    printf "\r%-70s\r" "" >/dev/tty   # clear the spinner line
+    printf "\r%-70s\r" "" >/dev/tty
 }
 
 # ─── 1. System packages ───────────────────────────────────────────────────────
@@ -56,195 +55,17 @@ pkg update -y 2>&1 | grep -E "^(Get:|Fetched|Reading)" | tail -5 || true
 echo "✅ Done"
 
 step "Installing dependencies"
-pkg install -y git wget 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
+pkg install -y git wget curl 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
 echo "✅ Done"
 
-# ─── 2. Signal-CLI ────────────────────────────────────────────────────────────
-
-step "Installing Signal-CLI v${SIGNAL_VERSION}"
-echo "   (Requires Java 17)"
-
-pkg install -y openjdk-17 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
-
-SIGNAL_URL="https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_VERSION}/signal-cli-${SIGNAL_VERSION}.tar.gz"
-SIGNAL_DEST="$HOME/.local/signal-cli-${SIGNAL_VERSION}"
-
-if [ ! -d "$SIGNAL_DEST" ]; then
-    echo "   Downloading signal-cli..."
-    cd "$TMPDIR"
-    wget -q --show-progress "$SIGNAL_URL" 2>&1 | tail -2
-    tar xf "signal-cli-${SIGNAL_VERSION}.tar.gz"
-    mkdir -p "$HOME/.local"
-    rm -rf "$SIGNAL_DEST"
-    mv "signal-cli-${SIGNAL_VERSION}" "$SIGNAL_DEST"
-    rm -f "signal-cli-${SIGNAL_VERSION}.tar.gz"
-    echo "✅ signal-cli extracted"
-else
-    echo "✅ signal-cli already present"
-fi
-
-# Add to PATH permanently
-if ! grep -q "signal-cli-${SIGNAL_VERSION}" ~/.bashrc 2>/dev/null; then
-    {
-        echo ""
-        echo "# Signal-CLI (added by Clide installer)"
-        echo "export PATH=\"\$HOME/.local/signal-cli-${SIGNAL_VERSION}/bin:\$PATH\""
-    } >>~/.bashrc
-fi
-export PATH="$SIGNAL_DEST/bin:$PATH"
-
-# ─── 3. Fix libsignal for ARM64 ───────────────────────────────────────────────
-# signal-cli ships an x86_64 native lib; we need an ARM64 one, and we must
-# strip the libgcc_s.so.1 ELF dependency from it.
-#
-# Root cause of "libgcc_s.so.1 not found":
-#   The JVM extracts libsignal_jni.so to a tmpdir and loads it via Android's
-#   bionic linker "default" namespace, which does NOT include $PREFIX/lib.
-#   A symlink in $PREFIX/lib cannot help — the dependency must be stripped
-#   from the .so itself using patchelf/termux-elf-cleaner.
-#
-# Belt-and-suspenders: we ALSO compile a stub libgcc_s.so.1 and wrap the
-# signal-cli launcher with LD_PRELOAD, so even if JAR patching is incomplete
-# the library loads at runtime.
-
-SIGNAL_LIB_DIR="$SIGNAL_DEST/lib"
-LIBSIGNAL_JAR=$(ls "$SIGNAL_LIB_DIR"/libsignal-client-*.jar 2>/dev/null | head -n1 || true)
-
-if [ -n "$LIBSIGNAL_JAR" ]; then
-    LIBSIGNAL_VER=$(basename "$LIBSIGNAL_JAR" | sed 's/libsignal-client-//' | sed 's/\.jar//')
-    echo "   libsignal version: $LIBSIGNAL_VER"
-
-    # Install ALL patching/stripping tools
-    pkg install -y patchelf termux-elf-cleaner zip unzip 2>/dev/null | tail -1 || true
-
-    LIB_WORK="$TMPDIR/libsignal_fix"
-    rm -rf "$LIB_WORK"; mkdir -p "$LIB_WORK"
-    SO_FILE=""
-
-    # Discover the exact in-JAR path of libsignal_jni.so upfront.
-    # It can be at root ("libsignal_jni.so") or in a subdir like
-    # "linux/aarch64/libsignal_jni.so" depending on libsignal version.
-    # We need this path for BOTH extraction and re-packing.
-    SO_IN_JAR=$(unzip -l "$LIBSIGNAL_JAR" 2>/dev/null \
-        | awk '{print $NF}' | grep 'libsignal_jni\.so$' | head -n1 || true)
-    echo "   .so path in JAR: ${SO_IN_JAR:-<unknown, will try common locations>}"
-
-    # Strategy 1: download a pre-built ARM64 .so from exquo/signal-libs-build
-    ARM64_URL="https://github.com/exquo/signal-libs-build/releases/download/libsignal_v${LIBSIGNAL_VER}/libsignal_jni.so-v${LIBSIGNAL_VER}-aarch64-unknown-linux-gnu.tar.gz"
-    echo "   Fetching ARM64 libsignal..."
-    if wget -q --timeout=30 "$ARM64_URL" -O "$LIB_WORK/libsignal_arm64.tar.gz" 2>/dev/null; then
-        tar xf "$LIB_WORK/libsignal_arm64.tar.gz" -C "$LIB_WORK" 2>/dev/null || true
-        SO_FILE=$(find "$LIB_WORK" -name "libsignal_jni.so" | head -n1 || true)
-        [ -n "$SO_FILE" ] && echo "   ARM64 lib downloaded from exquo" || \
-            echo "⚠️  Archive downloaded but .so not found inside"
-    else
-        echo "   ARM64 build not on exquo for v${LIBSIGNAL_VER} — extracting from JAR instead"
-    fi
-
-    # Strategy 2: extract whatever .so is already packed in the JAR.
-    # (signal-cli 0.12.x JARs already carry an ARM64 .so — the only problem
-    #  is the libgcc_s.so.1 ELF dep that we strip below.)
-    if [ -z "$SO_FILE" ]; then
-        echo "   Extracting .so from JAR (will strip GCC dep)..."
-        if [ -n "$SO_IN_JAR" ]; then
-            unzip -o "$LIBSIGNAL_JAR" "$SO_IN_JAR" -d "$LIB_WORK" 2>/dev/null || true
-        else
-            for _cand in "libsignal_jni.so" "linux/libsignal_jni.so" "linux/aarch64/libsignal_jni.so"; do
-                unzip -o "$LIBSIGNAL_JAR" "$_cand" -d "$LIB_WORK" 2>/dev/null && break || true
-            done
-        fi
-        SO_FILE=$(find "$LIB_WORK" -name "libsignal_jni.so" | head -n1 || true)
-        [ -n "$SO_FILE" ] && echo "   Using .so extracted from JAR" || \
-            echo "⚠️  libsignal_jni.so not found in archive or JAR"
-    fi
-
-    if [ -n "$SO_FILE" ]; then
-        # Strip libgcc_s.so.1 — run patchelf (precise) AND termux-elf-cleaner (broad).
-        # Both run unconditionally; patchelf first because it targets the exact dep.
-        STRIPPED=false
-        if command -v patchelf >/dev/null 2>&1; then
-            if patchelf --remove-needed libgcc_s.so.1 "$SO_FILE" 2>/dev/null; then
-                echo "   libgcc_s.so.1 removed via patchelf"
-                STRIPPED=true
-            fi
-        fi
-        if command -v termux-elf-cleaner >/dev/null 2>&1; then
-            termux-elf-cleaner "$SO_FILE" 2>/dev/null || true
-            echo "   ELF cleaned via termux-elf-cleaner"
-            STRIPPED=true
-        fi
-        $STRIPPED || echo "⚠️  No stripping tools ran — libgcc dep may remain in JAR"
-
-        # Re-pack at the original in-JAR path so the JVM loader finds it.
-        REL_SO="${SO_IN_JAR:-libsignal_jni.so}"
-        if [ ! -f "$LIB_WORK/$REL_SO" ]; then
-            mkdir -p "$LIB_WORK/$(dirname "$REL_SO")"
-            cp "$SO_FILE" "$LIB_WORK/$REL_SO"
-        fi
-        zip -d "$LIBSIGNAL_JAR" "$REL_SO" 2>/dev/null || true
-        ( cd "$LIB_WORK" && zip -u "$LIBSIGNAL_JAR" "$REL_SO" ) 2>/dev/null && \
-            echo "✅ libsignal patched and injected into JAR" || \
-            echo "⚠️  Could not update JAR (bot may fail to start)"
-    else
-        echo "⚠️  Skipping JAR patch — could not obtain libsignal_jni.so"
-    fi
-else
-    echo "⚠️  libsignal JAR not found in $SIGNAL_LIB_DIR"
-fi
-
-# ─── 3b. LD_PRELOAD safety net ────────────────────────────────────────────────
-# Compile a minimal stub shared library with SONAME=libgcc_s.so.1 using Termux's
-# clang, then wrap the signal-cli launcher to LD_PRELOAD it before the JVM starts.
-# This satisfies the DT_NEEDED dependency at the bionic linker level, bypassing
-# the namespace restriction entirely — no JAR modification needed.
-
-STUB_LIB="$PREFIX/lib/libgcc_s.so.1"
-SIGNAL_BIN="$SIGNAL_DEST/bin/signal-cli"
-SIGNAL_BIN_REAL="$SIGNAL_DEST/bin/signal-cli.real"
-
-if [ ! -f "$STUB_LIB" ]; then
-    if command -v clang >/dev/null 2>&1; then
-        printf 'void __libgcc_stub(void){}\n' \
-            | clang -shared -fPIC -Wl,-soname,libgcc_s.so.1 \
-                    -o "$STUB_LIB" -x c - 2>/dev/null \
-            && echo "✅ libgcc_s.so.1 stub compiled" \
-            || echo "⚠️  clang stub compilation failed"
-    fi
-    # Fallback: symlink an existing GCC lib if one is available
-    if [ ! -f "$STUB_LIB" ]; then
-        for _src in "$PREFIX/lib/libgcc.so" "$PREFIX/lib/libgcc_s.so" \
-                    /system/lib64/libgcc.so /system/lib/libgcc.so; do
-            [ -f "$_src" ] && ln -sf "$_src" "$STUB_LIB" \
-                && echo "✅ libgcc_s.so.1 → $(basename "$_src")" && break || true
-        done
-    fi
-fi
-
-if [ -f "$STUB_LIB" ] && [ -f "$SIGNAL_BIN" ] && [ ! -f "$SIGNAL_BIN_REAL" ]; then
-    mv "$SIGNAL_BIN" "$SIGNAL_BIN_REAL"
-    printf '#!/bin/sh\n# Termux: preload libgcc_s stub so bionic resolves it for libsignal_jni.so\nexport LD_PRELOAD="%s${LD_PRELOAD:+:$LD_PRELOAD}"\nexec "%s" "$@"\n' \
-        "$STUB_LIB" "$SIGNAL_BIN_REAL" > "$SIGNAL_BIN"
-    chmod +x "$SIGNAL_BIN"
-    echo "✅ signal-cli wrapped with LD_PRELOAD=$STUB_LIB"
-elif [ -f "$SIGNAL_BIN_REAL" ]; then
-    echo "✅ signal-cli LD_PRELOAD wrapper already in place"
-fi
-
-# Verify
-if command -v signal-cli >/dev/null 2>&1; then
-    echo "✅ signal-cli: $(signal-cli --version 2>/dev/null | head -1)"
-else
-    echo "⚠️  signal-cli not yet in PATH (will be after: source ~/.bashrc)"
-fi
-
-# ─── 4. Install Clide binary ──────────────────────────────────────────────────
+# ─── 2. Install Clide binary ──────────────────────────────────────────────────
 
 step "Installing Clide binary"
 mkdir -p "$PREFIX/bin"
 
 CLIDE_INSTALLED=false
 
-# 4a. Try pre-built binary from GitHub Releases (fast path, skips Rust build)
+# 2a. Try pre-built binary from GitHub Releases (fast path, skips Rust build)
 echo "   Checking for pre-built binary..."
 LATEST_TAG=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/' | head -1 || true)
@@ -264,7 +85,7 @@ else
     echo "   No release found — will build from source."
 fi
 
-# 4b. Build from source (fallback)
+# 2b. Build from source (fallback)
 if [ "$CLIDE_INSTALLED" = false ]; then
     step "Building Clide from source"
     echo "   ⚠️  No pre-built binary — compiling from source."
@@ -317,7 +138,7 @@ if [ "$CLIDE_INSTALLED" = false ]; then
     CLIDE_INSTALLED=true
 fi
 
-# ─── 5. Configuration ─────────────────────────────────────────────────────────
+# ─── 3. Configuration ─────────────────────────────────────────────────────────
 
 step "Configuration"
 
@@ -327,19 +148,22 @@ chmod 700 ~/.config/clide
 mkdir -p ~/.clide
 chmod 700 ~/.clide
 
-# Check if config.example.yaml is available (from source clone)
-if [ -f "$INSTALL_DIR/config.example.yaml" ]; then
-    [ ! -f ~/.clide/config.yaml ] && cp "$INSTALL_DIR/config.example.yaml" ~/.clide/config.yaml
-elif [ ! -f ~/.clide/config.yaml ]; then
-    # Write minimal config inline (for binary-only install)
-    cat >~/.clide/config.yaml <<'YAML'
+# Write minimal config if not already present
+if [ ! -f ~/.clide/config.yaml ]; then
+    if [ -f "$INSTALL_DIR/config.example.yaml" ]; then
+        cp "$INSTALL_DIR/config.example.yaml" ~/.clide/config.yaml
+    else
+        cat >~/.clide/config.yaml <<'YAML'
 # Clide configuration - edit as needed
-gemini_api_key: ""        # Set via GEMINI_API_KEY env var or enter below
+gemini_api_key: ""
 gemini_model: "gemini-2.0-flash"
-signal_number: ""         # Your Signal phone number e.g. +1234567890
+matrix_homeserver: "https://matrix.org"
+matrix_user: ""
+matrix_access_token: ""
+matrix_room_id: ""
 require_confirmation: false
 confirmation_timeout: 60
-authorized_numbers: []    # Numbers allowed to use the bot (empty = allow all)
+authorized_users: []
 blocked_commands:
   - "rm -rf /"
   - "mkfs"
@@ -347,120 +171,179 @@ blocked_commands:
 logging:
   level: "info"
 YAML
+    fi
 fi
 chmod 600 ~/.clide/config.yaml
 
-# ─── 6. Interactive setup ─────────────────────────────────────────────────────
+# ─── 4. Interactive setup ─────────────────────────────────────────────────────
 
 echo ""
-echo "═══════════════════════════════════════"
-echo "  Quick Setup"
 echo "═══════════════════════════════════════" >/dev/tty
+echo "  Quick Setup" >/dev/tty
+echo "═══════════════════════════════════════" >/dev/tty
+echo "  Press Enter to skip any step." >/dev/tty
+echo "  You can edit ~/.clide/config.yaml later." >/dev/tty
+echo "═══════════════════════════════════════" >/dev/tty
+
+# ── 4a. Gemini API key ────────────────────────────────────────────────────────
 
 echo "" >/dev/tty
 echo "🔑 Gemini API Key" >/dev/tty
-echo "   Get one free at: https://makersuite.google.com/app/apikey" >/dev/tty
+echo "   Get one free at: https://aistudio.google.com/app/apikey" >/dev/tty
 echo "" >/dev/tty
-ask "Enter API key (or press Enter to skip): " API_KEY secret
+ask "Enter API key (or press Enter to skip): " GEMINI_KEY secret
 
-if [ -n "$API_KEY" ]; then
-    # Store in env config for REPL mode
-    mkdir -p ~/.config/clide
+if [ -n "$GEMINI_KEY" ]; then
+    # Save to env file for REPL mode
     if grep -q "GEMINI_API_KEY" ~/.config/clide/config.env 2>/dev/null; then
-        sed -i "s|GEMINI_API_KEY=.*|GEMINI_API_KEY=$API_KEY|" ~/.config/clide/config.env
+        sed -i "s|GEMINI_API_KEY=.*|GEMINI_API_KEY=$GEMINI_KEY|" ~/.config/clide/config.env
     else
-        echo "GEMINI_API_KEY=$API_KEY" >>~/.config/clide/config.env
+        echo "GEMINI_API_KEY=$GEMINI_KEY" >>~/.config/clide/config.env
     fi
     chmod 600 ~/.config/clide/config.env
-    export GEMINI_API_KEY="$API_KEY"
+    export GEMINI_API_KEY="$GEMINI_KEY"
 
-    # Also patch yaml config for bot mode
-    sed -i "s|gemini_api_key:.*|gemini_api_key: \"$API_KEY\"|" ~/.clide/config.yaml
-
-    echo "✅ API key saved" >/dev/tty
+    # Patch yaml config
+    sed -i "s|gemini_api_key:.*|gemini_api_key: \"$GEMINI_KEY\"|" ~/.clide/config.yaml
+    echo "✅ Gemini API key saved" >/dev/tty
 else
-    echo "⚠️  Skipped. Set later: export GEMINI_API_KEY='your-key'" >/dev/tty
+    echo "⏭  Skipped. Set later via GEMINI_API_KEY env var or ~/.clide/config.yaml" >/dev/tty
 fi
 
-echo "" >/dev/tty
-echo "📱 Signal Phone Number" >/dev/tty
-echo "   Format: +CountryCodeNumber (e.g. +12025551234)" >/dev/tty
-echo "" >/dev/tty
-ask "Enter your Signal number (or press Enter to skip): " SIGNAL_NUM
+# ── 4b. Matrix/Element credentials ───────────────────────────────────────────
 
-SIGNAL_PAIRED=false
+echo "" >/dev/tty
+echo "💬 Matrix/Element Setup" >/dev/tty
+echo "   You need a Matrix account and a room for the bot." >/dev/tty
+echo "   If you don't have one, create a free account at https://app.element.io" >/dev/tty
+echo "" >/dev/tty
 
-if [ -n "$SIGNAL_NUM" ]; then
-    sed -i "s|signal_number:.*|signal_number: \"$SIGNAL_NUM\"|" ~/.clide/config.yaml
-    echo "✅ Signal number saved" >/dev/tty
-else
-    echo "⚠️  Skipped. Edit ~/.clide/config.yaml later." >/dev/tty
+ask "Homeserver URL (Enter for https://matrix.org, or skip to configure later): " MATRIX_HS
+
+if [ -z "$MATRIX_HS" ]; then
+    # Prompt to skip entirely
+    echo "" >/dev/tty
+    ask "Skip Matrix setup entirely? [Y/n]: " SKIP_MATRIX
+    if [[ "$SKIP_MATRIX" =~ ^[Nn] ]]; then
+        MATRIX_HS="https://matrix.org"
+    else
+        MATRIX_HS=""
+    fi
 fi
 
-# ── Optional: pair with Signal now ───────────────────────────────────────────
-echo "" >/dev/tty
-echo "🔗 Signal Device Pairing" >/dev/tty
-echo "   Link this device to your Signal account right now?" >/dev/tty
-echo "   (You need Signal installed on your phone.)" >/dev/tty
-ask "Pair now? [Y/n]: " DO_PAIR
-
-if [[ ! "$DO_PAIR" =~ ^[Nn] ]]; then
-    pkg install -y qrencode 2>/dev/null | tail -1 || true
+if [ -n "$MATRIX_HS" ]; then
+    MATRIX_HS="${MATRIX_HS%/}"   # strip trailing slash
+    sed -i "s|matrix_homeserver:.*|matrix_homeserver: \"$MATRIX_HS\"|" ~/.clide/config.yaml
 
     echo "" >/dev/tty
-    echo "   On your phone: Signal → Settings → Linked Devices → Link New Device" >/dev/tty
+    echo "   Homeserver: $MATRIX_HS" >/dev/tty
     echo "" >/dev/tty
 
-    LINK_LOG="$TMPDIR/signal_link_$$.log"
-    signal-cli link -n "clide-bot" > "$LINK_LOG" 2>&1 &
-    LINK_PID=$!
+    # ── Username ──────────────────────────────────────────────────────────────
+    ask "Matrix username (e.g. @yourbot:matrix.org, or press Enter to skip): " MATRIX_USER
 
-    # Wait up to 15 s for signal-cli to emit the tsdevice:/ URI
-    LINK_URI=""
-    for _i in $(seq 1 30); do
-        LINK_URI=$(grep -o 'tsdevice:[^[:space:]]*' "$LINK_LOG" 2>/dev/null | head -1 || true)
-        [ -n "$LINK_URI" ] && break
-        sleep 0.5
-    done
+    if [ -n "$MATRIX_USER" ]; then
+        sed -i "s|matrix_user:.*|matrix_user: \"$MATRIX_USER\"|" ~/.clide/config.yaml
+        echo "✅ Matrix user saved" >/dev/tty
 
-    if [ -n "$LINK_URI" ]; then
-        # Always print the raw URI first — paste it into any QR-code generator app
-        # (e.g. QR & Barcode Scanner, or qr.io) if you can't scan the terminal QR.
+        # ── Password → login to get access token ─────────────────────────────
         echo "" >/dev/tty
-        echo "┌─────────────────────────────────────────────────┐" >/dev/tty
-        echo "│  Pairing URI (copy → QR generator app if needed) │" >/dev/tty
-        echo "└─────────────────────────────────────────────────┘" >/dev/tty
-        echo "$LINK_URI" >/dev/tty
+        echo "   Enter password to obtain an access token automatically." >/dev/tty
+        echo "   (Password is sent only to your homeserver and never stored.)" >/dev/tty
         echo "" >/dev/tty
-        if command -v qrencode >/dev/null 2>&1; then
-            echo "   Terminal QR code (scan directly if your camera app supports it):" >/dev/tty
-            qrencode -t ansiutf8 "$LINK_URI" >/dev/tty
-        fi
-        echo "" >/dev/tty
-        echo "   On your phone: Signal → Settings → Linked Devices → Link New Device" >/dev/tty
-        echo "   Waiting for scan... (Ctrl+C to skip, pair later)" >/dev/tty
-        if wait "$LINK_PID" 2>/dev/null; then
-            echo "✅ Signal device linked!" >/dev/tty
-            SIGNAL_PAIRED=true
+        ask "Matrix password (or press Enter to skip and enter token manually): " MATRIX_PASS secret
+
+        if [ -n "$MATRIX_PASS" ]; then
+            # Strip @prefix: and take just the localpart for the login identifier
+            LOCALPART=$(echo "$MATRIX_USER" | sed 's/^@//' | cut -d: -f1)
+            echo "" >/dev/tty
+            echo "   Logging in as $LOCALPART..." >/dev/tty
+
+            LOGIN_RESP=$(curl -sf -XPOST "${MATRIX_HS}/_matrix/client/v3/login" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"$LOCALPART\"},\"password\":\"$MATRIX_PASS\"}" \
+                2>/dev/null || true)
+
+            if [ -n "$LOGIN_RESP" ]; then
+                ACCESS_TOKEN=$(echo "$LOGIN_RESP" | grep -o '"access_token":"[^"]*"' \
+                    | sed 's/"access_token":"//;s/"//' || true)
+                ERRCODE=$(echo "$LOGIN_RESP" | grep -o '"errcode":"[^"]*"' \
+                    | sed 's/"errcode":"//;s/"//' || true)
+
+                if [ -n "$ACCESS_TOKEN" ]; then
+                    # Save token to env file and yaml
+                    if grep -q "MATRIX_ACCESS_TOKEN" ~/.config/clide/config.env 2>/dev/null; then
+                        sed -i "s|MATRIX_ACCESS_TOKEN=.*|MATRIX_ACCESS_TOKEN=$ACCESS_TOKEN|" ~/.config/clide/config.env
+                    else
+                        echo "MATRIX_ACCESS_TOKEN=$ACCESS_TOKEN" >>~/.config/clide/config.env
+                    fi
+                    chmod 600 ~/.config/clide/config.env
+                    sed -i "s|matrix_access_token:.*|matrix_access_token: \"$ACCESS_TOKEN\"|" ~/.clide/config.yaml
+                    echo "✅ Access token obtained and saved" >/dev/tty
+                elif [ -n "$ERRCODE" ]; then
+                    ERRMSG=$(echo "$LOGIN_RESP" | grep -o '"error":"[^"]*"' \
+                        | sed 's/"error":"//;s/"//' || true)
+                    echo "⚠️  Login failed: $ERRCODE - $ERRMSG" >/dev/tty
+                    echo "   Enter your access token manually below." >/dev/tty
+                    echo "" >/dev/tty
+                    ask "Access token (or press Enter to skip): " MANUAL_TOKEN secret
+                    if [ -n "$MANUAL_TOKEN" ]; then
+                        sed -i "s|matrix_access_token:.*|matrix_access_token: \"$MANUAL_TOKEN\"|" ~/.clide/config.yaml
+                        echo "✅ Access token saved" >/dev/tty
+                    fi
+                else
+                    echo "⚠️  Could not parse login response. Enter token manually." >/dev/tty
+                    ask "Access token (or press Enter to skip): " MANUAL_TOKEN secret
+                    if [ -n "$MANUAL_TOKEN" ]; then
+                        sed -i "s|matrix_access_token:.*|matrix_access_token: \"$MANUAL_TOKEN\"|" ~/.clide/config.yaml
+                        echo "✅ Access token saved" >/dev/tty
+                    fi
+                fi
+            else
+                echo "⚠️  Could not reach $MATRIX_HS. Check your network." >/dev/tty
+                echo "   You can set the token later via MATRIX_ACCESS_TOKEN env var." >/dev/tty
+            fi
         else
-            echo "⚠️  Pairing timed out or was cancelled." >/dev/tty
-            echo "   Run later: signal-cli link -n 'clide-bot'" >/dev/tty
+            # User wants to enter token directly
+            echo "" >/dev/tty
+            echo "   To get your token manually:" >/dev/tty
+            echo "   Element → Settings → Help & About → Access Token" >/dev/tty
+            echo "" >/dev/tty
+            ask "Access token (or press Enter to skip): " MANUAL_TOKEN secret
+            if [ -n "$MANUAL_TOKEN" ]; then
+                sed -i "s|matrix_access_token:.*|matrix_access_token: \"$MANUAL_TOKEN\"|" ~/.clide/config.yaml
+                echo "✅ Access token saved" >/dev/tty
+            else
+                echo "⏭  Skipped. Set later via MATRIX_ACCESS_TOKEN env var." >/dev/tty
+            fi
         fi
     else
-        kill "$LINK_PID" 2>/dev/null || true
-        echo "⚠️  signal-cli link did not produce a pairing URI." >/dev/tty
-        head -3 "$LINK_LOG" 2>/dev/null >/dev/tty || true
-        echo "   If you see a libsignal error above, run: bash fix-libsignal.sh" >/dev/tty
-        echo "   Then retry: signal-cli link -n 'clide-bot'" >/dev/tty
+        echo "⏭  Skipped. Edit ~/.clide/config.yaml to add Matrix credentials." >/dev/tty
     fi
-    rm -f "$LINK_LOG"
+
+    # ── Room ID ───────────────────────────────────────────────────────────────
+    echo "" >/dev/tty
+    echo "   Room ID: the bot listens in this Matrix room." >/dev/tty
+    echo "   Find it: Element → Room → Settings → Advanced → Internal room ID" >/dev/tty
+    echo "   Format: !abc123:matrix.org" >/dev/tty
+    echo "" >/dev/tty
+    ask "Room ID (or press Enter to skip): " MATRIX_ROOM
+
+    if [ -n "$MATRIX_ROOM" ]; then
+        sed -i "s|matrix_room_id:.*|matrix_room_id: \"$MATRIX_ROOM\"|" ~/.clide/config.yaml
+        echo "✅ Room ID saved" >/dev/tty
+    else
+        echo "⏭  Skipped. Edit matrix_room_id in ~/.clide/config.yaml later." >/dev/tty
+    fi
+else
+    echo "⏭  Matrix setup skipped. Edit ~/.clide/config.yaml to configure later." >/dev/tty
 fi
 
-# ─── 7. Summary ───────────────────────────────────────────────────────────────
+# ─── 5. Summary ───────────────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════"
-echo "✨ Installation Complete!"
+echo "✅ Installation Complete!"
 echo "═══════════════════════════════════════"
 echo ""
 
@@ -471,18 +354,19 @@ fi
 echo ""
 echo "Usage:"
 echo "  clide              # Chat with Gemini (REPL)"
-echo "  clide bot          # Start Signal bot"
+echo "  clide bot          # Start Matrix bot"
 echo "  clide --version    # Show version"
 echo ""
-echo "Next steps:"
-echo "  source ~/.bashrc"
-if $SIGNAL_PAIRED; then
-    echo "  clide bot   # Start the bot (device already paired!)"
-else
-    echo "  signal-cli link -n \"clide-bot\"   # Scan QR: Signal → Settings → Linked Devices"
-    echo "  clide bot                         # Start the bot"
-fi
+echo "Config:   ~/.clide/config.yaml"
+echo "Env file: ~/.config/clide/config.env"
 echo ""
-echo "Config file: ~/.clide/config.yaml"
-echo "API key file: ~/.config/clide/config.env"
+echo "Next steps:"
+echo "  1. Make sure ~/.clide/config.yaml has all Matrix fields filled in"
+echo "  2. Invite your bot account to the Matrix room"
+echo "  3. Run: clide bot"
+echo ""
+echo "Element/Matrix quickstart:"
+echo "  - Free account: https://app.element.io"
+echo "  - Access token: Element → Settings → Help & About → Access Token"
+echo "  - Room ID: Room → Settings → Advanced → Internal room ID"
 echo ""

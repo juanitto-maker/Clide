@@ -10,15 +10,21 @@ pub struct Config {
     pub gemini_api_key: String,
     #[serde(default = "default_model")]
     pub gemini_model: String,
-    pub signal_number: String,
+
+    // Matrix/Element settings
+    pub matrix_homeserver: String,
+    pub matrix_user: String,
+    pub matrix_access_token: String,
+    pub matrix_room_id: String,
 
     #[serde(default)]
     pub require_confirmation: bool,
     #[serde(default = "default_timeout")]
     pub confirmation_timeout: u64,
 
+    // Matrix user IDs allowed to send commands to the bot
     #[serde(default)]
-    pub authorized_numbers: Vec<String>,
+    pub authorized_users: Vec<String>,
 
     // Commands blocked from execution in executor.rs
     #[serde(default = "default_blocked_commands")]
@@ -64,10 +70,15 @@ impl Config {
             })?;
         let mut cfg: Config = serde_yaml::from_str(&content)?;
 
-        // Allow env var to override API key
+        // Allow env vars to override sensitive values
         if let Ok(key) = std::env::var("GEMINI_API_KEY") {
             if !key.is_empty() {
                 cfg.gemini_api_key = key;
+            }
+        }
+        if let Ok(token) = std::env::var("MATRIX_ACCESS_TOKEN") {
+            if !token.is_empty() {
+                cfg.matrix_access_token = token;
             }
         }
 
@@ -83,7 +94,7 @@ impl Config {
         &self.gemini_model
     }
 
-    pub fn is_authorized(&self, number: &str) -> bool {
-        self.authorized_numbers.contains(&number.to_string())
+    pub fn is_authorized(&self, user: &str) -> bool {
+        self.authorized_users.contains(&user.to_string())
     }
 }

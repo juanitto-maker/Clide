@@ -1,5 +1,5 @@
 // ============================================
-// bot.rs - Signal Bot Core Loop
+// bot.rs - Matrix Bot Core Loop
 // ============================================
 
 use anyhow::Result;
@@ -8,13 +8,13 @@ use rusqlite::Connection;
 
 use crate::config::Config;
 use crate::gemini::GeminiClient;
-use crate::signal::SignalClient;
+use crate::matrix::MatrixClient;
 
 /// Main bot structure (exported as Bot from lib.rs)
 pub struct Bot {
     config: Config,
     gemini: GeminiClient,
-    signal: SignalClient,
+    matrix: MatrixClient,
     _db: Connection,
 }
 
@@ -36,31 +36,35 @@ impl Bot {
             config.get_model().to_string(),
             0.7,
             2048,
-            "You are Clide, a helpful AI assistant running inside Signal messenger. \
+            "You are Clide, a helpful AI assistant running inside an Element/Matrix room. \
              Be concise and direct. When asked to run shell commands, describe what \
              you would do rather than executing blindly.".to_string(),
         );
 
-        let signal = SignalClient::new(config.signal_number.clone());
+        let matrix = MatrixClient::new(
+            config.matrix_homeserver.clone(),
+            config.matrix_access_token.clone(),
+            config.matrix_room_id.clone(),
+        );
 
         Ok(Self {
             config,
             gemini,
-            signal,
+            matrix,
             _db: db,
         })
     }
 
-    /// Start the bot loop - polls Signal and replies via Gemini
+    /// Start the bot loop - polls Matrix room and replies via Gemini
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Clide bot...");
         println!(
-            "Bot running. Send a message via Signal to {}. Ctrl+C to stop.",
-            self.config.signal_number
+            "Bot running. Send a message in Matrix room {}. Ctrl+C to stop.",
+            self.config.matrix_room_id
         );
 
         loop {
-            match self.signal.receive_messages() {
+            match self.matrix.receive_messages().await {
                 Ok(messages) => {
                     for msg in messages {
                         if let Err(e) = self.handle_message(msg.sender, msg.text).await {
@@ -76,19 +80,19 @@ impl Bot {
         }
     }
 
-    /// Handle a single incoming Signal message
+    /// Handle a single incoming Matrix message
     async fn handle_message(&mut self, sender: String, text: String) -> Result<()> {
         info!("Message from {}: {}", sender, text);
 
-        // Authorization check (skip if no authorized numbers configured)
-        if !self.config.authorized_numbers.is_empty() && !self.config.is_authorized(&sender) {
+        // Authorization check (skip if no authorized users configured)
+        if !self.config.authorized_users.is_empty() && !self.config.is_authorized(&sender) {
             warn!("Unauthorized sender: {}", sender);
             return Ok(());
         }
 
         // Optional confirmation gate
         if self.config.require_confirmation {
-            if !self.confirm_execution(&sender, &text)? {
+            if !self.confirm_execution(&sender, &text).await? {
                 return Ok(());
             }
         }
@@ -96,22 +100,25 @@ impl Bot {
         info!("Sending prompt to Gemini...");
         let response = self.gemini.generate(&text).await?;
 
-        self.signal.send_message(&sender, &response)?;
+        self.matrix.send_message(&response).await?;
         info!("Replied to {}", sender);
 
         Ok(())
     }
 
-    /// Ask sender for YES/NO confirmation before proceeding
-    fn confirm_execution(&self, sender: &str, text: &str) -> Result<bool> {
+    /// Ask the room for YES/NO confirmation before proceeding
+    async fn confirm_execution(&mut self, sender: &str, text: &str) -> Result<bool> {
         let confirm_msg = format!(
             "Confirm execution?\n\n{}\n\nReply with YES to proceed.",
             text
         );
 
-        self.signal.send_message(sender, &confirm_msg)?;
+        self.matrix.send_message(&confirm_msg).await?;
 
-        let reply = self.signal.wait_for_reply(sender, self.config.confirmation_timeout)?;
+        let reply = self
+            .matrix
+            .wait_for_reply(sender, self.config.confirmation_timeout)
+            .await?;
 
         Ok(reply.trim().eq_ignore_ascii_case("yes"))
     }

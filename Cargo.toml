@@ -1,9 +1,9 @@
 [package]
 name = "clide"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["juanitto-maker"]
-description = "AI bot for Termux - chat via Signal, powered by Gemini"
+description = "AI bot for Termux - chat via Element/Matrix, powered by Gemini"
 
 [dependencies]
 # Async and HTTP

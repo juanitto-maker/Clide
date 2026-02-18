@@ -68,12 +68,12 @@ async fn run_bot() -> Result<(), Box<dyn std::error::Error>> {
     use clide::bot::Bot;
     use clide::config::Config;
 
-    println!("{}", "Starting Clide Signal bot...".bright_green());
+    println!("{}", "Starting Clide Matrix bot...".bright_green());
 
     let config = Config::load().map_err(|e| {
         eprintln!("{} {}", "Config error:".red(), e);
         eprintln!(
-            "Copy {} to {}",
+            "Copy {} to {} and fill in Matrix credentials",
             "config.example.yaml".yellow(),
             "~/.clide/config.yaml".cyan()
         );

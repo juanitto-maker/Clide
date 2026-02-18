@@ -1,253 +1,130 @@
-# 📦 Clide Installation Guide
+# Clide Installation Guide
 
 Complete installation instructions for all supported platforms.
 
 ---
 
-## 🚀 Quick Install (Recommended)
+## Quick Install (Recommended)
 
-### Linux / macOS / Termux (Android)
+### Android (Termux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/clide/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
 ```
 
-**What this does:**
-1. Detects your platform automatically
-2. Downloads the correct pre-compiled binary
-3. Installs to `/usr/local/bin/clide` (or `~/.local/bin/clide` on Termux)
-4. Makes it executable
-5. Verifies installation
-
-**Time:** ~5 seconds ⚡
+The installer will:
+1. Install the pre-built binary (or build from source if no release is available)
+2. Create `~/.clide/config.yaml`
+3. Interactively ask for your Gemini API key and Matrix credentials (with skip option)
 
 ---
 
-## 📱 Platform-Specific Installation
+## Platform-Specific Installation
 
-### 🐧 Linux
+### Linux
 
 #### Option 1: Download Binary (Fastest)
 
 ```bash
 # For x86_64 (Intel/AMD)
-wget https://github.com/yourusername/clide/releases/latest/download/clide-x86_64-linux
-chmod +x clide-x86_64-linux
-sudo mv clide-x86_64-linux /usr/local/bin/clide
+wget https://github.com/juanitto-maker/Clide/releases/latest/download/clide-x86_64
+chmod +x clide-x86_64
+sudo mv clide-x86_64 /usr/local/bin/clide
 
 # For ARM64 (Raspberry Pi, etc.)
-wget https://github.com/yourusername/clide/releases/latest/download/clide-aarch64-linux
-chmod +x clide-aarch64-linux
-sudo mv clide-aarch64-linux /usr/local/bin/clide
+wget https://github.com/juanitto-maker/Clide/releases/latest/download/clide-aarch64
+chmod +x clide-aarch64
+sudo mv clide-aarch64 /usr/local/bin/clide
 ```
 
-#### Option 2: Install via Package Manager
-
-**Debian/Ubuntu (via .deb):**
-```bash
-wget https://github.com/yourusername/clide/releases/latest/download/clide_amd64.deb
-sudo dpkg -i clide_amd64.deb
-```
-
-**Arch Linux (AUR):**
-```bash
-yay -S clide-bin
-# or
-paru -S clide-bin
-```
-
-**Fedora/RHEL (via .rpm):**
-```bash
-wget https://github.com/yourusername/clide/releases/latest/download/clide-x86_64.rpm
-sudo rpm -i clide-x86_64.rpm
-```
-
-#### Option 3: Build from Source
+#### Option 2: Build from Source
 
 ```bash
-# Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Clone and build
-git clone https://github.com/yourusername/clide.git
-cd clide
+git clone https://github.com/juanitto-maker/Clide.git
+cd Clide
 cargo build --release
-
-# Install
 sudo cp target/release/clide /usr/local/bin/
 ```
 
 ---
 
-### 🍎 macOS
-
-#### Option 1: Download Binary (Fastest)
+### macOS
 
 ```bash
 # For Intel Macs
-curl -L https://github.com/yourusername/clide/releases/latest/download/clide-x86_64-darwin -o clide
+curl -L https://github.com/juanitto-maker/Clide/releases/latest/download/clide-x86_64-darwin -o clide
 chmod +x clide
 sudo mv clide /usr/local/bin/
 
 # For Apple Silicon (M1/M2/M3)
-curl -L https://github.com/yourusername/clide/releases/latest/download/clide-aarch64-darwin -o clide
+curl -L https://github.com/juanitto-maker/Clide/releases/latest/download/clide-aarch64-darwin -o clide
 chmod +x clide
 sudo mv clide /usr/local/bin/
 ```
 
-#### Option 2: Homebrew
+---
 
+### Android (Termux)
+
+**Termux is the PRIMARY target platform.** The installer handles everything automatically.
+
+1. Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) (not Google Play)
+2. Run:
 ```bash
-brew tap yourusername/clide
-brew install clide
+pkg update && pkg install curl
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
 ```
-
-#### Option 3: Build from Source
-
-```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install dependencies
-brew install pkg-config openssl
-
-# Clone and build
-git clone https://github.com/yourusername/clide.git
-cd clide
-cargo build --release
-sudo cp target/release/clide /usr/local/bin/
-```
+3. Follow the prompts (all steps are skippable)
 
 ---
 
-### 📱 Android (Termux)
+## Post-Installation Setup
 
-**Termux is the PRIMARY target platform for Clide!** Full support with zero compilation needed.
+### 1. Get a Gemini API Key
 
-#### Installation Steps:
+1. Visit: https://aistudio.google.com/app/apikey
+2. Sign in with Google
+3. Click "Create API Key"
+4. Copy the key
 
-**1. Install Termux:**
-- Download from [F-Droid](https://f-droid.org/packages/com.termux/) (recommended)
-- DO NOT use Google Play Store version (outdated)
+### 2. Set up Matrix/Element
 
-**2. Update Termux packages:**
+You need a Matrix account and a room.
+
+**Create a free account:** https://app.element.io
+
+**Get your access token (2 options):**
+
+*Option A - Via Element:*
+1. Open Element → Settings → Help & About
+2. Click "Access Token" to reveal it
+3. Copy it
+
+*Option B - Via API:*
 ```bash
-pkg update && pkg upgrade
+curl -XPOST https://matrix.org/_matrix/client/v3/login \
+  -H "Content-Type: application/json" \
+  -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"YOUR_USERNAME"},"password":"YOUR_PASSWORD"}'
+# Copy "access_token" from the response
 ```
 
-**3. Install dependencies:**
-```bash
-pkg install wget curl
-```
+**Get your room ID:**
+1. Open the room in Element
+2. Settings → Advanced → Internal room ID
+3. Format: `!abc123:matrix.org`
 
-**4. Install Clide:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/clide/main/install.sh | bash
-```
+**Invite your bot account to the room** (if using a separate bot account).
 
-**5. Verify installation:**
-```bash
-clide --version
-```
-
-#### Termux-Specific Notes:
-
-✅ **Pre-compiled binary** - No Rust compilation needed!
-✅ **Zero build dependencies** - No clang, make, cmake needed!
-✅ **Instant installation** - 5 seconds vs 30+ minutes
-✅ **Full functionality** - All features work perfectly
-
-**Installation location:** `~/.local/bin/clide`
-
-Make sure it's in your PATH:
-```bash
-echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
-source ~/.bashrc
-```
-
----
-
-## 🔧 Post-Installation Setup
-
-### 1. Install Signal CLI
-
-**Linux/macOS:**
-```bash
-# Download latest signal-cli
-SIGNAL_VERSION="0.13.1"
-wget https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_VERSION}/signal-cli-${SIGNAL_VERSION}.tar.gz
-tar xf signal-cli-${SIGNAL_VERSION}.tar.gz
-
-# Install
-sudo mv signal-cli-${SIGNAL_VERSION} /opt/signal-cli
-sudo ln -sf /opt/signal-cli/bin/signal-cli /usr/local/bin/signal-cli
-```
-
-**Termux:**
-```bash
-pkg install openjdk-17 wget
-
-SIGNAL_VERSION="0.13.1"
-wget https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_VERSION}/signal-cli-${SIGNAL_VERSION}.tar.gz
-tar xf signal-cli-${SIGNAL_VERSION}.tar.gz
-mv signal-cli-${SIGNAL_VERSION} ~/.local/
-echo 'export PATH=$HOME/.local/signal-cli-'${SIGNAL_VERSION}'/bin:$PATH' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**Verify:**
-```bash
-signal-cli --version
-```
-
----
-
-### 2. Configure Signal
-
-#### Option A: Link as Secondary Device (Recommended)
-
-```bash
-signal-cli link -n "clide-bot"
-```
-
-A QR code will appear. Scan it with Signal:
-1. Open Signal on your phone
-2. Settings → Linked Devices
-3. Click "+" or "Link New Device"
-4. Scan the QR code
-
-**Advantages:**
-- ✅ No SMS needed
-- ✅ More secure
-- ✅ Works on devices without SIM
-- ✅ Instant setup
-
-#### Option B: Register New Number
-
-```bash
-# Register
-signal-cli -a +1234567890 register
-
-# You'll receive SMS with verification code
-signal-cli -a +1234567890 verify <code>
-```
-
-**Requirements:**
-- Need a phone number
-- Must receive SMS
-- Number will be dedicated to clide
-
----
-
-### 3. Create Configuration
+### 3. Configure Clide
 
 ```bash
 # Create config directory
-mkdir -p ~/.clide/logs
+mkdir -p ~/.clide
 
 # Copy example config
-cd clide
-cp config.example.yaml ~/.clide/config.yaml
+cp /path/to/Clide/config.example.yaml ~/.clide/config.yaml
+chmod 600 ~/.clide/config.yaml
 
 # Edit config
 nano ~/.clide/config.yaml
@@ -255,205 +132,78 @@ nano ~/.clide/config.yaml
 
 **Minimal config:**
 ```yaml
-# Get API key from: https://makersuite.google.com/app/apikey
-gemini_api_key: "YOUR_API_KEY_HERE"
+gemini_api_key: "YOUR_GEMINI_API_KEY"
 
-# Your Signal number (format: +1234567890)
-signal_number: "+1234567890"
+matrix_homeserver: "https://matrix.org"
+matrix_user: "@yourbot:matrix.org"
+matrix_access_token: "YOUR_ACCESS_TOKEN"
+matrix_room_id: "!roomid:matrix.org"
+```
 
-# Basic settings
-require_confirmation: false
-logging:
-  level: "info"
+You can also use environment variables instead of putting secrets in the yaml:
+```bash
+export GEMINI_API_KEY="your-key"
+export MATRIX_ACCESS_TOKEN="your-token"
+```
+
+### 4. Start the Bot
+
+```bash
+clide bot
+```
+
+Send a message in the Matrix room — you should get a Gemini-powered reply.
+
+---
+
+## Updating Clide
+
+```bash
+# Re-run the installer (Termux)
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
+
+# Or build from source
+cd Clide && git pull && cargo build --release && sudo cp target/release/clide /usr/local/bin/
 ```
 
 ---
 
-### 4. Get Gemini API Key
-
-1. Visit: https://makersuite.google.com/app/apikey
-2. Sign in with Google account
-3. Click "Create API Key"
-4. Copy the key
-5. Add to `~/.clide/config.yaml`
-
-**Free tier includes:**
-- 60 requests per minute
-- 1,500 requests per day
-- More than enough for personal use
-
----
-
-### 5. Verify Installation
+## Uninstallation
 
 ```bash
-# Check version
-clide --version
+# Remove binary
+sudo rm /usr/local/bin/clide          # Linux/macOS
+rm "$PREFIX/bin/clide"                # Termux
 
-# Test Gemini API
-clide test-gemini "Hello!"
-
-# Check configuration
-clide config show
-
-# Test Signal (send yourself a message)
-clide test-signal
-```
-
-If all tests pass: ✅ **Installation complete!**
-
----
-
-## 🎯 First Run
-
-```bash
-# Start the bot
-clide start
-```
-
-**What happens:**
-1. Loads configuration
-2. Connects to Signal
-3. Initializes Gemini AI
-4. Starts listening for messages
-5. Displays status dashboard
-
-**Send a test message via Signal:**
-```
-status
-```
-
-You should receive a response with system status!
-
----
-
-## 🔄 Updating Clide
-
-### Automatic Update (Recommended)
-
-```bash
-clide update
-```
-
-This will:
-1. Check for new version
-2. Download if available
-3. Backup old binary
-4. Install new version
-5. Restart if running
-
-### Manual Update
-
-```bash
-# Download latest version
-curl -fsSL https://raw.githubusercontent.com/yourusername/clide/main/install.sh | bash
-
-# Or download specific version
-wget https://github.com/yourusername/clide/releases/download/v1.2.3/clide-linux-amd64
-chmod +x clide-linux-amd64
-sudo mv clide-linux-amd64 /usr/local/bin/clide
+# Remove configuration and data
+rm -rf ~/.clide ~/.config/clide
 ```
 
 ---
 
-## 🗑️ Uninstallation
-
-### Remove Binary
-
-```bash
-# Linux/macOS
-sudo rm /usr/local/bin/clide
-
-# Termux
-rm ~/.local/bin/clide
-```
-
-### Remove Configuration & Data
-
-```bash
-rm -rf ~/.clide
-```
-
-### Remove Signal-CLI (Optional)
-
-```bash
-# Linux/macOS
-sudo rm -rf /opt/signal-cli
-sudo rm /usr/local/bin/signal-cli
-
-# Termux
-rm -rf ~/.local/signal-cli-*
-```
-
----
-
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### "clide: command not found"
-
-**Fix:** Add to PATH
 ```bash
 echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### "signal-cli: command not found"
+### "Cannot read config"
+```bash
+cp config.example.yaml ~/.clide/config.yaml
+# Then fill in your credentials
+```
 
-**Fix:** Install signal-cli (see above) and ensure it's in PATH
+### "Failed to sync with Matrix server"
+- Check `matrix_homeserver` URL is correct (no trailing slash)
+- Verify your access token is valid (try re-logging in to get a fresh one)
+- Test connectivity: `curl https://matrix.org/_matrix/client/versions`
 
 ### "Failed to connect to Gemini API"
-
-**Possible causes:**
-1. Invalid API key → Check config.yaml
-2. No internet connection → Test with `ping google.com`
-3. Rate limit exceeded → Wait 60 seconds
-
-### "Permission denied" when running clide
-
-**Fix:** Make executable
-```bash
-chmod +x /usr/local/bin/clide
-```
-
-### Termux: "cannot execute binary file"
-
-**Possible causes:**
-1. Downloaded wrong architecture → Re-run install.sh
-2. Corrupted download → Delete and re-download
-
-### Signal messages not received
-
-**Fix:** Check Signal-CLI setup
-```bash
-signal-cli -a +1234567890 receive
-```
-
-If no messages appear, re-link device or re-register number.
+- Check `GEMINI_API_KEY` is set and valid
+- Test: `curl "https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY"`
 
 ---
 
-## 📞 Support
-
-Still having issues?
-
-- 🐛 [Report Issue](https://github.com/yourusername/clide/issues)
-- 💬 [Ask in Discussions](https://github.com/yourusername/clide/discussions)
-- 📧 Email: support@yourproject.com
-
----
-
-## 🎓 Next Steps
-
-After successful installation:
-
-1. ✅ Review [Security Best Practices](SECURITY.md)
-2. ✅ Read [Workflow Examples](docs/WORKFLOWS.md)
-3. ✅ Join the community
-
----
-
-**Installation time:** 5 seconds to 5 minutes depending on method
-**Difficulty:** Easy ⭐⭐☆☆☆
-**Success rate:** 99%+ on all platforms
-
-**Happy gliding!** 🛫
+**Happy gliding!**

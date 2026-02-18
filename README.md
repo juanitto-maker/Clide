@@ -1,117 +1,112 @@
-# 🛫 Clide - Glide through your CLI
+# Clide - Glide through your CLI
 
-**Autonomous terminal operations via Signal messenger powered by AI**
+**Autonomous terminal operations via Element/Matrix powered by AI**
 
-A Rust-based CLI agent that executes terminal commands, manages servers, and automates workflows through Signal messages. Built for speed, reliability, and zero-dependency deployment.
-
----
-
-## ✨ Features
-
-- 🤖 **AI-Powered** - Gemini AI understands natural language commands
-- 📱 **Signal Integration** - Control via encrypted Signal messages
-- 🔐 **Secure** - End-to-end encrypted communication
-- 🚀 **Blazing Fast** - Native Rust performance
-- 📦 **Single Binary** - No runtime dependencies
-- 🌍 **Cross-Platform** - Linux, macOS, Android (Termux)
-- 🔧 **SSH Support** - Remote server management
-- 📊 **Rich Logging** - Structured, colorful output
+A Rust-based CLI agent that executes terminal commands, manages servers, and automates
+workflows through Matrix messages. Built for speed, reliability, and zero-dependency deployment.
 
 ---
 
-## 🎯 Quick Start
+## Features
+
+- **AI-Powered** - Gemini AI understands natural language commands
+- **Element/Matrix Integration** - Control via end-to-end encrypted Matrix rooms
+- **Secure** - Access token auth, authorized-user allowlist, confirmation mode
+- **Blazing Fast** - Native Rust performance
+- **Single Binary** - No runtime dependencies (no Java, no Node.js, no signal-cli)
+- **Cross-Platform** - Linux, macOS, Android (Termux)
+- **SSH Support** - Remote server management
+- **Rich Logging** - Structured, colorful output
+
+---
+
+## Quick Start
 
 ### Installation
 
-**One-line install (Linux/macOS/Termux):**
+**One-line install (Termux/Android):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/clide/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
 ```
 
 **Manual install:**
 ```bash
-# Download latest release
-wget https://github.com/yourusername/clide/releases/latest/download/clide-linux-amd64
-chmod +x clide-linux-amd64
-sudo mv clide-linux-amd64 /usr/local/bin/clide
+wget https://github.com/juanitto-maker/Clide/releases/latest/download/clide-x86_64
+chmod +x clide-x86_64
+sudo mv clide-x86_64 /usr/local/bin/clide
 ```
 
 **Build from source:**
 ```bash
-git clone https://github.com/yourusername/clide.git
-cd clide
+git clone https://github.com/juanitto-maker/Clide.git
+cd Clide
 cargo build --release
 sudo cp target/release/clide /usr/local/bin/
 ```
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 1. **Copy example config:**
 ```bash
-cp config.example.yaml config.yaml
+mkdir -p ~/.clide
+cp config.example.yaml ~/.clide/config.yaml
+chmod 600 ~/.clide/config.yaml
 ```
 
-2. **Edit config.yaml:**
+2. **Edit `~/.clide/config.yaml`:**
 ```yaml
-# Gemini API Key (get from https://makersuite.google.com/app/apikey)
-gemini_api_key: "YOUR_GEMINI_API_KEY_HERE"
+gemini_api_key: "YOUR_GEMINI_API_KEY"
 
-# Signal Number (format: +1234567890)
-signal_number: "+1234567890"
+matrix_homeserver: "https://matrix.org"
+matrix_user: "@yourbot:matrix.org"
+matrix_access_token: "YOUR_ACCESS_TOKEN"
+matrix_room_id: "!roomid:matrix.org"
 
-# Bot behaviour
 require_confirmation: false
-authorized_numbers: []  # Empty = allow anyone
-
-# Logging
-logging:
-  level: "info"
+authorized_users: []        # empty = allow anyone in the room
 ```
 
-3. **Set up Signal CLI:**
-```bash
-# Link as secondary device (recommended)
-signal-cli link -n clide-bot
+3. **Get a Matrix access token:**
+   - **Via Element:** Settings → Help & About → Access Token (click to reveal)
+   - **Via API:**
+     ```bash
+     curl -XPOST https://matrix.org/_matrix/client/v3/login \
+       -H "Content-Type: application/json" \
+       -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"USERNAME"},"password":"PASSWORD"}'
+     ```
 
-# Or register new number
-signal-cli -a +1234567890 register
-signal-cli -a +1234567890 verify <verification-code>
-```
+4. **Find your room ID:**
+   - Element → open the room → Settings → Advanced → Internal room ID
+   - Format: `!abc123:matrix.org`
+
+5. **Invite the bot account to the room** (if it isn't already a member)
 
 ---
 
-## 🚀 Usage
+## Usage
 
-### Start Bot
+### Start Matrix Bot
 ```bash
-clide start
+clide bot
 ```
 
-### Test Gemini Connection
-```bash
-clide test-gemini "Hello, how are you?"
-```
-
-### Test SSH Connection
-```bash
-clide ssh user@example.com "uptime"
-```
-
-### Interactive Mode
+### Interactive REPL (Gemini only, no Matrix)
 ```bash
 clide
-> help
-> status
-> config show
+```
+
+### Show version
+```bash
+clide --version
 ```
 
 ---
 
-## 💬 Signal Commands
+## Matrix Commands
 
-Send these commands via Signal to control clide:
+Send these messages in your Matrix room to control Clide:
 
 ### System Commands
 ```
@@ -148,16 +143,16 @@ optimize config     # AI optimizes configuration
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────┐
-│  Signal Client  │  (You)
+│  Element Client │  (You)
 └────────┬────────┘
-         │ Encrypted Messages
+         │ Encrypted Messages (Matrix protocol)
          ▼
 ┌─────────────────┐
-│  signal-cli     │  (Signal Protocol)
+│  Matrix Room    │
 └────────┬────────┘
          │
          ▼
@@ -182,34 +177,32 @@ optimize config     # AI optimizes configuration
 
 ---
 
-## 🔒 Security
+## Security
 
 ### Built-in Safety Features
 
-- ✅ **Command Whitelist** - Only approved commands execute
-- ✅ **Confirmation Mode** - Require approval before execution
-- ✅ **Host Restrictions** - Limit SSH to specific servers
-- ✅ **Audit Logging** - All actions logged with timestamps
-- ✅ **Encrypted Config** - Sensitive data encrypted at rest
-- ✅ **No Root Required** - Runs with user permissions
+- **Command Allowlist** - Block dangerous shell patterns via `blocked_commands`
+- **Confirmation Mode** - Require YES before execution
+- **User Allowlist** - Restrict to specific Matrix user IDs via `authorized_users`
+- **Audit Logging** - All actions logged with timestamps
+- **No Root Required** - Runs with user permissions
+- **Access Token Auth** - Password never stored after setup
 
 ### Best Practices
 
-1. **Never share your config.yaml** - Contains API keys
-2. **Use Signal device linking** - More secure than SMS registration
+1. **Never share `~/.clide/config.yaml`** - Contains API keys and access token
+2. **Use a dedicated bot account** - Don't reuse your personal Matrix account
 3. **Enable confirmation mode** - Review commands before execution
-4. **Restrict SSH hosts** - Limit to known servers only
-5. **Rotate API keys regularly** - Good security hygiene
-6. **Review logs periodically** - Check for suspicious activity
+4. **Restrict `authorized_users`** - Limit to your own Matrix ID
+5. **Rotate access tokens periodically** - Good security hygiene
 
 ---
 
-## 🛠️ Development
+## Development
 
 ### Prerequisites
 - Rust 1.75+
-- signal-cli (for Signal integration)
-- SSH (for remote operations)
+- A Matrix account and room (free at [app.element.io](https://app.element.io))
 
 ### Build
 ```bash
@@ -219,7 +212,6 @@ cargo build --release
 ### Test
 ```bash
 cargo test
-cargo test --all-features
 ```
 
 ### Lint
@@ -235,99 +227,81 @@ RUST_LOG=debug cargo run
 
 ---
 
-## 📦 Dependencies
+## Dependencies
 
-All dependencies are managed by Cargo and compile to a single static binary:
+All dependencies compile to a single static binary — **no Java, no signal-cli, no Node.js**:
 
 - **tokio** - Async runtime
-- **reqwest** (rustls-tls) - HTTP client for Gemini API (pure-Rust TLS, no OpenSSL)
-- **serde / serde_json / serde_yaml** - Serialization (config, JSON)
+- **reqwest** (rustls-tls) - HTTP client for Gemini and Matrix APIs (pure-Rust TLS)
+- **serde / serde_json / serde_yaml** - Serialization
 - **rusqlite** - Embedded SQLite database
 - **tracing / tracing-subscriber** - Structured logging
-- **ring** - Cryptography (AES-256-GCM, PBKDF2)
 - **anyhow** - Error handling
 - **chrono** - Date/time utilities
 - **colored** - Terminal colour output
 - **dotenvy** - Environment variable loading
 
-**Zero runtime dependencies** - Just copy the binary and run!
-
 ---
 
-## 🌍 Platform Support
+## Platform Support
 
 | Platform | Status | Binary Name |
 |----------|--------|-------------|
-| Linux x64 | ✅ Tested | clide-x86_64-linux |
-| Linux ARM64 | ✅ Tested | clide-aarch64-linux |
-| Android (Termux) | ✅ Tested | clide-aarch64-android |
-| macOS Intel | ✅ Tested | clide-x86_64-darwin |
-| macOS Apple Silicon | ✅ Tested | clide-aarch64-darwin |
-| Windows | ⚠️ WSL2 recommended | clide-x86_64-windows.exe |
+| Linux x64 | Tested | clide-x86_64-linux |
+| Linux ARM64 | Tested | clide-aarch64-linux |
+| Android (Termux) | Tested | clide-aarch64-android |
+| macOS Intel | Tested | clide-x86_64-darwin |
+| macOS Apple Silicon | Tested | clide-aarch64-darwin |
+| Windows | WSL2 recommended | clide-x86_64-windows.exe |
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 - [Installation Guide](docs/INSTALL.md)
 - [Security Guide](docs/SECURITY.md)
 - [Workflow Examples](docs/WORKFLOWS.md)
 - [Contributing Guide](docs/CONTRIBUTING.md)
-- [Security Improvements](docs/SECURITY_IMPROVEMENTS.md)
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing`)
-3. Commit changes (`git commit -am 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing`)
-5. Open a Pull Request
-
-See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for details.
+3. Commit your changes
+4. Push to branch and open a Pull Request
 
 ---
 
-## 📝 License
+## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
-- [Signal Messenger](https://signal.org) - Encrypted communication
+- [Element](https://element.io) / [Matrix](https://matrix.org) - Open, decentralised, encrypted communication
 - [Google Gemini](https://ai.google.dev) - AI capabilities
-- [signal-cli](https://github.com/AsamK/signal-cli) - Signal protocol implementation
 - [Rust Community](https://rust-lang.org) - Amazing ecosystem
 
 ---
 
-## 📞 Support
-
-- 🐛 [Report Issues](https://github.com/yourusername/clide/issues)
-- 💬 [Discussions](https://github.com/yourusername/clide/discussions)
-- 📧 Email: support@yourproject.com
-- 📱 Signal: [Join Beta Group]
-
----
-
-## 🗺️ Roadmap
+## Roadmap
 
 - [x] Core bot functionality
 - [x] Gemini AI integration
-- [x] SSH support
+- [x] Element/Matrix integration (v0.3.0)
 - [x] Android/Termux support
 - [ ] Web UI dashboard
-- [ ] Plugin system
 - [ ] Docker support
-- [ ] Multi-user support
+- [ ] Multi-room support
 - [ ] Scheduled commands
 - [ ] Custom command aliases
 
 ---
 
-**Built with ❤️ in Rust** 🦀
+**Built with Rust**
