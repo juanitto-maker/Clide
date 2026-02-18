@@ -259,7 +259,7 @@ if [ -n "$MATRIX_HS" ]; then
             echo "" >/dev/tty
             echo "   Logging in as $LOCALPART..." >/dev/tty
 
-            LOGIN_RESP=$(curl -sf -XPOST "${MATRIX_HS}/_matrix/client/v3/login" \
+            LOGIN_RESP=$(curl -s --max-time 15 -XPOST "${MATRIX_HS}/_matrix/client/v3/login" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"$LOCALPART\"},\"password\":\"$MATRIX_PASS\"}" \
                 2>/dev/null || true)
