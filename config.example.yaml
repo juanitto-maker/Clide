@@ -22,10 +22,12 @@ matrix_user: "@username:matrix.org"
 # Access token for the bot account.
 # Obtained automatically by the installer, or set via MATRIX_ACCESS_TOKEN env var.
 # Manual: POST https://matrix.org/_matrix/client/v3/login with your credentials.
+# IMPORTANT: Keep the double quotes — tokens often contain characters that break YAML without them.
 matrix_access_token: ""
 
 # Room ID the bot listens in (e.g. !abc123:matrix.org)
 # Find it in Element: Room Settings -> Advanced -> Internal room ID
+# IMPORTANT: Keep the double quotes — the '!' and ':' characters require quoting in YAML.
 matrix_room_id: "!roomid:matrix.org"
 
 # --- Bot behaviour ---

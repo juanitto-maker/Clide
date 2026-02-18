@@ -68,7 +68,15 @@ impl Config {
                     e,
                 )
             })?;
-        let mut cfg: Config = serde_yaml::from_str(&content)?;
+        let mut cfg: Config = serde_yaml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!(
+                "{}\n\nHint: Make sure all values (especially matrix_access_token and matrix_room_id) \
+are wrapped in double quotes in your config file.\n\
+Example:  matrix_access_token: \"syt_abc123...\"\n\
+Tokens or IDs containing special characters (like ':') must be quoted.",
+                e
+            )
+        })?;
 
         // Allow env vars to override sensitive values
         if let Ok(key) = std::env::var("GEMINI_API_KEY") {
