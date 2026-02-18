@@ -262,9 +262,9 @@ gemini_api_key: "YOUR_API_KEY_HERE"
 signal_number: "+1234567890"
 
 # Basic settings
-allow_commands: true
 require_confirmation: false
-log_level: "info"
+logging:
+  level: "info"
 ```
 
 ---
@@ -436,7 +436,6 @@ If no messages appear, re-link device or re-register number.
 
 Still having issues?
 
-- 📖 Read [Troubleshooting Guide](TROUBLESHOOTING.md)
 - 🐛 [Report Issue](https://github.com/yourusername/clide/issues)
 - 💬 [Ask in Discussions](https://github.com/yourusername/clide/discussions)
 - 📧 Email: support@yourproject.com
@@ -447,10 +446,9 @@ Still having issues?
 
 After successful installation:
 
-1. ✅ Read [Configuration Guide](CONFIG.md)
-2. ✅ Review [Security Best Practices](SECURITY.md)
-3. ✅ Learn [Available Commands](COMMANDS.md)
-4. ✅ Join the community
+1. ✅ Review [Security Best Practices](SECURITY.md)
+2. ✅ Read [Workflow Examples](docs/WORKFLOWS.md)
+3. ✅ Join the community
 
 ---
 

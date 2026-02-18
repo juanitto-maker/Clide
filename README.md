@@ -61,14 +61,13 @@ gemini_api_key: "YOUR_GEMINI_API_KEY_HERE"
 # Signal Number (format: +1234567890)
 signal_number: "+1234567890"
 
-# Execution Settings
-allow_commands: true
+# Bot behaviour
 require_confirmation: false
-allowed_hosts: []  # Empty = all hosts allowed
+authorized_numbers: []  # Empty = allow anyone
 
 # Logging
-log_level: "info"
-log_file: "~/.clide/logs/clide.log"
+logging:
+  level: "info"
 ```
 
 3. **Set up Signal CLI:**
@@ -240,13 +239,16 @@ RUST_LOG=debug cargo run
 
 All dependencies are managed by Cargo and compile to a single static binary:
 
-- **reqwest** - HTTP client for Gemini API
 - **tokio** - Async runtime
-- **serde** - Serialization (config, JSON)
-- **openssh** - Pure Rust SSH client
-- **clap** - CLI argument parsing
-- **tracing** - Structured logging
-- **ring** - Cryptography
+- **reqwest** (rustls-tls) - HTTP client for Gemini API (pure-Rust TLS, no OpenSSL)
+- **serde / serde_json / serde_yaml** - Serialization (config, JSON)
+- **rusqlite** - Embedded SQLite database
+- **tracing / tracing-subscriber** - Structured logging
+- **ring** - Cryptography (AES-256-GCM, PBKDF2)
+- **anyhow** - Error handling
+- **chrono** - Date/time utilities
+- **colored** - Terminal colour output
+- **dotenvy** - Environment variable loading
 
 **Zero runtime dependencies** - Just copy the binary and run!
 
@@ -261,18 +263,17 @@ All dependencies are managed by Cargo and compile to a single static binary:
 | Android (Termux) | ✅ Tested | clide-aarch64-android |
 | macOS Intel | ✅ Tested | clide-x86_64-darwin |
 | macOS Apple Silicon | ✅ Tested | clide-aarch64-darwin |
-| Windows | 🚧 Coming Soon | clide-x86_64-windows.exe |
+| Windows | ⚠️ WSL2 recommended | clide-x86_64-windows.exe |
 
 ---
 
 ## 📚 Documentation
 
 - [Installation Guide](docs/INSTALL.md)
-- [Configuration Reference](docs/CONFIG.md)
 - [Security Guide](docs/SECURITY.md)
-- [Command Reference](docs/COMMANDS.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [API Documentation](docs/API.md)
+- [Workflow Examples](docs/WORKFLOWS.md)
+- [Contributing Guide](docs/CONTRIBUTING.md)
+- [Security Improvements](docs/SECURITY_IMPROVEMENTS.md)
 
 ---
 
@@ -286,7 +287,7 @@ Contributions are welcome! Please:
 4. Push to branch (`git push origin feature/amazing`)
 5. Open a Pull Request
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for details.
 
 ---
 

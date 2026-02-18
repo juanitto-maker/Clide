@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2025-02-XX
+
+### 🔄 Rust Rewrite
+
+Complete rewrite from Python to Rust for performance, safety, and zero-dependency deployment.
+
+### ✨ Added / Changed
+- Replaced Python runtime with a native Rust binary (no interpreter needed)
+- Switched from `signalbot` Python library to `signal-cli` subprocess integration
+- Replaced `google-generativeai` Python package with `reqwest`-based Gemini API client
+- Replaced `sqlite3` Python module with `rusqlite` (bundled SQLite)
+- Pure-Rust TLS via `rustls` — no OpenSSL dependency, works on Android/Termux out of the box
+- Structured logging with `tracing` / `tracing-subscriber`
+- Removed dependency on Cline CLI and Node.js
+
+### 🔧 Technical Details
+- Single static binary — copy and run, no runtime required
+- Async throughout with `tokio`
+- Environment variable support via `dotenvy` (`GEMINI_API_KEY`)
+
+---
+
 ## [0.1.0-alpha] - 2025-02-XX
 
 ### 🎉 Initial Release - Taking Off!
@@ -60,16 +82,19 @@ The first public alpha release of clide - autonomous terminal operations from yo
 
 ### 🔧 Technical Details
 - **Dependencies**
-  - Python 3.9+
-  - signalbot for Signal integration
-  - Gemini Flash API for AI brain
-  - Cline CLI for autonomous execution
-  - SQLite for persistent storage
+  - Rust 1.75+
+  - tokio for async runtime
+  - reqwest (rustls-tls) for Gemini API HTTP calls
+  - serde / serde_json / serde_yaml for config & JSON
+  - rusqlite (bundled) for persistent storage
+  - tracing / tracing-subscriber for structured logging
+  - ring for cryptography
+  - signal-cli (external, Java) for Signal integration
 
 - **Architecture**
-  - Modular design for easy extension
-  - Model-agnostic LLM integration
-  - Messenger-agnostic bot framework
+  - Modular Rust crate structure
+  - Async/await throughout (tokio)
+  - Pure-Rust TLS via rustls — no OpenSSL dependency
   - Secure credential storage
 
 ### 📝 Known Issues
@@ -79,7 +104,7 @@ The first public alpha release of clide - autonomous terminal operations from yo
 
 ### 🙏 Credits
 - Thanks to all early testers and contributors!
-- Special thanks to the signalbot, Cline, and Termux communities
+- Special thanks to the signal-cli, Rust, and Termux communities
 
 ---
 
@@ -96,7 +121,8 @@ The first public alpha release of clide - autonomous terminal operations from yo
 
 ## Version History
 
-- **v0.1.0-alpha** - Initial public alpha release
+- **v0.2.0** - Rust rewrite: single static binary, no runtime dependencies
+- **v0.1.0-alpha** - Initial Python prototype
 - *More versions coming soon as we fly higher!* ✈️
 
 ---
@@ -107,7 +133,8 @@ The first public alpha release of clide - autonomous terminal operations from yo
 ```bash
 cd clide
 git pull origin main
-pip install -r requirements.txt --upgrade
+cargo build --release
+sudo cp target/release/clide /usr/local/bin/
 ```
 
 ### Breaking Changes

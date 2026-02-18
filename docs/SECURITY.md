@@ -21,15 +21,14 @@ clide follows these core security principles:
 ### Built-in Protections
 
 #### 1. Command Safety System
-```python
-# Automatic blocking of dangerous patterns
-BLOCKED_PATTERNS = [
-    "rm -rf /",           # System wipe
-    "dd if=/dev/zero",    # Disk destruction
-    "mkfs",               # Format filesystem
-    ":(){ :|:& };:",      # Fork bomb
-    "chmod -R 777 /",     # Unsafe permissions
-]
+```yaml
+# In config.yaml — patterns blocked before execution
+blocked_commands:
+  - "rm -rf /"           # System wipe
+  - "dd if="             # Disk destruction
+  - "mkfs"               # Format filesystem
+  - ":(){ :|:& };:"      # Fork bomb
+  - "chmod -R 777 /"     # Unsafe permissions
 ```
 
 #### 2. Confirmation Requirements
@@ -39,13 +38,8 @@ BLOCKED_PATTERNS = [
 - Firewall modifications are reviewed before execution
 
 #### 3. Credential Encryption
-```yaml
-# All sensitive data is encrypted at rest
-credentials:
-  encryption: "AES-256-GCM"
-  key_derivation: "PBKDF2-SHA256"
-  iterations: 100000
-```
+
+The `ring` crate (already in Cargo dependencies) provides AES-256-GCM encryption for sensitive values stored at rest. Key derivation uses PBKDF2-SHA256 with 100,000 iterations.
 
 #### 4. Audit Logging
 - Every command is logged with timestamp
@@ -82,12 +76,11 @@ ls -l config.yaml
 #### API Key Security
 ```yaml
 # ❌ NEVER commit config.yaml with real keys
-gemini:
-  api_key: "YOUR_KEY_HERE"  # Replace before committing
+gemini_api_key: "YOUR_KEY_HERE"  # Replace before committing
 
-# ✅ Use environment variables instead
-gemini:
-  api_key: "${GEMINI_API_KEY}"
+# ✅ Leave blank and set the env var instead
+gemini_api_key: ""
+# Then: export GEMINI_API_KEY="your-key"
 ```
 
 #### Git Protection
@@ -109,10 +102,8 @@ echo "*.log" >> .gitignore
 #### Limiting Access
 ```yaml
 # config.yaml - Restrict to your messages only
-signal:
-  admin_only: true
-  allowed_numbers:
-    - "+1234567890"  # Your number only
+authorized_numbers:
+  - "+1234567890"  # Your number only
 ```
 
 ---
@@ -176,10 +167,8 @@ Signal → Settings → Account → Signal PIN
 #### 2. Regular Updates
 ```bash
 # Update clide weekly
-cd clide && git pull origin main
-
-# Update dependencies
-pip install -r requirements.txt --upgrade
+cd clide && git pull origin main && cargo build --release
+sudo cp target/release/clide /usr/local/bin/
 ```
 
 #### 3. Monitor Activity
@@ -201,13 +190,8 @@ cp ~/.clide/memory.db ~/.clide/memory.db.backup.$(date +%Y%m%d)
 ```
 
 #### 5. Principle of Least Privilege
-```yaml
-# Don't give clide more access than needed
-vps:
-  - name: "production"
-    user: "clide-bot"  # Not root!
-    ssh_key: "~/.ssh/clide_readonly"  # Limited permissions
-```
+
+Run clide as a non-root user. When using SSH, create a dedicated user on the remote host with minimal permissions, and point clide at that user's SSH key. Never run clide or SSH commands as `root`.
 
 ### For Developers
 
@@ -219,21 +203,21 @@ vps:
 - [ ] Secure random for cryptographic operations
 
 #### 2. Secure Coding Patterns
-```python
-# ✅ GOOD - Parameterized execution
-subprocess.run(["ls", "-la", user_path], check=True)
+```rust
+// ✅ GOOD - Parameterized execution (no shell interpolation)
+Command::new("ls").args(["-la", user_path]).output()?;
 
-# ❌ BAD - Shell injection risk
-subprocess.run(f"ls -la {user_path}", shell=True)
+// ❌ BAD - Shell injection risk
+Command::new("sh").args(["-c", &format!("ls -la {user_path}")]).output()?;
 ```
 
 #### 3. Dependency Management
 ```bash
 # Audit dependencies regularly
-pip-audit
+cargo audit
 
-# Check for known vulnerabilities
-safety check
+# Check for clippy lints (includes some security patterns)
+cargo clippy -- -D warnings
 ```
 
 ---
@@ -243,15 +227,24 @@ safety check
 ### Storing Credentials Securely
 
 #### Encryption Implementation
-```python
-# clide uses industry-standard encryption
-from cryptography.fernet import Fernet
 
-# Key derived from user passphrase
-key = derive_key(passphrase, salt, iterations=100000)
+Clide uses the `ring` crate (AES-256-GCM) for encrypting sensitive values at rest:
 
-# Encrypt sensitive data
-encrypted = Fernet(key).encrypt(credential.encode())
+```rust
+use ring::{aead, pbkdf2};
+
+// Key derived from user passphrase via PBKDF2-SHA256
+let mut key = [0u8; 32];
+pbkdf2::derive(
+    pbkdf2::PBKDF2_HMAC_SHA256,
+    NonZeroU32::new(100_000).unwrap(),
+    salt,
+    passphrase.as_bytes(),
+    &mut key,
+);
+
+// Encrypt with AES-256-GCM
+// ... (see src/config.rs)
 ```
 
 #### User Passphrase
@@ -337,44 +330,37 @@ Instead:
 ### High Security Profile
 ```yaml
 # Paranoid mode - maximum security
-safety:
-  dry_run_default: true  # Always preview first
-  confirm_destructive: true
-  confirm_all: true  # Confirm every command
-  auto_backup: true
-  max_retries: 1  # No automatic retries
-  
+require_confirmation: true
+confirmation_timeout: 30
+authorized_numbers:
+  - "+1234567890"  # Only your number
+blocked_commands:
+  - "rm -rf /"
+  - "mkfs"
+  - "dd if="
+  - "chmod 777"
 logging:
-  level: "DEBUG"  # Log everything
-  
-signal:
-  admin_only: true
-  allowed_numbers:
-    - "+1234567890"  # Only your number
+  level: "debug"   # Log everything
 ```
 
 ### Balanced Profile (Recommended)
 ```yaml
 # Good security without being annoying
-safety:
-  dry_run_default: false
-  confirm_destructive: true
-  auto_backup: true
-  max_retries: 3
-  
-signal:
-  admin_only: true
+require_confirmation: true
+confirmation_timeout: 60
+authorized_numbers:
+  - "+1234567890"
+logging:
+  level: "info"
 ```
 
-### Low Security Profile (Development)
+### Low Security Profile (Development only)
 ```yaml
-# For testing only - NOT for production!
-safety:
-  dry_run_default: false
-  confirm_destructive: false  # ⚠️ Dangerous!
-  auto_backup: false
-  
-# DO NOT use this in production!
+# For local testing only - NOT for production!
+require_confirmation: false
+authorized_numbers: []  # ⚠️ Anyone can send commands
+logging:
+  level: "debug"
 ```
 
 ---
@@ -410,21 +396,21 @@ safety:
 Want to audit clide's security yourself?
 
 ### Key Areas to Review
-1. **Input validation** - `src/safety.py`
-2. **Credential storage** - `src/memory.py`
-3. **Command execution** - `src/executor.py`
-4. **API interactions** - `src/brain.py`
+1. **Input validation** - `src/executor.rs`
+2. **Credential storage** - `src/config.rs`
+3. **Command execution** - `src/executor.rs`
+4. **API interactions** - `src/gemini.rs`
 
 ### Tools for Auditing
 ```bash
-# Static analysis
-bandit -r src/
+# Dependency vulnerability scan
+cargo audit
 
-# Dependency vulnerabilities
-safety check
+# Static analysis / lints
+cargo clippy -- -D warnings
 
-# Code quality
-pylint src/
+# Check for unsafe code
+grep -r "unsafe" src/
 ```
 
 ---
