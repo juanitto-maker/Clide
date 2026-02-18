@@ -156,7 +156,7 @@ if [ ! -f ~/.clide/config.yaml ]; then
         cat >~/.clide/config.yaml <<'YAML'
 # Clide configuration - edit as needed
 gemini_api_key: ""
-gemini_model: "gemini-2.0-flash"
+gemini_model: "gemini-3.0-flash"
 matrix_homeserver: "https://matrix.org"
 matrix_user: ""
 matrix_access_token: ""
