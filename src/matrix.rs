@@ -21,6 +21,8 @@ pub struct MatrixClient {
     client: Client,
     txn_counter: u64,
     initial_sync_done: bool,
+    /// Actual bot user ID fetched from /whoami; used for self-response detection.
+    bot_user_id: Option<String>,
 }
 
 impl MatrixClient {
@@ -33,6 +35,7 @@ impl MatrixClient {
             client: Client::new(),
             txn_counter: 0,
             initial_sync_done: false,
+            bot_user_id: None,
         }
     }
 
@@ -48,6 +51,37 @@ impl MatrixClient {
             }
         }
         out
+    }
+
+    /// Fetch the authenticated user's ID from /_matrix/client/v3/account/whoami
+    /// and cache it for use in self-response detection.
+    pub async fn fetch_bot_user_id(&mut self) -> Result<String> {
+        let url = format!("{}/_matrix/client/v3/account/whoami", self.homeserver);
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .context("Failed to call /whoami")?;
+        let json: Value = resp.json().await.context("Invalid /whoami response")?;
+        let user_id = json["user_id"]
+            .as_str()
+            .context("No user_id in /whoami response")?
+            .to_string();
+        self.bot_user_id = Some(user_id.clone());
+        Ok(user_id)
+    }
+
+    /// Returns true if `sender` matches the bot's own Matrix user ID.
+    /// Compares case-insensitively and falls back to `config_user` if
+    /// /whoami was never called or failed.
+    pub fn is_bot_sender(&self, sender: &str, config_user: &str) -> bool {
+        let id = self
+            .bot_user_id
+            .as_deref()
+            .unwrap_or(config_user);
+        sender.trim().to_lowercase() == id.trim().to_lowercase()
     }
 
     /// Receive new messages from the Matrix room via /sync.
@@ -137,13 +171,24 @@ impl MatrixClient {
             "body": message
         });
 
-        self.client
+        let resp = self
+            .client
             .put(&url)
             .bearer_auth(&self.access_token)
             .json(&body)
             .send()
             .await
             .context("Failed to send Matrix message")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Matrix send_message failed {}: {}",
+                status,
+                body_text
+            ));
+        }
 
         Ok(())
     }
