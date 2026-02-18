@@ -8,8 +8,8 @@ description = "AI bot for Termux - chat via Signal, powered by Gemini"
 [dependencies]
 # Async and HTTP
 tokio = { version = "1.0", features = ["full"] }
-# native-tls is required for HTTPS on Android/Termux (no rustls support by default)
-reqwest = { version = "0.11", features = ["json", "native-tls"] }
+# rustls = pure-Rust TLS, no OpenSSL dependency — works on Linux and Android/Termux
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
 
 # Serialization
@@ -26,10 +26,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 tracing-appender = "0.2"
 log = "0.4"
-
-# SSH (optional but included for completeness)
-russh = "0.38"
-russh-keys = "0.38"
 
 # Utilities
 anyhow = "1.0"

@@ -2,7 +2,7 @@
 // database.rs - SQLite Memory DB (CORRECTED)
 // ============================================
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;

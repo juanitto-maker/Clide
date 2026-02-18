@@ -21,8 +21,8 @@ pub use executor::{ExecutionResult, Executor};
 pub use gemini::{CommandAnalysis, GeminiClient};
 pub use memory::Memory;
 pub use signal::SignalClient;
-pub use skills::{Skill, SkillManager, SkillResult};
 pub use ssh::{SshClient, SshOutput};
+pub use skills::{Skill, SkillManager, SkillResult};
 pub use workflow::{Workflow, WorkflowExecutor, WorkflowResult};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
