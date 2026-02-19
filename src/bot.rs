@@ -78,6 +78,8 @@ impl Bot {
             ),
         }
 
+        self.matrix.log_room_id();
+
         println!(
             "Bot running. Send a message in Matrix room {}. Ctrl+C to stop.",
             self.config.matrix_room_id
