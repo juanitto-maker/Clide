@@ -60,7 +60,7 @@ impl Config {
     /// Load config from ~/.clide/config.yaml
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::path();
-        let content = std::fs::read_to_string(&path)
+        let raw = std::fs::read_to_string(&path)
             .map_err(|e| {
                 anyhow::anyhow!(
                     "Cannot read config {:?}: {}\nRun installer or copy config.example.yaml",
@@ -68,6 +68,9 @@ impl Config {
                     e,
                 )
             })?;
+        // Strip Windows-style carriage returns (\r) so configs edited on
+        // Windows or copy-pasted from certain apps parse without errors.
+        let content = raw.replace('\r', "");
         let mut cfg: Config = serde_yaml::from_str(&content).map_err(|e| {
             anyhow::anyhow!(
                 "{}\n\nHint: Make sure all values (especially matrix_access_token and matrix_room_id) \
