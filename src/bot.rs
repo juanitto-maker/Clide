@@ -60,14 +60,30 @@ impl Bot {
         info!("Starting Clide bot...");
 
         // Resolve the bot's actual Matrix user ID so the self-response guard
-        // works correctly even if matrix_user in config has wrong casing or
-        // a minor typo.
+        // works correctly regardless of what is written in matrix_user in config.
         match self.matrix.fetch_bot_user_id().await {
-            Ok(id) => info!("Bot authenticated as: {}", id),
+            Ok(ref id) => {
+                info!("Bot authenticated as: {}", id);
+                // Warn if the bot is running under the same account as matrix_user.
+                // This means the bot == the operator, so the self-response guard
+                // will silently drop every message you send.  Create a dedicated
+                // bot account and use its access token in the config.
+                if id.trim().to_lowercase() == self.config.matrix_user.trim().to_lowercase() {
+                    error!(
+                        "WARNING: The bot is authenticated as '{}', which is the same as \
+                         matrix_user in your config.  The self-response guard will block \
+                         ALL messages you send because the bot considers you to be itself.\n\
+                         FIX: Create a dedicated bot account, invite it to the room, \
+                         and set matrix_user + matrix_access_token to that bot account's \
+                         credentials in ~/.clide/config.yaml.",
+                        id
+                    );
+                }
+            }
             Err(e) => error!(
-                "Could not fetch bot user ID via /whoami ({}); \
-                 falling back to config matrix_user for self-response detection. \
-                 Ensure matrix_user in config matches exactly to avoid self-loops.",
+                "Could not fetch bot user ID via /whoami ({}). \
+                 Self-response filtering is DISABLED — check your homeserver URL and \
+                 access token.  If the bot loops, stop it and fix the config.",
                 e
             ),
         }
@@ -104,10 +120,10 @@ impl Bot {
         info!("Message from {}: {}", sender, text);
 
         // Self-response guard: ignore messages sent by the bot itself to prevent
-        // an infinite loop when running with a personal account access token.
-        // Uses the user ID fetched from /whoami (case-insensitive) so a casing
-        // mismatch in config cannot break this check.
-        if self.matrix.is_bot_sender(&sender, &self.config.matrix_user) {
+        // an infinite loop.  Uses only the user ID resolved via /whoami so that
+        // a wrong/old value in config.matrix_user cannot accidentally block
+        // messages from the human operator.
+        if self.matrix.is_bot_sender(&sender) {
             info!("Ignoring own message from {} to prevent self-response loop.", sender);
             return Ok(());
         }

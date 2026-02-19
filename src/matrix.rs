@@ -74,14 +74,16 @@ impl MatrixClient {
     }
 
     /// Returns true if `sender` matches the bot's own Matrix user ID.
-    /// Compares case-insensitively and falls back to `config_user` if
-    /// /whoami was never called or failed.
-    pub fn is_bot_sender(&self, sender: &str, config_user: &str) -> bool {
-        let id = self
-            .bot_user_id
-            .as_deref()
-            .unwrap_or(config_user);
-        sender.trim().to_lowercase() == id.trim().to_lowercase()
+    /// Uses only the user ID fetched from /whoami.  If /whoami never
+    /// succeeded (bot_user_id is None) we return false so that real
+    /// users' messages are never silently blocked — a startup warning
+    /// is logged in that case directing the operator to check the config.
+    pub fn is_bot_sender(&self, sender: &str) -> bool {
+        match &self.bot_user_id {
+            Some(bot_id) => sender.trim().to_lowercase() == bot_id.trim().to_lowercase(),
+            // /whoami failed: we don't know who the bot is, so don't filter.
+            None => false,
+        }
     }
 
     /// Receive new messages from the Matrix room via /sync.
