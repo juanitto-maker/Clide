@@ -12,12 +12,16 @@ use tokio::sync::mpsc::Sender;
 use tokio::time::{timeout, Duration};
 
 use crate::config::Config;
+use crate::database::Database;
 use crate::executor::Executor;
+use crate::memory::Memory;
 
 /// Maximum output bytes fed back to Gemini per command (avoids context overflow)
 const MAX_OUTPUT_BYTES: usize = 8_000;
 /// Maximum progress preview sent over the channel per command
 const MAX_PREVIEW_BYTES: usize = 500;
+/// How many past conversations to inject as context
+const MEMORY_CONTEXT_MESSAGES: usize = 10;
 
 const SYSTEM_PROMPT: &str = "\
 You are Clide, an autonomous CLI operator running inside a Termux terminal on Android. \
@@ -34,6 +38,11 @@ Your approach:\n\
 2. Execute each step immediately using run_command — do NOT describe or explain first.\n\
 3. Inspect results and adapt if something fails.\n\
 4. When finished, give a concise summary of what was accomplished.\n\n\
+OUTPUT RULES — follow these exactly:\n\
+- When the user asks to LIST, SHOW, DISPLAY, or PRINT something (files, folders, \
+logs, processes, etc.) always include the FULL verbatim command output in your \
+final response, formatted as a code block. Never paraphrase or summarise a listing.\n\
+- For other tasks a brief prose summary is fine, but still quote key output lines.\n\n\
 IMPORTANT: Always use run_command to get information or take action. \
 Never respond with 'I would do X' — just do it.";
 
@@ -43,33 +52,86 @@ pub struct Agent {
     model: String,
     executor: Executor,
     max_steps: usize,
+    memory: Option<Memory>,
 }
 
 impl Agent {
     pub fn new(config: &Config) -> Self {
+        let memory = Self::init_memory();
         Self {
             client: Client::new(),
             api_key: config.gemini_api_key.clone(),
             model: config.get_model().to_string(),
             executor: Executor::new(config.clone()),
             max_steps: config.max_agent_steps,
+            memory,
+        }
+    }
+
+    fn init_memory() -> Option<Memory> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let db_path = format!("{}/.clide/memory.db", home);
+        if let Some(parent) = std::path::Path::new(&db_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match Database::new(&db_path) {
+            Ok(db) => {
+                info!("Memory database opened: {}", db_path);
+                Some(Memory::new(db))
+            }
+            Err(e) => {
+                warn!("Could not open memory database, running without memory: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Build a system prompt that includes recent conversation history for this user.
+    async fn build_system_prompt(&mut self, user: &str) -> String {
+        let context = match self.memory {
+            Some(ref mut mem) => mem
+                .get_context(user, MEMORY_CONTEXT_MESSAGES)
+                .await
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+
+        if context.trim().is_empty() {
+            SYSTEM_PROMPT.to_string()
+        } else {
+            format!(
+                "{}\n\nRecent conversation history with this user:\n{}",
+                SYSTEM_PROMPT, context
+            )
         }
     }
 
     /// Run the agentic task loop.
     ///
+    /// `user` identifies the sender (Telegram username or Matrix user ID) and is
+    /// used to load and persist per-user memory.
+    ///
     /// Sends incremental progress strings via `progress` (if provided).
     /// Returns the final text answer from the model.
-    pub async fn run(&mut self, task: &str, progress: Option<Sender<String>>) -> Result<String> {
-        info!("Agent starting task: {}", task);
+    pub async fn run(
+        &mut self,
+        task: &str,
+        user: &str,
+        progress: Option<Sender<String>>,
+    ) -> Result<String> {
+        info!("Agent starting task for '{}': {}", user, task);
+
+        let system_prompt = self.build_system_prompt(user).await;
 
         let mut conversation: Vec<Value> =
             vec![json!({"role": "user", "parts": [{"text": task}]})];
 
-        for step in 0..self.max_steps {
+        let mut final_answer: Option<String> = None;
+
+        'agent_loop: for step in 0..self.max_steps {
             info!("Agent step {}/{}", step + 1, self.max_steps);
 
-            let response = self.call_gemini(&conversation).await?;
+            let response = self.call_gemini(&conversation, &system_prompt).await?;
             let candidate_content = &response["candidates"][0]["content"];
             let parts: Vec<Value> = candidate_content["parts"]
                 .as_array()
@@ -138,19 +200,35 @@ impl Agent {
             } else if let Some(text_part) = parts.iter().find(|p| p.get("text").is_some()) {
                 let text = text_part["text"].as_str().unwrap_or("").to_string();
                 info!("Agent finished after {} step(s)", step + 1);
-                return Ok(text);
+                final_answer = Some(text);
+                break 'agent_loop;
 
             } else {
                 warn!("Agent: unexpected response: {:?}", candidate_content);
-                return Ok("Agent received an unexpected response format.".to_string());
+                final_answer = Some("Agent received an unexpected response format.".to_string());
+                break 'agent_loop;
             }
         }
 
-        warn!("Agent reached max steps ({})", self.max_steps);
-        Ok(format!(
-            "⚠️ Reached maximum steps ({}). Task may be incomplete.",
-            self.max_steps
-        ))
+        let answer = final_answer.unwrap_or_else(|| {
+            warn!("Agent reached max steps ({})", self.max_steps);
+            format!(
+                "⚠️ Reached maximum steps ({}). Task may be incomplete.",
+                self.max_steps
+            )
+        });
+
+        // Persist the conversation turn to memory
+        if let Some(ref mut mem) = self.memory {
+            if let Err(e) = mem
+                .save_conversation(user, task, &answer, None, None, None)
+                .await
+            {
+                warn!("Failed to save conversation to memory: {}", e);
+            }
+        }
+
+        Ok(answer)
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
@@ -176,7 +254,7 @@ impl Agent {
     }
 
     /// Call the Gemini API with function-calling enabled.
-    async fn call_gemini(&self, conversation: &[Value]) -> Result<Value> {
+    async fn call_gemini(&self, conversation: &[Value], system_prompt: &str) -> Result<Value> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
             self.model, self.api_key
@@ -184,7 +262,7 @@ impl Agent {
 
         let body = json!({
             "system_instruction": {
-                "parts": [{"text": SYSTEM_PROMPT}]
+                "parts": [{"text": system_prompt}]
             },
             "tools": [{
                 "function_declarations": [{

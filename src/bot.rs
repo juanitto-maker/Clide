@@ -4,7 +4,6 @@
 
 use anyhow::Result;
 use log::{info, warn, error};
-use rusqlite::Connection;
 
 use crate::agent::Agent;
 use crate::config::Config;
@@ -15,22 +14,11 @@ pub struct Bot {
     config: Config,
     agent: Agent,
     matrix: MatrixClient,
-    _db: Connection,
 }
 
 impl Bot {
     /// Initialize bot from config
     pub fn new(config: Config) -> Result<Self> {
-        let db_path = Self::db_path();
-        info!("Opening database: {}", db_path);
-
-        // Ensure ~/.clide directory exists
-        if let Some(parent) = std::path::Path::new(&db_path).parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let db = Connection::open(&db_path)?;
-
         let agent = Agent::new(&config);
 
         let matrix = MatrixClient::new(
@@ -43,7 +31,6 @@ impl Bot {
             config,
             agent,
             matrix,
-            _db: db,
         })
     }
 
@@ -126,7 +113,7 @@ impl Bot {
         }
 
         info!("Running agent task...");
-        let response = self.agent.run(&text, None).await?;
+        let response = self.agent.run(&text, &sender, None).await?;
 
         self.matrix.send_message(&response).await?;
         info!("Replied to {}", sender);
@@ -151,8 +138,4 @@ impl Bot {
         Ok(reply.trim().eq_ignore_ascii_case("yes"))
     }
 
-    fn db_path() -> String {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{}/.clide/memory.db", home)
-    }
 }
