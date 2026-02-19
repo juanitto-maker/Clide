@@ -4,7 +4,7 @@
 // ============================================
 
 use anyhow::{Context, Result};
-use log::warn;
+use log::{debug, info, warn};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -87,6 +87,15 @@ impl MatrixClient {
         }
     }
 
+    /// Log the room ID the client is configured to poll (call once at startup).
+    pub fn log_room_id(&self) {
+        info!(
+            "Listening on room: {} — must match 'Internal room ID' in \
+             Element → Room Settings → Advanced.",
+            self.room_id
+        );
+    }
+
     /// Receive new messages from the Matrix room via /sync.
     /// The first call performs an initial sync to capture the current position
     /// without replaying history; subsequent calls return only new messages.
@@ -122,6 +131,27 @@ impl MatrixClient {
         }
 
         let mut messages = Vec::new();
+
+        // Check whether the configured room appears in the sync response at all.
+        // If it does not, the room_id in config is likely wrong.
+        let joined_rooms = json["rooms"]["join"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        if !joined_rooms.is_empty() && !joined_rooms.iter().any(|id| id == &self.room_id) {
+            warn!(
+                "Configured room '{}' not found in sync. \
+                 Bot is joined to these rooms instead: [{}]. \
+                 Fix matrix_room_id in ~/.clide/config.yaml to match the \
+                 'Internal room ID' shown in Element → Room Settings → Advanced.",
+                self.room_id,
+                joined_rooms.join(", ")
+            );
+        }
+
+        debug!("Joined rooms in sync: {:?}", joined_rooms);
+
         if let Some(room) = json["rooms"]["join"].get(&self.room_id) {
             if let Some(events) = room["timeline"]["events"].as_array() {
                 for event in events {
