@@ -116,6 +116,17 @@ impl MatrixClient {
             .await
             .context("Failed to sync with Matrix server")?;
 
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Matrix /sync returned HTTP {}: {} \
+                 — check matrix_access_token in ~/.clide/config.yaml",
+                status,
+                body
+            ));
+        }
+
         let json: Value = resp.json().await.context("Invalid sync response from Matrix")?;
 
         let was_initial = !self.initial_sync_done;
