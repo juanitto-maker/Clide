@@ -63,25 +63,49 @@ async fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Signal bot mode: poll signal-cli, reply via Gemini
+/// Bot mode: dispatch to Matrix, Telegram, or both based on config.platform
 async fn run_bot() -> Result<(), Box<dyn std::error::Error>> {
     use clide::bot::Bot;
     use clide::config::Config;
-
-    println!("{}", "Starting Clide Matrix bot...".bright_green());
+    use clide::telegram_bot::TelegramBot;
 
     let config = Config::load().map_err(|e| {
         eprintln!("{} {}", "Config error:".red(), e);
         eprintln!(
-            "Copy {} to {} and fill in Matrix credentials",
+            "Copy {} to {} and fill in your credentials",
             "config.example.yaml".yellow(),
             "~/.clide/config.yaml".cyan()
         );
         e
     })?;
 
-    let mut bot = Bot::new(config)?;
-    bot.start().await?;
+    match config.platform.as_str() {
+        "telegram" => {
+            println!("{}", "Starting Clide Telegram bot...".bright_green());
+            let mut bot = TelegramBot::new(config)?;
+            bot.start().await?;
+        }
+        "both" => {
+            println!("{}", "Starting Clide on Matrix + Telegram...".bright_green());
+            let config2 = config.clone();
+            // Spawn Telegram in background task, run Matrix in foreground
+            let tg_handle = tokio::spawn(async move {
+                let mut bot = TelegramBot::new(config2)?;
+                bot.start().await
+            });
+            let mut matrix_bot = Bot::new(config)?;
+            tokio::select! {
+                r = matrix_bot.start() => { r?; }
+                r = tg_handle => { r??; }
+            }
+        }
+        _ => {
+            // Default: "matrix"
+            println!("{}", "Starting Clide Matrix bot...".bright_green());
+            let mut bot = Bot::new(config)?;
+            bot.start().await?;
+        }
+    }
 
     Ok(())
 }

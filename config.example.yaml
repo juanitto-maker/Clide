@@ -11,6 +11,12 @@ gemini_api_key: ""
 # Gemini model to use
 gemini_model: "gemini-2.5-flash"
 
+# Which messaging platform(s) to use:
+#   "matrix"   - Element/Matrix only
+#   "telegram"  - Telegram only
+#   "both"      - run both simultaneously
+platform: "matrix"
+
 # --- Matrix/Element settings ---
 
 # Homeserver URL (e.g. https://matrix.org or your own server)
@@ -29,6 +35,13 @@ matrix_access_token: ""
 # Find it in Element: Room Settings -> Advanced -> Internal room ID
 # IMPORTANT: Keep the double quotes — the '!' and ':' characters require quoting in YAML.
 matrix_room_id: "!roomid:matrix.org"
+
+# --- Telegram settings ---
+
+# Bot token from @BotFather (required when platform is "telegram" or "both")
+# Can also be set via the TELEGRAM_BOT_TOKEN environment variable.
+# To create a bot: open Telegram → @BotFather → /newbot → copy the token
+telegram_bot_token: ""
 
 # --- Bot behaviour ---
 

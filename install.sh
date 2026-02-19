@@ -210,10 +210,79 @@ else
     echo "⏭  Skipped. Set later via GEMINI_API_KEY env var or ~/.clide/config.yaml" >/dev/tty
 fi
 
-# ── 4b. Matrix/Element credentials ───────────────────────────────────────────
+# ── 4b. Platform selection ────────────────────────────────────────────────────
+
+echo "" >/dev/tty
+echo "📱 Choose your messaging platform" >/dev/tty
+echo "═══════════════════════════════════════" >/dev/tty
+echo "   1) Telegram  – easiest, just create a bot via @BotFather" >/dev/tty
+echo "   2) Element   – Matrix/Element (requires Matrix account)" >/dev/tty
+echo "   3) Both      – run Telegram and Matrix simultaneously" >/dev/tty
+echo "═══════════════════════════════════════" >/dev/tty
+echo "" >/dev/tty
+ask "Enter choice [1/2/3] (default: 1): " PLATFORM_CHOICE
+
+case "$PLATFORM_CHOICE" in
+    2)
+        CLIDE_PLATFORM="matrix"
+        echo "✅ Using Element/Matrix" >/dev/tty
+        ;;
+    3)
+        CLIDE_PLATFORM="both"
+        echo "✅ Using Telegram + Element/Matrix" >/dev/tty
+        ;;
+    *)
+        CLIDE_PLATFORM="telegram"
+        echo "✅ Using Telegram" >/dev/tty
+        ;;
+esac
+
+# Write platform to config
+if grep -q "^platform:" ~/.clide/config.yaml 2>/dev/null; then
+    sed -i "s|^platform:.*|platform: \"$CLIDE_PLATFORM\"|" ~/.clide/config.yaml
+else
+    echo "platform: \"$CLIDE_PLATFORM\"" >>~/.clide/config.yaml
+fi
+
+# ── 4c. Telegram setup ────────────────────────────────────────────────────────
+
+if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
+    echo "" >/dev/tty
+    echo "🤖 Telegram Bot Setup" >/dev/tty
+    echo "───────────────────────────────────────" >/dev/tty
+    echo "   How to get a bot token:" >/dev/tty
+    echo "   1. Open Telegram → search for @BotFather" >/dev/tty
+    echo "   2. Send /newbot and follow the prompts" >/dev/tty
+    echo "   3. Copy the token it gives you (looks like 123456:ABC-DEF...)" >/dev/tty
+    echo "" >/dev/tty
+
+    ask "Telegram bot token (or press Enter to skip): " TG_TOKEN secret
+
+    if [ -n "$TG_TOKEN" ]; then
+        if grep -q "telegram_bot_token:" ~/.clide/config.yaml 2>/dev/null; then
+            sed -i "s|telegram_bot_token:.*|telegram_bot_token: \"$TG_TOKEN\"|" ~/.clide/config.yaml
+        else
+            echo "telegram_bot_token: \"$TG_TOKEN\"" >>~/.clide/config.yaml
+        fi
+        if grep -q "TELEGRAM_BOT_TOKEN" ~/.config/clide/config.env 2>/dev/null; then
+            sed -i "s|TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$TG_TOKEN|" ~/.config/clide/config.env
+        else
+            echo "TELEGRAM_BOT_TOKEN=$TG_TOKEN" >>~/.config/clide/config.env
+        fi
+        chmod 600 ~/.config/clide/config.env
+        echo "✅ Telegram bot token saved" >/dev/tty
+    else
+        echo "⏭  Skipped. Set later via TELEGRAM_BOT_TOKEN env var or ~/.clide/config.yaml" >/dev/tty
+    fi
+fi
+
+# ── 4d. Matrix/Element credentials ───────────────────────────────────────────
+
+if [ "$CLIDE_PLATFORM" = "matrix" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
 
 echo "" >/dev/tty
 echo "💬 Matrix/Element Setup" >/dev/tty
+echo "───────────────────────────────────────" >/dev/tty
 echo "   You need a Matrix account and a room for the bot." >/dev/tty
 echo "   If you don't have one, create a free account at https://app.element.io" >/dev/tty
 echo "" >/dev/tty
@@ -221,7 +290,6 @@ echo "" >/dev/tty
 ask "Homeserver URL (Enter for https://matrix.org, or skip to configure later): " MATRIX_HS
 
 if [ -z "$MATRIX_HS" ]; then
-    # Prompt to skip entirely
     echo "" >/dev/tty
     ask "Skip Matrix setup entirely? [Y/n]: " SKIP_MATRIX
     if [[ "$SKIP_MATRIX" =~ ^[Nn] ]]; then
@@ -258,7 +326,6 @@ if [ -n "$MATRIX_HS" ]; then
         ask "Matrix account password (Enter to skip → enter token directly): " MATRIX_PASS secret
 
         if [ -n "$MATRIX_PASS" ]; then
-            # Strip @prefix: and take just the localpart for the login identifier
             LOCALPART=$(echo "$MATRIX_USER" | sed 's/^@//' | cut -d: -f1)
             echo "" >/dev/tty
             echo "   Logging in as $LOCALPART..." >/dev/tty
@@ -275,7 +342,6 @@ if [ -n "$MATRIX_HS" ]; then
                     | sed 's/"errcode":"//;s/"//' || true)
 
                 if [ -n "$ACCESS_TOKEN" ]; then
-                    # Save token to env file and yaml
                     if grep -q "MATRIX_ACCESS_TOKEN" ~/.config/clide/config.env 2>/dev/null; then
                         sed -i "s|MATRIX_ACCESS_TOKEN=.*|MATRIX_ACCESS_TOKEN=$ACCESS_TOKEN|" ~/.config/clide/config.env
                     else
@@ -308,7 +374,6 @@ if [ -n "$MATRIX_HS" ]; then
                 echo "   You can set the token later via MATRIX_ACCESS_TOKEN env var." >/dev/tty
             fi
         else
-            # User wants to enter token directly
             echo "" >/dev/tty
             echo "   To get your token manually:" >/dev/tty
             echo "   Element → Settings → Help & About → Access Token" >/dev/tty
@@ -343,6 +408,8 @@ else
     echo "⏭  Matrix setup skipped. Edit ~/.clide/config.yaml to configure later." >/dev/tty
 fi
 
+fi  # end Matrix block
+
 # ─── 5. Summary ───────────────────────────────────────────────────────────────
 
 echo ""
@@ -358,19 +425,40 @@ fi
 echo ""
 echo "Usage:"
 echo "  clide              # Chat with Gemini (REPL)"
-echo "  clide bot          # Start Matrix bot"
+echo "  clide bot          # Start bot (platform set in config)"
 echo "  clide --version    # Show version"
 echo ""
-echo "Config:   ~/.clide/config.yaml"
+echo "Config:   ~/.clide/config.yaml  (platform: \"$CLIDE_PLATFORM\")"
 echo "Env file: ~/.config/clide/config.env"
 echo ""
-echo "Next steps:"
-echo "  1. Make sure ~/.clide/config.yaml has all Matrix fields filled in"
-echo "  2. Invite your bot account to the Matrix room"
-echo "  3. Run: clide bot"
-echo ""
-echo "Element/Matrix quickstart:"
-echo "  - Free account: https://app.element.io"
-echo "  - Access token: Element → Settings → Help & About → Access Token"
-echo "  - Room ID: Room → Settings → Advanced → Internal room ID"
+
+case "$CLIDE_PLATFORM" in
+    telegram)
+        echo "Next steps:"
+        echo "  1. Make sure telegram_bot_token is set in ~/.clide/config.yaml"
+        echo "  2. Open Telegram, start a chat with your bot, send any message"
+        echo "  3. Run: clide bot"
+        echo ""
+        echo "Telegram quickstart:"
+        echo "  - Create bot: @BotFather → /newbot"
+        echo "  - Token format: 123456789:ABCdefGHI..."
+        ;;
+    matrix)
+        echo "Next steps:"
+        echo "  1. Make sure ~/.clide/config.yaml has all Matrix fields filled in"
+        echo "  2. Invite your bot account to the Matrix room"
+        echo "  3. Run: clide bot"
+        echo ""
+        echo "Element/Matrix quickstart:"
+        echo "  - Free account: https://app.element.io"
+        echo "  - Access token: Element → Settings → Help & About → Access Token"
+        echo "  - Room ID: Room → Settings → Advanced → Internal room ID"
+        ;;
+    both)
+        echo "Next steps:"
+        echo "  1. Fill in both telegram_bot_token and Matrix fields in ~/.clide/config.yaml"
+        echo "  2. Invite your Matrix bot to the room"
+        echo "  3. Run: clide bot  (starts both bots simultaneously)"
+        ;;
+esac
 echo ""

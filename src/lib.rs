@@ -12,6 +12,8 @@ pub mod matrix;
 pub mod memory;
 pub mod skills;
 pub mod ssh;
+pub mod telegram;
+pub mod telegram_bot;
 pub mod workflow;
 
 pub use bot::Bot;
@@ -20,6 +22,8 @@ pub use database::{Conversation, Database, Stats};
 pub use executor::{ExecutionResult, Executor};
 pub use gemini::{CommandAnalysis, GeminiClient};
 pub use matrix::MatrixClient;
+pub use telegram::TelegramClient;
+pub use telegram_bot::TelegramBot;
 pub use memory::Memory;
 pub use ssh::{SshClient, SshOutput};
 pub use skills::{Skill, SkillManager, SkillResult};

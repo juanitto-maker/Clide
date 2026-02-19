@@ -11,11 +11,23 @@ pub struct Config {
     #[serde(default = "default_model")]
     pub gemini_model: String,
 
-    // Matrix/Element settings
+    /// Which messaging platform(s) to use: "matrix", "telegram", or "both"
+    #[serde(default = "default_platform")]
+    pub platform: String,
+
+    // Matrix/Element settings (required when platform is "matrix" or "both")
+    #[serde(default)]
     pub matrix_homeserver: String,
+    #[serde(default)]
     pub matrix_user: String,
+    #[serde(default)]
     pub matrix_access_token: String,
+    #[serde(default)]
     pub matrix_room_id: String,
+
+    // Telegram settings (required when platform is "telegram" or "both")
+    #[serde(default)]
+    pub telegram_bot_token: String,
 
     #[serde(default)]
     pub require_confirmation: bool,
@@ -36,6 +48,10 @@ pub struct Config {
 
 fn default_model() -> String {
     "gemini-2.5-flash".to_string()
+}
+
+fn default_platform() -> String {
+    "matrix".to_string()
 }
 
 fn default_timeout() -> u64 {
@@ -90,6 +106,11 @@ Tokens or IDs containing special characters (like ':') must be quoted.",
         if let Ok(token) = std::env::var("MATRIX_ACCESS_TOKEN") {
             if !token.is_empty() {
                 cfg.matrix_access_token = token;
+            }
+        }
+        if let Ok(token) = std::env::var("TELEGRAM_BOT_TOKEN") {
+            if !token.is_empty() {
+                cfg.telegram_bot_token = token;
             }
         }
 
