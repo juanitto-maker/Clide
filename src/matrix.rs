@@ -4,6 +4,7 @@
 // ============================================
 
 use anyhow::{Context, Result};
+use log::warn;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -124,6 +125,19 @@ impl MatrixClient {
         if let Some(room) = json["rooms"]["join"].get(&self.room_id) {
             if let Some(events) = room["timeline"]["events"].as_array() {
                 for event in events {
+                    // Warn clearly when the room is encrypted — the bot has no
+                    // crypto support so it can never read m.room.encrypted events.
+                    // The user must use an unencrypted room.
+                    if event["type"].as_str() == Some("m.room.encrypted") {
+                        warn!(
+                            "Received an encrypted message (m.room.encrypted) — \
+                             the bot cannot decrypt it. \
+                             Please use a room WITHOUT end-to-end encryption: \
+                             in Element, create a new room and disable \
+                             'Enable end-to-end encryption' during creation."
+                        );
+                        continue;
+                    }
                     if event["type"].as_str() != Some("m.room.message") {
                         continue;
                     }
