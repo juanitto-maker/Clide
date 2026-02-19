@@ -63,22 +63,12 @@ impl Bot {
         // works correctly regardless of what is written in matrix_user in config.
         match self.matrix.fetch_bot_user_id().await {
             Ok(ref id) => {
-                info!("Bot authenticated as: {}", id);
-                // Warn if the bot is running under the same account as matrix_user.
-                // This means the bot == the operator, so the self-response guard
-                // will silently drop every message you send.  Create a dedicated
-                // bot account and use its access token in the config.
-                if id.trim().to_lowercase() == self.config.matrix_user.trim().to_lowercase() {
-                    error!(
-                        "WARNING: The bot is authenticated as '{}', which is the same as \
-                         matrix_user in your config.  The self-response guard will block \
-                         ALL messages you send because the bot considers you to be itself.\n\
-                         FIX: Create a dedicated bot account, invite it to the room, \
-                         and set matrix_user + matrix_access_token to that bot account's \
-                         credentials in ~/.clide/config.yaml.",
-                        id
-                    );
-                }
+                info!(
+                    "Bot authenticated as: {} — messages from this account will be \
+                     ignored (self-response guard). Messages from any other account \
+                     will be processed normally.",
+                    id
+                );
             }
             Err(e) => error!(
                 "Could not fetch bot user ID via /whoami ({}). \
