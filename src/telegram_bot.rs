@@ -4,49 +4,44 @@
 
 use anyhow::Result;
 use log::{error, info, warn};
+use tokio::sync::mpsc;
 
+use crate::agent::Agent;
 use crate::config::Config;
-use crate::gemini::GeminiClient;
 use crate::telegram::TelegramClient;
+
+/// Telegram messages are capped at 4096 chars; leave some headroom.
+const TG_MAX_CHARS: usize = 3900;
 
 pub struct TelegramBot {
     config: Config,
-    gemini: GeminiClient,
+    agent: Agent,
     telegram: TelegramClient,
 }
 
 impl TelegramBot {
     pub fn new(config: Config) -> Result<Self> {
-        let gemini = GeminiClient::new(
-            config.gemini_api_key.clone(),
-            config.get_model().to_string(),
-            0.7,
-            2048,
-            "You are Clide, a helpful AI assistant running in a Telegram chat. \
-             Be concise and direct. When asked to run shell commands, describe what \
-             you would do rather than executing blindly."
-                .to_string(),
-        );
-
+        let agent = Agent::new(&config);
         let telegram = TelegramClient::new(config.telegram_bot_token.clone());
-
         Ok(Self {
             config,
-            gemini,
+            agent,
             telegram,
         })
     }
 
-    /// Start the bot loop - polls Telegram and replies via Gemini
+    /// Start the polling loop.
     pub async fn start(&mut self) -> Result<()> {
-        info!("Starting Clide Telegram bot...");
-        println!("Telegram bot running. Send a message to your bot. Ctrl+C to stop.");
+        info!("Starting Clide Telegram bot (agent mode)...");
+        println!("Telegram bot running. Send a task to your bot. Ctrl+C to stop.");
 
         loop {
             match self.telegram.get_updates().await {
                 Ok(messages) => {
                     for msg in messages {
-                        if let Err(e) = self.handle_message(msg.chat_id, msg.sender, msg.text).await {
+                        if let Err(e) =
+                            self.handle_message(msg.chat_id, msg.sender, msg.text).await
+                        {
                             error!("Error handling Telegram message: {}", e);
                         }
                     }
@@ -62,18 +57,69 @@ impl TelegramBot {
     async fn handle_message(&mut self, chat_id: i64, sender: String, text: String) -> Result<()> {
         info!("Telegram message from @{}: {}", sender, text);
 
-        // Authorization check (skip if no authorized users configured)
+        // Authorization check
         if !self.config.authorized_users.is_empty() && !self.config.is_authorized(&sender) {
             warn!("Unauthorized Telegram sender: @{}", sender);
             return Ok(());
         }
 
-        info!("Sending prompt to Gemini...");
-        let response = self.gemini.generate(&text).await?;
+        // Send initial "working" placeholder message
+        let status_id = self.telegram.send_message(chat_id, "⚙️ Working...").await?;
+        info!("Status message id: {}", status_id);
 
-        self.telegram.send_message(chat_id, &response).await?;
-        info!("Replied to @{}", sender);
+        // Progress channel (agent → updater task)
+        let (tx, mut rx) = mpsc::channel::<String>(64);
 
+        // Spawn a task that edits the status message with cumulative progress
+        let tg = self.telegram.clone();
+        let updater = tokio::spawn(async move {
+            let mut log = String::new();
+            while let Some(line) = rx.recv().await {
+                log.push('\n');
+                log.push_str(&line);
+
+                // Keep within Telegram's limit
+                let display = if log.len() > TG_MAX_CHARS {
+                    format!("[…]\n{}", &log[log.len() - (TG_MAX_CHARS - 6)..])
+                } else {
+                    log.clone()
+                };
+
+                let _ = tg
+                    .edit_message(chat_id, status_id, &format!("⚙️ Working…{}", display))
+                    .await;
+            }
+        });
+
+        // Run the agentic loop (drops tx when done, closing the channel)
+        let result = self.agent.run(&text, Some(tx)).await;
+
+        // Wait for the updater to flush its last edit
+        let _ = updater.await;
+
+        // Edit status message with the final answer
+        let final_text = match result {
+            Ok(r) if !r.is_empty() => r,
+            Ok(_) => "✅ Done.".to_string(),
+            Err(e) => format!("❌ Error: {}", e),
+        };
+
+        if final_text.len() <= TG_MAX_CHARS {
+            self.telegram
+                .edit_message(chat_id, status_id, &final_text)
+                .await?;
+        } else {
+            // Too long — split into chunks
+            self.telegram
+                .edit_message(chat_id, status_id, "✅ Done. Full output below:")
+                .await?;
+            for chunk in final_text.as_bytes().chunks(TG_MAX_CHARS) {
+                let chunk_str = String::from_utf8_lossy(chunk);
+                self.telegram.send_message(chat_id, &chunk_str).await?;
+            }
+        }
+
+        info!("Agent task complete for @{}", sender);
         Ok(())
     }
 }

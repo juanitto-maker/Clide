@@ -6,11 +6,12 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::Deserialize;
 
+#[derive(Clone)]
 pub struct TelegramClient {
     token: String,
     client: Client,
     /// Next offset to pass to getUpdates (prevents re-delivering old messages)
-    offset: i64,
+    pub offset: i64,
 }
 
 /// A single incoming Telegram message, simplified for the bot loop
@@ -51,6 +52,19 @@ struct Chat {
 struct User {
     username: Option<String>,
     first_name: String,
+}
+
+/// Minimal wrapper around a Telegram API response that carries a result.message_id
+#[derive(Deserialize)]
+struct SentMessage {
+    message_id: i64,
+}
+
+#[derive(Deserialize)]
+struct SendResponse {
+    #[allow(dead_code)]
+    ok: bool,
+    result: Option<SentMessage>,
 }
 
 // ── Client implementation ──────────────────────────────────────────────────────
@@ -100,13 +114,35 @@ impl TelegramClient {
         Ok(messages)
     }
 
-    /// Send a text reply to a chat.
-    pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<()> {
+    /// Send a text reply to a chat. Returns the new message's message_id.
+    pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<i64> {
         let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let resp: SendResponse = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({
+                "chat_id": chat_id,
+                "text": text,
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
+    }
+
+    /// Edit an existing message in a chat (best-effort; ignores "not modified" errors).
+    pub async fn edit_message(&self, chat_id: i64, message_id: i64, text: &str) -> Result<()> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/editMessageText",
+            self.token
+        );
         self.client
             .post(&url)
             .json(&serde_json::json!({
                 "chat_id": chat_id,
+                "message_id": message_id,
                 "text": text,
             }))
             .send()

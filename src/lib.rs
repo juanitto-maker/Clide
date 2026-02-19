@@ -2,6 +2,7 @@
 // lib.rs - Library Root
 // ============================================
 
+pub mod agent;
 pub mod bot;
 pub mod config;
 pub mod database;
@@ -16,6 +17,7 @@ pub mod telegram;
 pub mod telegram_bot;
 pub mod workflow;
 
+pub use agent::Agent;
 pub use bot::Bot;
 pub use config::Config;
 pub use database::{Conversation, Database, Stats};

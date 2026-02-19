@@ -42,6 +42,10 @@ pub struct Config {
     #[serde(default = "default_blocked_commands")]
     pub blocked_commands: Vec<String>,
 
+    /// Maximum tool-call steps per agent task (default 20)
+    #[serde(default = "default_agent_steps")]
+    pub max_agent_steps: usize,
+
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -56,6 +60,10 @@ fn default_platform() -> String {
 
 fn default_timeout() -> u64 {
     60
+}
+
+fn default_agent_steps() -> usize {
+    20
 }
 
 fn default_blocked_commands() -> Vec<String> {
