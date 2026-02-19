@@ -6,6 +6,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -19,8 +20,10 @@ pub struct Conversation {
     pub timestamp: i64,
 }
 
+/// SQLite database wrapped in a Mutex so it is Send + Sync and can live
+/// inside tokio::spawn futures.
 pub struct Database {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,7 +49,7 @@ impl Database {
             );
             "#,
         )?;
-        Ok(Self { conn })
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
     pub fn save_conversation(
@@ -59,7 +62,8 @@ impl Database {
         duration_ms: Option<u64>,
     ) -> Result<()> {
         let timestamp = chrono::Utc::now().timestamp();
-        self.conn.execute(
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
             r#"
             INSERT INTO conversations
                 (user, message, response, command, exit_code, duration_ms, timestamp)
@@ -79,7 +83,8 @@ impl Database {
     }
 
     pub fn get_recent_conversations(&self, user: &str, count: usize) -> Result<Vec<Conversation>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
             r#"
             SELECT id, user, message, response, command, exit_code, duration_ms, timestamp
             FROM conversations

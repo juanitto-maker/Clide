@@ -149,4 +149,46 @@ impl TelegramClient {
             .await?;
         Ok(())
     }
+
+    /// Send an HTML-formatted message. Returns the new message's message_id.
+    pub async fn send_message_html(&self, chat_id: i64, html: &str) -> Result<i64> {
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let resp: SendResponse = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({
+                "chat_id": chat_id,
+                "text": html,
+                "parse_mode": "HTML",
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
+    }
+
+    /// Edit an existing message with HTML formatting (best-effort).
+    pub async fn edit_message_html(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        html: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/editMessageText",
+            self.token
+        );
+        self.client
+            .post(&url)
+            .json(&serde_json::json!({
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": html,
+                "parse_mode": "HTML",
+            }))
+            .send()
+            .await?;
+        Ok(())
+    }
 }

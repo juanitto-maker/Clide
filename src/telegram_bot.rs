@@ -71,8 +71,9 @@ impl TelegramBot {
         let (tx, mut rx) = mpsc::channel::<String>(64);
 
         // Spawn a task that edits the status message with cumulative progress
+        // and returns the full accumulated log when done.
         let tg = self.telegram.clone();
-        let updater = tokio::spawn(async move {
+        let updater: tokio::task::JoinHandle<String> = tokio::spawn(async move {
             let mut log = String::new();
             while let Some(line) = rx.recv().await {
                 log.push('\n');
@@ -89,27 +90,40 @@ impl TelegramBot {
                     .edit_message(chat_id, status_id, &format!("⚙️ Working…{}", display))
                     .await;
             }
+            log // return full log to caller
         });
 
         // Run the agentic loop (drops tx when done, closing the channel)
-        let result = self.agent.run(&text, Some(tx)).await;
+        let result = self.agent.run(&text, &sender, Some(tx)).await;
 
-        // Wait for the updater to flush its last edit
-        let _ = updater.await;
+        // Wait for the updater to flush its last edit and collect the log
+        let commands_log = updater.await.unwrap_or_default();
 
-        // Edit status message with the final answer
+        // Build the final HTML message: answer + optional spoiler with command log
         let final_text = match result {
             Ok(r) if !r.is_empty() => r,
             Ok(_) => "✅ Done.".to_string(),
             Err(e) => format!("❌ Error: {}", e),
         };
 
-        if final_text.len() <= TG_MAX_CHARS {
-            self.telegram
-                .edit_message(chat_id, status_id, &final_text)
-                .await?;
+        let final_html = build_final_html(&final_text, &commands_log);
+
+        // Edit the status message with the final HTML answer
+        // If it's too large, fall back to split plain-text messages
+        if final_html.len() <= TG_MAX_CHARS {
+            if self
+                .telegram
+                .edit_message_html(chat_id, status_id, &final_html)
+                .await
+                .is_err()
+            {
+                // HTML edit failed (e.g. bad chars) — fall back to plain text
+                let _ = self
+                    .telegram
+                    .edit_message(chat_id, status_id, &final_text)
+                    .await;
+            }
         } else {
-            // Too long — split into chunks
             self.telegram
                 .edit_message(chat_id, status_id, "✅ Done. Full output below:")
                 .await?;
@@ -122,4 +136,28 @@ impl TelegramBot {
         info!("Agent task complete for @{}", sender);
         Ok(())
     }
+}
+
+/// Escape text for use inside Telegram HTML messages.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Build the final HTML message: answer prose followed by a spoiler block
+/// containing the commands that were run. The user taps the spoiler to expand
+/// it inline — no need to switch to Termux.
+fn build_final_html(answer: &str, commands_log: &str) -> String {
+    let escaped_answer = html_escape(answer);
+
+    if commands_log.trim().is_empty() {
+        return escaped_answer;
+    }
+
+    let escaped_log = html_escape(commands_log.trim());
+    format!(
+        "{}\n\n<tg-spoiler>🔍 Commands run:\n<pre>{}</pre></tg-spoiler>",
+        escaped_answer, escaped_log
+    )
 }
