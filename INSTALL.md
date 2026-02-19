@@ -90,31 +90,39 @@ curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.s
 
 ### 2. Set up Matrix/Element
 
-You need a Matrix account and a room.
+You need **two Matrix accounts**: one for you (the operator) and one for the bot.
 
-**Create a free account:** https://app.element.io
+> **Why two accounts?**
+> The bot listens to the room and responds to your messages. If the bot and operator share
+> the same account, the bot would ignore every message you send (self-response guard).
 
-**Get your access token (2 options):**
+#### Create the bot account
 
-*Option A - Via Element:*
-1. Open Element → Settings → Help & About
-2. Click "Access Token" to reveal it
-3. Copy it
+Go to https://app.element.io → **Create Account** → choose `matrix.org`.
 
-*Option B - Via API:*
+> **IMPORTANT — use a password, not Google/GitHub login.**
+> SSO accounts have no password, which means you cannot get their token via the API below.
+> Pick a username like `@mybot:matrix.org` and set a real password during registration.
+
+#### Get the bot's access token
+
 ```bash
 curl -XPOST https://matrix.org/_matrix/client/v3/login \
   -H "Content-Type: application/json" \
-  -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"YOUR_USERNAME"},"password":"YOUR_PASSWORD"}'
-# Copy "access_token" from the response
+  -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"mybot"},"password":"yourpassword"}'
+# Copy "access_token" from the response — it looks like "syt_..."
 ```
 
-**Get your room ID:**
-1. Open the room in Element
+Your personal account (operator) stays in Element as normal. Only the bot account's token
+goes into the Clide config. The bot never needs Element open.
+
+#### Get your room ID
+1. Open the room in Element (logged in as your personal account)
 2. Settings → Advanced → Internal room ID
 3. Format: `!abc123:matrix.org`
 
-**Invite your bot account to the room** (if using a separate bot account).
+**Invite the bot account to the room** and accept the invite from any Element session logged
+in as the bot.
 
 ### 3. Configure Clide
 
@@ -199,6 +207,16 @@ cp config.example.yaml ~/.clide/config.yaml
 - Check `matrix_homeserver` URL is correct (no trailing slash)
 - Verify your access token is valid (try re-logging in to get a fresh one)
 - Test connectivity: `curl https://matrix.org/_matrix/client/versions`
+
+### "I created the bot account with Google/GitHub and now I can't get a token"
+
+SSO accounts have no password, so the curl login approach won't work. Options:
+
+- **Easiest:** Create a fresh bot account on https://app.element.io using username + password
+  (not Google/GitHub). Use that account's token in the config.
+- **Alternative:** Open https://app.element.io in a private/incognito browser window, log in
+  as the bot via SSO, go to Settings → Help & About → Access Token, copy it, then **close
+  the tab without clicking Log Out**. The token stays valid until explicitly logged out.
 
 ### "Failed to connect to Gemini API"
 - Check `GEMINI_API_KEY` is set and valid
