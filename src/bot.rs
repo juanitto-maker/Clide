@@ -6,14 +6,14 @@ use anyhow::Result;
 use log::{info, warn, error};
 use rusqlite::Connection;
 
+use crate::agent::Agent;
 use crate::config::Config;
-use crate::gemini::GeminiClient;
 use crate::matrix::MatrixClient;
 
 /// Main bot structure (exported as Bot from lib.rs)
 pub struct Bot {
     config: Config,
-    gemini: GeminiClient,
+    agent: Agent,
     matrix: MatrixClient,
     _db: Connection,
 }
@@ -31,15 +31,7 @@ impl Bot {
 
         let db = Connection::open(&db_path)?;
 
-        let gemini = GeminiClient::new(
-            config.gemini_api_key.clone(),
-            config.get_model().to_string(),
-            0.7,
-            2048,
-            "You are Clide, a helpful AI assistant running inside an Element/Matrix room. \
-             Be concise and direct. When asked to run shell commands, describe what \
-             you would do rather than executing blindly.".to_string(),
-        );
+        let agent = Agent::new(&config);
 
         let matrix = MatrixClient::new(
             config.matrix_homeserver.clone(),
@@ -49,7 +41,7 @@ impl Bot {
 
         Ok(Self {
             config,
-            gemini,
+            agent,
             matrix,
             _db: db,
         })
@@ -133,8 +125,8 @@ impl Bot {
             }
         }
 
-        info!("Sending prompt to Gemini...");
-        let response = self.gemini.generate(&text).await?;
+        info!("Running agent task...");
+        let response = self.agent.run(&text, None).await?;
 
         self.matrix.send_message(&response).await?;
         info!("Replied to {}", sender);
