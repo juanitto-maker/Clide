@@ -83,10 +83,35 @@ impl TelegramBot {
                  Add your username to authorized_users in ~/.clide/config.yaml.",
                 sender
             );
+            let _ = self
+                .telegram
+                .send_message(
+                    chat_id,
+                    &format!(
+                        "⚠️ Bot not configured yet.\n\
+                         Add the following line to ~/.clide/config.yaml:\n\n\
+                         authorized_users:\n  - \"{}\"\n\n\
+                         Then restart the bot.",
+                        sender
+                    ),
+                )
+                .await;
             return Ok(());
         }
         if !self.config.is_authorized(&sender) {
             warn!("Unauthorized Telegram sender: @{}", sender);
+            let _ = self
+                .telegram
+                .send_message(
+                    chat_id,
+                    &format!(
+                        "🚫 Access denied.\n\
+                         Your Telegram username \"{}\" is not in authorized_users.\n\
+                         Add it to ~/.clide/config.yaml and restart the bot.",
+                        sender
+                    ),
+                )
+                .await;
             return Ok(());
         }
 
