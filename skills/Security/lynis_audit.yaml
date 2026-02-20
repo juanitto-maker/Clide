@@ -20,7 +20,7 @@ description: >
   the Hardening Index score, top warnings, and actionable suggestions.
   mode=local installs via git clone and audits this machine directly;
   mode=ssh audits a remote VPS via SSH.
-version: "1.4.0"
+version: "1.5.0"
 author: digitalAIventures LLC
 tags:
   - security
@@ -61,10 +61,12 @@ commands:
   - 'echo "[0] lynis_audit mode: {{mode}} — target: {{vps_host}}"'
 
   # ── 1. Install Lynis if not present ──────────────────────────────────────
-  # Local: lynis is not in Termux pkg repos — install via git clone.
+  # Local: lynis not in Termux pkg repos — install via git clone.
+  #        Also export TMPDIR so mktemp uses $PREFIX/tmp (no /tmp on Termux).
   # SSH:   use apt/yum/dnf on the remote server.
   - >-
     if [ "{{mode}}" = "local" ]; then
+    export TMPDIR="${TMPDIR:-$PREFIX/tmp}"; mkdir -p "$TMPDIR";
     if command -v lynis >/dev/null 2>&1; then
     echo "[1] lynis already in PATH";
     elif [ -x "$HOME/lynis/lynis" ]; then
@@ -86,11 +88,16 @@ commands:
     fi
 
   # ── 2. Run full audit ─────────────────────────────────────────────────────
+  # Local: set TMPDIR (Termux has no /tmp), then run lynis from its own dir
+  #        so dirname($0) resolves the include/ folder correctly.
   - >-
     if [ "{{mode}}" = "local" ]; then
-    LYNIS_BIN=$(command -v lynis 2>/dev/null || echo "$HOME/lynis/lynis");
+    export TMPDIR="${TMPDIR:-$PREFIX/tmp}"; mkdir -p "$TMPDIR";
     echo "[2] Running lynis audit system locally (60-120s)..."
-    && "$LYNIS_BIN" audit system --quiet 2>&1 | tail -5
+    && (if command -v lynis >/dev/null 2>&1;
+    then lynis audit system --quiet 2>&1 | tail -5;
+    else cd "$HOME/lynis" && ./lynis audit system --quiet 2>&1 | tail -5;
+    fi)
     && echo "[2] Audit complete";
     else
     ssh -i {{ssh_key}} -o BatchMode=yes {{vps_user}}@{{vps_host}}
@@ -145,7 +152,7 @@ commands:
     | sed "s/suggestion\[\]=/  S: /" | head -25
     || echo "  none found")
     && echo ""
-    && echo "[Done] Full log: $LYNIS_LOG";
+    && echo "[Done] Full log: $LYNIS_DAT";
     else
     ssh -i {{ssh_key}} -o BatchMode=yes {{vps_user}}@{{vps_host}}
     "echo '--- Suggestions (top 25) ---'
@@ -169,6 +176,8 @@ timeout: 300
 # ============================================
 # - Hardening Index: 0-100. Score 70+ = good, 80+ = excellent.
 # - mode=local: lynis is git-cloned to ~/lynis (not available via pkg).
+#   Termux has no /tmp — TMPDIR is set to $PREFIX/tmp before each lynis call.
+#   Lynis is run via "cd ~/lynis && ./lynis" so dirname($0) resolves include/.
 #   Log written to ~/lynis/lynis.log or /var/log/lynis.log.
 # - mode=ssh: requires SSH key auth. Run vps_hardening to set that up.
 # - timeout: 300s. Lynis typically finishes in 60-120s.
