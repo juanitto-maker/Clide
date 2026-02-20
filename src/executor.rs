@@ -1,13 +1,20 @@
 // ============================================
-// executor.rs - Safe Command Execution (CORRECTED)
+// executor.rs - Safe Command Execution
 // ============================================
 
 use anyhow::{Context, Result};
 use std::process::Stdio;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::config::Config;
+
+/// Hard cap on stdout per command (2 MB). Output beyond this is drained and
+/// discarded so the child process never blocks, but is not held in RAM.
+const MAX_STDOUT_BYTES: usize = 2 * 1024 * 1024;
+/// Stderr gets a smaller cap — it's rarely useful in bulk.
+const MAX_STDERR_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Executor {
@@ -49,29 +56,79 @@ impl Executor {
         for blocked in &self.config.blocked_commands {
             if command_str.contains(blocked) {
                 error!("Blocked command attempt: {}", command_str);
-                return Err(anyhow::anyhow!("Command contains blocked pattern: {}", blocked));
+                return Err(anyhow::anyhow!(
+                    "Command contains blocked pattern: {}",
+                    blocked
+                ));
             }
         }
 
         debug!("Executing command: {}", command_str);
 
-        let output = Command::new("sh")
+        let mut child = Command::new("sh")
             .arg("-c")
             .arg(command_str)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to spawn command")?
-            .wait_with_output()
-            .await?;
+            .context("Failed to spawn command")?;
 
+        let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+        let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+
+        // Read both streams concurrently with hard size caps.
+        // After the cap is reached we drain the remainder to /dev/null so the
+        // child is never blocked on a full pipe — avoiding deadlock.
+        let (stdout_result, stderr_result) = tokio::join!(
+            read_capped(&mut stdout_pipe, MAX_STDOUT_BYTES),
+            read_capped(&mut stderr_pipe, MAX_STDERR_BYTES),
+        );
+
+        let status = child.wait().await?;
         let duration = start.elapsed().as_millis() as u64;
 
+        let (stdout_bytes, stdout_truncated) = stdout_result.unwrap_or_default();
+        let (stderr_bytes, stderr_truncated) = stderr_result.unwrap_or_default();
+
+        let mut stdout = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+        if stdout_truncated {
+            warn!("stdout truncated at {} MB for: {}", MAX_STDOUT_BYTES / 1024 / 1024, command_str);
+            stdout.push_str(&format!(
+                "\n[output truncated at {} MB]",
+                MAX_STDOUT_BYTES / 1024 / 1024
+            ));
+        }
+
+        let mut stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+        if stderr_truncated {
+            stderr.push_str("\n[stderr truncated]");
+        }
+
         Ok(ExecutionResult {
-            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            exit_code: output.status.code().unwrap_or(-1),
+            stdout,
+            stderr,
+            exit_code: status.code().unwrap_or(-1),
             duration_ms: duration,
         })
     }
+}
+
+/// Read at most `limit` bytes from `reader` into a buffer, then drain the
+/// rest into a sink so the writing process is never blocked.
+///
+/// Returns `(bytes_read, was_truncated)`.
+async fn read_capped(
+    reader: &mut (impl AsyncReadExt + Unpin),
+    limit: usize,
+) -> Result<(Vec<u8>, bool)> {
+    let mut buf = Vec::new();
+    reader.take(limit as u64).read_to_end(&mut buf).await?;
+
+    let truncated = buf.len() >= limit;
+    if truncated {
+        // Drain remaining bytes so the child can exit cleanly
+        tokio::io::copy(reader, &mut tokio::io::sink()).await?;
+    }
+
+    Ok((buf, truncated))
 }
