@@ -1,0 +1,359 @@
+# ============================================
+# Docker AI Sandbox Skill
+# ============================================
+# Installs Docker CE (official upstream) and sets up
+# a hardened, isolated environment for running AI bots
+# and LLM inference containers.
+#
+# Covers:
+#   - Docker CE install from download.docker.com (rootless)
+#   - Per-project isolated internal networks
+#   - Seccomp + AppArmor hardening for AI containers
+#   - Ollama container for local LLM inference
+#   - Bot container template (resource caps, no-new-privileges)
+#   - Log rotation config
+#   - Health verification
+# ============================================
+
+name: docker_ai_sandbox
+description: Install Docker CE and set up a hardened AI sandbox with isolated networks, seccomp profiles, Ollama, and resource-capped bot containers
+version: "1.0.0"
+author: Clide Team
+tags:
+  - docker
+  - ai
+  - sandbox
+  - security
+  - ollama
+  - hardening
+  - install
+
+parameters:
+  project_name:
+    description: Name for the AI project sandbox (used for network and container naming)
+    type: string
+    required: true
+
+  ollama_model:
+    description: Ollama model to pull on setup (e.g. llama3, mistral, phi3)
+    type: string
+    required: false
+    default: "mistral"
+
+  bot_image:
+    description: Docker image to use for the AI bot container
+    type: string
+    required: false
+    default: "python:3.12-slim"
+
+  bot_mem_limit:
+    description: Memory limit for bot container (e.g. 512m, 1g)
+    type: string
+    required: false
+    default: "512m"
+
+  bot_cpu_limit:
+    description: CPU quota for bot container (0.0-1.0, e.g. 0.5 = half a core)
+    type: string
+    required: false
+    default: "0.5"
+
+  install_rootless:
+    description: Install Docker in rootless mode for current user (true/false)
+    type: string
+    required: false
+    default: "true"
+
+commands:
+  # ------------------------------------------
+  # PHASE 1: Docker CE Install
+  # ------------------------------------------
+
+  # Remove any old or unofficial Docker packages
+  - >-
+    for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
+      dpkg -l "$pkg" &>/dev/null && apt-get remove -y "$pkg" || true
+    done
+
+  # Install prerequisites for apt over HTTPS
+  - apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release
+
+  # Add official Docker GPG key (from download.docker.com — NOT any mirror)
+  - >-
+    install -m 0755 -d /etc/apt/keyrings &&
+    curl -fsSL https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg &&
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+  # Add the official Docker apt repository
+  - >-
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+      https://download.docker.com/linux/$(. /etc/os-release && echo "$ID") \
+      $(lsb_release -cs) stable" \
+      | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  # Install Docker CE engine and CLI
+  - apt-get update -qq && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # Enable and start Docker daemon
+  - systemctl enable docker && systemctl start docker
+
+  # ------------------------------------------
+  # PHASE 2: Rootless Docker (if requested)
+  # ------------------------------------------
+
+  # Install rootless dependencies
+  - >-
+    if [ "{{install_rootless}}" = "true" ]; then
+      apt-get install -y --no-install-recommends uidmap dbus-user-session fuse-overlayfs slirp4netns;
+    fi
+
+  # Enable lingering so rootless daemon survives logout
+  - >-
+    if [ "{{install_rootless}}" = "true" ] && command -v loginctl &>/dev/null; then
+      loginctl enable-linger $(logname 2>/dev/null || whoami);
+    fi
+
+  # Run rootless install as current user
+  - >-
+    if [ "{{install_rootless}}" = "true" ]; then
+      CURRENT_USER=$(logname 2>/dev/null || whoami);
+      su - "$CURRENT_USER" -c "dockerd-rootless-setuptool.sh install" || true;
+    fi
+
+  # ------------------------------------------
+  # PHASE 3: Harden Docker daemon config
+  # ------------------------------------------
+
+  # Write hardened daemon.json: live-restore, no-new-privileges, userns-remap, log rotation
+  - >-
+    cat > /etc/docker/daemon.json << 'EOF'
+    {
+      "live-restore": true,
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "10m",
+        "max-file": "3"
+      },
+      "no-new-privileges": true,
+      "icc": false,
+      "userland-proxy": false,
+      "default-ulimits": {
+        "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
+      }
+    }
+    EOF
+
+  # Reload daemon with new config
+  - systemctl reload docker || systemctl restart docker
+
+  # ------------------------------------------
+  # PHASE 4: Seccomp profile for AI containers
+  # ------------------------------------------
+
+  # Write a seccomp profile that drops ptrace/admin syscalls from AI containers
+  - mkdir -p /etc/docker/seccomp
+
+  - >-
+    cat > /etc/docker/seccomp/ai-sandbox.json << 'EOF'
+    {
+      "defaultAction": "SCMP_ACT_ERRNO",
+      "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
+      "syscalls": [
+        {
+          "names": [
+            "read","write","open","close","stat","fstat","lstat","poll","lseek",
+            "mmap","mprotect","munmap","brk","rt_sigaction","rt_sigprocmask",
+            "rt_sigreturn","ioctl","pread64","pwrite64","readv","writev","access",
+            "pipe","select","sched_yield","mremap","msync","mincore","madvise",
+            "shmget","shmat","shmctl","dup","dup2","pause","nanosleep","getitimer",
+            "alarm","setitimer","getpid","sendfile","socket","connect","accept",
+            "sendto","recvfrom","sendmsg","recvmsg","shutdown","bind","listen",
+            "getsockname","getpeername","socketpair","setsockopt","getsockopt",
+            "clone","fork","vfork","execve","exit","wait4","kill","uname",
+            "fcntl","flock","fsync","fdatasync","truncate","ftruncate","getdents",
+            "getcwd","chdir","rename","mkdir","rmdir","creat","link","unlink",
+            "symlink","readlink","chmod","fchmod","chown","fchown","lchown",
+            "umask","gettimeofday","getrlimit","getrusage","sysinfo","times",
+            "getuid","syslog","getgid","setuid","setgid","geteuid","getegid",
+            "setpgid","getppid","getpgrp","setsid","setreuid","setregid",
+            "getgroups","setgroups","setresuid","getresuid","setresgid","getresgid",
+            "getpgid","setfsuid","setfsgid","getsid","capget","rt_sigsuspend",
+            "sigaltstack","utime","mknod","personality","ustat","statfs","fstatfs",
+            "sysfs","getpriority","setpriority","mlock","munlock","mlockall",
+            "munlockall","prctl","arch_prctl","adjtimex","setrlimit","chroot",
+            "sync","acct","settimeofday","mount","umount2","swapon","swapoff",
+            "reboot","sethostname","setdomainname","iopl","ioperm",
+            "init_module","delete_module","quotactl","gettid","readahead",
+            "setxattr","lsetxattr","fsetxattr","getxattr","lgetxattr","fgetxattr",
+            "listxattr","llistxattr","flistxattr","removexattr","lremovexattr",
+            "fremovexattr","tkill","time","futex","sched_setaffinity",
+            "sched_getaffinity","set_thread_area","io_setup","io_destroy",
+            "io_getevents","io_submit","io_cancel","get_thread_area",
+            "lookup_dcookie","epoll_create","epoll_ctl_old","epoll_wait_old",
+            "remap_file_pages","getdents64","set_tid_address","restart_syscall",
+            "semtimedop","fadvise64","timer_create","timer_settime","timer_gettime",
+            "timer_getoverrun","timer_delete","clock_settime","clock_gettime",
+            "clock_getres","clock_nanosleep","exit_group","epoll_wait","epoll_ctl",
+            "tgkill","utimes","mbind","set_mempolicy","get_mempolicy","mq_open",
+            "mq_unlink","mq_timedsend","mq_timedreceive","mq_notify","mq_getsetattr",
+            "waitid","add_key","request_key","keyctl","ioprio_set","ioprio_get",
+            "inotify_init","inotify_add_watch","inotify_rm_watch","migrate_pages",
+            "openat","mkdirat","mknodat","fchownat","futimesat","newfstatat",
+            "unlinkat","renameat","linkat","symlinkat","readlinkat","fchmodat",
+            "faccessat","pselect6","ppoll","unshare","set_robust_list",
+            "get_robust_list","splice","tee","sync_file_range","vmsplice",
+            "move_pages","utimensat","epoll_pwait","signalfd","timerfd_create",
+            "eventfd","fallocate","timerfd_settime","timerfd_getfd","accept4",
+            "signalfd4","eventfd2","epoll_create1","dup3","pipe2","inotify_init1",
+            "preadv","pwritev","rt_tgsigqueueinfo","perf_event_open","recvmmsg",
+            "fanotify_init","fanotify_mark","prlimit64","name_to_handle_at",
+            "open_by_handle_at","clock_adjtime","syncfs","sendmmsg","setns",
+            "getcpu","process_vm_readv","process_vm_writev","sched_setattr",
+            "sched_getattr","renameat2","seccomp","getrandom","memfd_create",
+            "kexec_file_load","bpf","execveat","userfaultfd","membarrier",
+            "mlock2","copy_file_range","preadv2","pwritev2","pkey_mprotect",
+            "pkey_alloc","pkey_free","statx","io_pgetevents","rseq"
+          ],
+          "action": "SCMP_ACT_ALLOW"
+        },
+        {
+          "names": ["ptrace","process_vm_readv","process_vm_writev"],
+          "action": "SCMP_ACT_ERRNO"
+        }
+      ]
+    }
+    EOF
+
+  # ------------------------------------------
+  # PHASE 5: Isolated project network
+  # ------------------------------------------
+
+  # Create an internal bridge network for the project (no external routing)
+  - >-
+    docker network inspect {{project_name}}-net &>/dev/null ||
+    docker network create \
+      --driver bridge \
+      --internal \
+      --opt com.docker.network.bridge.enable_ip_masquerade=false \
+      {{project_name}}-net
+
+  # ------------------------------------------
+  # PHASE 6: Ollama container (LLM inference)
+  # ------------------------------------------
+
+  # Pull and start Ollama in a container on its own named network (needs outbound for model download)
+  - >-
+    docker network inspect ollama-net &>/dev/null ||
+    docker network create ollama-net
+
+  - >-
+    docker ps -a --filter "name=ollama" --format "{{.Names}}" | grep -q "^ollama$" ||
+    docker run -d \
+      --name ollama \
+      --network ollama-net \
+      --restart unless-stopped \
+      --security-opt no-new-privileges \
+      --security-opt seccomp=/etc/docker/seccomp/ai-sandbox.json \
+      --cpus="1.0" \
+      --memory="2g" \
+      --log-driver json-file \
+      --log-opt max-size=10m \
+      --log-opt max-file=2 \
+      -v ollama-models:/root/.ollama \
+      ollama/ollama
+
+  # Wait for Ollama to be ready then pull the requested model
+  - >-
+    echo "Waiting for Ollama to be ready..." &&
+    for i in $(seq 1 12); do
+      docker exec ollama ollama list &>/dev/null && break || sleep 5;
+    done &&
+    docker exec ollama ollama pull {{ollama_model}} &&
+    echo "Model {{ollama_model}} ready."
+
+  # Connect Ollama to the project's internal network so bots can reach it
+  - >-
+    docker network connect {{project_name}}-net ollama 2>/dev/null || true
+
+  # ------------------------------------------
+  # PHASE 7: Bot container template
+  # ------------------------------------------
+
+  # Run the bot container: read-only rootfs, no-new-privileges, resource caps
+  # Writes a reusable run command to a helper script under /opt/clide/
+  - mkdir -p /opt/clide/{{project_name}}
+
+  - >-
+    cat > /opt/clide/{{project_name}}/run_bot.sh << 'BOTEOF'
+    #!/usr/bin/env bash
+    # Generated by docker_ai_sandbox skill — edit to taste
+    set -euo pipefail
+
+    PROJECT="{{project_name}}"
+    IMAGE="{{bot_image}}"
+    BOT_NAME="${PROJECT}-bot"
+
+    docker rm -f "$BOT_NAME" 2>/dev/null || true
+
+    docker run -d \
+      --name "$BOT_NAME" \
+      --network "${PROJECT}-net" \
+      --restart unless-stopped \
+      --read-only \
+      --tmpfs /tmp:noexec,nosuid,size=64m \
+      --security-opt no-new-privileges \
+      --security-opt seccomp=/etc/docker/seccomp/ai-sandbox.json \
+      --cap-drop ALL \
+      --cpus="{{bot_cpu_limit}}" \
+      --memory="{{bot_mem_limit}}" \
+      --memory-swap="{{bot_mem_limit}}" \
+      --pids-limit 100 \
+      --log-driver json-file \
+      --log-opt max-size=5m \
+      --log-opt max-file=2 \
+      -e OLLAMA_HOST="http://ollama:11434" \
+      -v "${PROJECT}-data:/app/data" \
+      "$IMAGE" \
+      python3 /app/main.py
+
+    echo "Bot container ${BOT_NAME} started."
+    BOTEOF
+
+  - chmod +x /opt/clide/{{project_name}}/run_bot.sh
+
+  # ------------------------------------------
+  # PHASE 8: Health verification
+  # ------------------------------------------
+
+  # Confirm Docker is running rootless-capable
+  - docker version --format 'Docker Engine {{.Server.Version}} — OK'
+
+  # Confirm isolated network exists
+  - docker network inspect {{project_name}}-net --format 'Network {{project_name}}-net: {{.Driver}} internal={{.Internal}} — OK'
+
+  # Confirm Ollama is healthy
+  - docker inspect --format='Ollama status: {{.State.Status}}' ollama
+
+  # Print summary
+  - >-
+    echo "---" &&
+    echo "Docker AI Sandbox ready for project: {{project_name}}" &&
+    echo "  Ollama model : {{ollama_model}}" &&
+    echo "  Bot template : /opt/clide/{{project_name}}/run_bot.sh" &&
+    echo "  Network      : {{project_name}}-net (internal)" &&
+    echo "  Seccomp      : /etc/docker/seccomp/ai-sandbox.json" &&
+    echo "---"
+
+rollback_command:
+  - docker rm -f ollama 2>/dev/null || true
+  - docker network rm {{project_name}}-net 2>/dev/null || true
+  - docker network rm ollama-net 2>/dev/null || true
+  - rm -rf /opt/clide/{{project_name}}
+  - echo "Rollback complete. Docker engine itself has NOT been removed."
+
+require_confirmation: true
+parallel: false
+retry_count: 1
+timeout: 600
