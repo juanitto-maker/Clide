@@ -1,0 +1,152 @@
+# ============================================
+# Clide Bot Install / Remove / Reinstall Skill
+# ============================================
+# Manages the Clide bot installation on Termux (Android).
+#
+# Actions:
+#   install   — Fresh install via the official one-liner installer.
+#   remove    — Purged remove: deletes the binary, all config, and source tree.
+#   reinstall — Purged remove followed by a fresh install (clean slate).
+#
+# Usage:
+#   run_skill clide_install                          # fresh install (default)
+#   run_skill clide_install action=remove            # purged remove
+#   run_skill clide_install action=reinstall         # purged reinstall
+#   run_skill clide_install action=install branch=dev  # install from a specific branch
+
+name: clide_install
+description: >
+  Install, purge-remove, or purge-reinstall the Clide AI bot on Termux.
+  'remove' deletes the binary, all config files, and the source tree.
+  'reinstall' performs a purged remove then a clean fresh install.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - clide
+  - install
+  - termux
+  - bot
+  - system
+
+parameters:
+  action:
+    description: >
+      What to do: 'install' for a fresh install, 'remove' for a purged
+      uninstall (removes binary + all config + source), 'reinstall' for a
+      purged remove followed by a clean install.
+    type: string
+    required: false
+    default: "install"
+
+  branch:
+    description: >
+      Git branch to install from (used to build the install.sh URL).
+      Defaults to 'main'. Change to 'dev' or a specific branch if needed.
+    type: string
+    required: false
+    default: "main"
+
+commands:
+  # ── 0. Validate action ───────────────────────────────────────────────────────
+  - >-
+    case "{{action}}" in
+    install|remove|reinstall) echo "[0] Action: {{action}}" ;;
+    *) echo "ERROR: Unknown action '{{action}}'. Use: install, remove, or reinstall." >&2; exit 1 ;;
+    esac
+
+  # ── 1. Purged remove (skip for plain install) ────────────────────────────────
+  # Removes: binary, user config dir, env config dir, source tree.
+  # Config is intentionally wiped so reinstall starts clean.
+  - >-
+    if [ "{{action}}" = "remove" ] || [ "{{action}}" = "reinstall" ]; then
+    echo "[1] Purged remove starting...";
+    CLIDE_BIN="${PREFIX:-/data/data/com.termux/files/usr}/bin/clide";
+    echo "    Stopping any running clide process...";
+    pkill -f clide 2>/dev/null || true;
+    sleep 1;
+    echo "    Removing binary: $CLIDE_BIN";
+    rm -f "$CLIDE_BIN";
+    echo "    Removing config: ~/.clide/";
+    rm -rf ~/.clide;
+    echo "    Removing env config: ~/.config/clide/";
+    rm -rf ~/.config/clide;
+    echo "    Removing source tree: ~/Clide_Source/";
+    rm -rf ~/Clide_Source;
+    echo "[1] Purged remove complete. All Clide files removed.";
+    echo "    Removed: $CLIDE_BIN | ~/.clide | ~/.config/clide | ~/Clide_Source";
+    else
+    echo "[1] Skipping remove (action=install).";
+    fi
+
+  # ── 2. Verify removal (skip for plain install) ───────────────────────────────
+  - >-
+    if [ "{{action}}" = "remove" ] || [ "{{action}}" = "reinstall" ]; then
+    echo "[2] Verifying removal...";
+    CLIDE_BIN="${PREFIX:-/data/data/com.termux/files/usr}/bin/clide";
+    [ ! -f "$CLIDE_BIN" ] && echo "    binary: removed" || echo "    WARNING: binary still present at $CLIDE_BIN";
+    [ ! -d ~/.clide ] && echo "    ~/.clide: removed" || echo "    WARNING: ~/.clide still present";
+    [ ! -d ~/.config/clide ] && echo "    ~/.config/clide: removed" || echo "    WARNING: ~/.config/clide still present";
+    [ ! -d ~/Clide_Source ] && echo "    ~/Clide_Source: removed" || echo "    WARNING: ~/Clide_Source still present";
+    else
+    echo "[2] Skipping verify (action=install).";
+    fi
+
+  # ── 3. Exit here for plain remove ────────────────────────────────────────────
+  - >-
+    if [ "{{action}}" = "remove" ]; then
+    echo "";
+    echo "===== Clide purged remove complete =====";
+    echo "All Clide files, config, and source have been deleted.";
+    echo "Run 'run_skill clide_install action=install' to reinstall.";
+    else
+    echo "[3] Proceeding to install (action={{action}}).";
+    fi
+
+  # ── 4. Fresh install (skip for plain remove) ─────────────────────────────────
+  - >-
+    if [ "{{action}}" = "install" ] || [ "{{action}}" = "reinstall" ]; then
+    echo "[4] Starting Clide installation from branch: {{branch}}";
+    echo "    Running: curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/{{branch}}/install.sh | bash";
+    echo "";
+    curl -fsSL "https://raw.githubusercontent.com/juanitto-maker/Clide/{{branch}}/install.sh" | bash;
+    else
+    echo "[4] Skipping install (action=remove).";
+    fi
+
+  # ── 5. Post-install verification ────────────────────────────────────────────
+  - >-
+    if [ "{{action}}" = "install" ] || [ "{{action}}" = "reinstall" ]; then
+    echo "";
+    echo "===== Post-install check =====";
+    if command -v clide >/dev/null 2>&1; then
+    echo "clide binary: $(which clide)";
+    clide --version 2>/dev/null || echo "(version check not available)";
+    echo "config:       ~/.clide/config.yaml";
+    echo "skills:       $(find ~/.clide/skills -name '*.yaml' 2>/dev/null | wc -l) skill(s) installed";
+    echo "";
+    echo "===== Clide install complete =====";
+    echo "Start bot:    clide bot";
+    echo "Interactive:  clide";
+    else
+    echo "WARNING: clide not found in PATH after install. Check install output above.";
+    exit 1;
+    fi;
+    fi
+
+rollback_command:
+  - echo "No automatic rollback available. Re-run with action=install to restore Clide."
+
+require_confirmation: true
+parallel: false
+retry_count: 0
+timeout: 1200
+
+# ============================================
+# Notes
+# ============================================
+# - 'remove' wipes everything: binary, ~/.clide (config + skills), ~/.config/clide
+#   (env/tokens), and ~/Clide_Source (build tree). No data is preserved.
+# - 'reinstall' = purged remove + fresh install. Your API keys and tokens will need
+#   to be re-entered during the interactive setup that runs after install.
+# - timeout is set to 1200s (20 min) to accommodate source builds on slow devices.
+# - require_confirmation is true to prevent accidental purge of config/tokens.
