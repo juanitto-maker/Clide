@@ -98,15 +98,17 @@ commands:
     aiwb --version 2>/dev/null || true
 
   # ── 1. WRITE PROMPT TO TEMP FILE — avoids shell quoting issues ────────────
+  # Filename is mode-scoped (not PID-based) so all commands share it even
+  # when the skill runner spawns each command in a fresh shell.
   - >-
-    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-$$.md" &&
+    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-{{mode}}.md" &&
     printf '%s' '{{prompt}}' > "$AIWB_PROMPT_FILE" &&
     echo "[1] Prompt written to: $AIWB_PROMPT_FILE" &&
     echo "    $(wc -c < "$AIWB_PROMPT_FILE") bytes, mode: {{mode}}"
 
   # ── 2. BUILD AND RUN HEADLESS COMMAND ─────────────────────────────────────
   - >-
-    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-$$.md" &&
+    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-{{mode}}.md" &&
     AIWB_CMD="aiwb headless --mode {{mode}} --instruct $AIWB_PROMPT_FILE" &&
     if [ -n "{{model}}" ]; then
       AIWB_CMD="$AIWB_CMD --model {{model}}";
@@ -126,10 +128,9 @@ commands:
 
   # ── 3. CLEANUP TEMP FILE ──────────────────────────────────────────────────
   - >-
-    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-$$.md" &&
-    rm -f "$AIWB_PROMPT_FILE" &&
+    rm -f "/tmp/clide-aiwb-prompt-{{mode}}.md" &&
     echo "" &&
-    echo "[3] Done. AIWB outputs saved to: $(aiwb status 2>/dev/null | grep -oP '(?<=Workspace: ).*' || echo '~/.aiwb/workspace/outputs/')"
+    echo "[3] Done. AIWB outputs saved to: ~/.aiwb/workspace/outputs/"
 
 rollback_command:
   - rm -f /tmp/clide-aiwb-prompt-*.md
