@@ -184,8 +184,7 @@ impl Agent {
                     },
                     "params": {
                         "type": "object",
-                        "description": "Key-value parameters the skill needs (e.g. vps_host, vps_user)",
-                        "additionalProperties": {"type": "string"}
+                        "description": "Key-value string parameters the skill needs (e.g. vps_host, vps_user)"
                     }
                 },
                 "required": ["name"]
