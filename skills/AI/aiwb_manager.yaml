@@ -1,0 +1,141 @@
+# ============================================
+# AIWB Manager Skill
+# ============================================
+# Drives AIworkbench (AIWB) in headless mode from Clide.
+# Invokes the /make, /tweak, or /debug pipeline without any
+# interactive TUI — ideal for bot automation and CI workflows.
+#
+# Prerequisites:
+#   - AIWB installed at ~/.local/bin/aiwb  (run ./install.sh)
+#   - At least one API key set: GEMINI_API_KEY, ANTHROPIC_API_KEY,
+#     OPENAI_API_KEY, GROQ_API_KEY, or XAI_API_KEY
+#   - API keys configured via `aiwb keys` or stored in ~/.aiwb/workspace/.aiwb.env
+#
+# Usage examples:
+#   run_skill aiwb_manager prompt="Add JWT auth to this FastAPI app" context="./src/"
+#   run_skill aiwb_manager prompt="Fix the failing test in tests/test_api.py" mode=debug
+#   run_skill aiwb_manager prompt="Refactor the handler to use dataclasses" mode=tweak model=gemini:gemini-2.5-flash verifier=claude:auto
+#   run_skill aiwb_manager prompt="Write a Dockerfile for a Python FastAPI app" output=/tmp/result.md
+# ============================================
+
+name: aiwb_manager
+description: >
+  Drive AIworkbench (AIWB) make/tweak/debug pipeline in headless mode
+  from Clide. Generates AI output via a Generator-Verifier loop without
+  any interactive TUI prompts. Supports multi-provider routing and
+  optional cross-provider verification.
+version: "1.0.0"
+author: Clide Team
+tags:
+  - ai
+  - code-generation
+  - automation
+  - aiwb
+  - headless
+  - generator-verifier
+
+parameters:
+  prompt:
+    description: >
+      The instruction text — what you want AIWB to make, tweak, or debug.
+      Can be multiple sentences. Passed as --instruct via a temp file to
+      avoid shell quoting issues.
+    type: string
+    required: true
+
+  mode:
+    description: "AIWB workflow mode: make (create new) | tweak (improve existing) | debug (diagnose)"
+    type: string
+    required: false
+    default: "make"
+
+  model:
+    description: >
+      Generator model in provider:model-name format.
+      e.g. gemini:gemini-2.5-flash, claude:claude-sonnet-4-5-20250929, openai:gpt-4o
+      Omit to use the AIWB configured default.
+    type: string
+    required: false
+    default: ""
+
+  verifier:
+    description: >
+      Verifier model in provider:model-name format, or "auto" for cross-provider
+      verification (recommended), or "none" to skip verification.
+      e.g. claude:auto, gemini:auto, auto, none
+    type: string
+    required: false
+    default: "auto"
+
+  context:
+    description: >
+      Comma-separated list of files or directories to include as context.
+      e.g. "./src/,./tests/,./README.md"
+      Omit if no additional context is needed.
+    type: string
+    required: false
+    default: ""
+
+  output:
+    description: >
+      Path to copy the generated output .md file into after completion.
+      e.g. /tmp/aiwb-result.md
+      Omit to leave output only in the AIWB workspace (~/.aiwb/workspace/outputs/).
+    type: string
+    required: false
+    default: ""
+
+commands:
+  # ── 0. PRE-FLIGHT — check aiwb is installed and usable ────────────────────
+  - >-
+    if ! command -v aiwb >/dev/null 2>&1; then
+      echo "ERROR: aiwb not found in PATH." &&
+      echo "  Install it: git clone https://github.com/juanitto-maker/AIworkbench.git && cd AIworkbench && ./install.sh" &&
+      echo "  Then ensure ~/.local/bin is on your PATH." &&
+      exit 1;
+    fi &&
+    echo "[0] aiwb found: $(command -v aiwb)" &&
+    aiwb --version 2>/dev/null || true
+
+  # ── 1. WRITE PROMPT TO TEMP FILE — avoids shell quoting issues ────────────
+  - >-
+    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-$$.md" &&
+    printf '%s' '{{prompt}}' > "$AIWB_PROMPT_FILE" &&
+    echo "[1] Prompt written to: $AIWB_PROMPT_FILE" &&
+    echo "    $(wc -c < "$AIWB_PROMPT_FILE") bytes, mode: {{mode}}"
+
+  # ── 2. BUILD AND RUN HEADLESS COMMAND ─────────────────────────────────────
+  - >-
+    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-$$.md" &&
+    AIWB_CMD="aiwb headless --mode {{mode}} --instruct $AIWB_PROMPT_FILE" &&
+    if [ -n "{{model}}" ]; then
+      AIWB_CMD="$AIWB_CMD --model {{model}}";
+    fi &&
+    if [ "{{verifier}}" != "none" ]; then
+      AIWB_CMD="$AIWB_CMD --verifier {{verifier}}";
+    fi &&
+    if [ -n "{{context}}" ]; then
+      AIWB_CMD="$AIWB_CMD --context {{context}}";
+    fi &&
+    if [ -n "{{output}}" ]; then
+      AIWB_CMD="$AIWB_CMD --output {{output}}";
+    fi &&
+    echo "[2] Running: $AIWB_CMD" &&
+    echo "" &&
+    eval "$AIWB_CMD"
+
+  # ── 3. CLEANUP TEMP FILE ──────────────────────────────────────────────────
+  - >-
+    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-$$.md" &&
+    rm -f "$AIWB_PROMPT_FILE" &&
+    echo "" &&
+    echo "[3] Done. AIWB outputs saved to: $(aiwb status 2>/dev/null | grep -oP '(?<=Workspace: ).*' || echo '~/.aiwb/workspace/outputs/')"
+
+rollback_command:
+  - rm -f /tmp/clide-aiwb-prompt-*.md
+  - echo "Cleaned up AIWB temp prompt files."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 300

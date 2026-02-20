@@ -13,6 +13,10 @@ Last updated: 2026-02-20
 | `vps_manager` | System | VPS status dashboard — disk, mem, load, services |
 | `vps_hardening` | Security | Full VPS hardening: UFW, fail2ban, sshd config, auditd |
 | `docker_ai_sandbox` | Security | Install Docker CE + hardened AI sandbox with Ollama, seccomp, isolated networks |
+| `backup_manager` | System | Rclone cloud backup with rotation (S3/Backblaze/Dropbox) |
+| `debugger` | System | Multi-phase Docker/service fault report — logs, processes, resources, network, AI-ready output |
+| `system_monitoring` | System | Disk, memory, CPU, process health check with configurable alert threshold |
+| `aiwb_manager` | AI | Drive AIworkbench make/tweak/debug pipeline headlessly from Clide — Generator-Verifier loop, multi-provider, context files |
 
 ---
 
@@ -24,16 +28,18 @@ Last updated: 2026-02-20
 |---|---|---|
 | `nginx_reverse_proxy` | Install Nginx, SSL termination, route requests to Docker containers | Pair with `ssl_cert` |
 | `ssl_cert` | Certbot Let's Encrypt — install, issue cert, auto-renewal via cron | Works on bare VPS or via Docker |
-| `backup_manager` | Rclone to cloud (S3/Backblaze/Dropbox), scheduled rotated backups | Can pull VPS → Termux too |
 | `database_manager` | PostgreSQL/MySQL health check, backup, restore, vacuum | Parametrize by engine |
 
 ### AI & Bots
+
+> `aiwb_manager` shipped — drives AIworkbench headlessly via `aiwb headless`. Needs AIWB installed + API keys.
 
 | Skill | Description | Notes |
 |---|---|---|
 | `ollama_manager` | Pull/remove models, list loaded, run inference smoke-test, show VRAM usage | Builds on docker_ai_sandbox |
 | `bot_deployer` | Build image from Dockerfile, push to registry, deploy/restart named container | Tag with git SHA |
 | `api_health_check` | Test REST endpoints, webhooks, bot tokens (Gemini, Telegram, Matrix) | Configurable endpoint list |
+| `aiwb_pipeline` | Multi-step AIWB chain — run make→tweak→debug in sequence with context threading | Builds on aiwb_manager |
 
 ### Ops & Monitoring
 
