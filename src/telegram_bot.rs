@@ -5,11 +5,15 @@
 use anyhow::Result;
 use log::{error, info, warn};
 use std::sync::atomic::Ordering;
+use tokio::fs;
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
 use crate::config::Config;
 use crate::telegram::TelegramClient;
+
+/// Directory where files uploaded by Telegram users are stored.
+const UPLOAD_DIR: &str = "/tmp/clide_uploads";
 
 /// Telegram messages are capped at 4096 chars; leave some headroom.
 const TG_MAX_CHARS: usize = 3900;
@@ -56,7 +60,7 @@ impl TelegramBot {
                         }
 
                         if let Err(e) = self
-                            .handle_message(msg.chat_id, msg.sender, msg.text)
+                            .handle_message(msg.chat_id, msg.sender, msg.text, msg.file)
                             .await
                         {
                             error!("Error handling Telegram message: {}", e);
@@ -71,7 +75,13 @@ impl TelegramBot {
         }
     }
 
-    async fn handle_message(&mut self, chat_id: i64, sender: String, text: String) -> Result<()> {
+    async fn handle_message(
+        &mut self,
+        chat_id: i64,
+        sender: String,
+        text: String,
+        file: Option<crate::telegram::AttachedFile>,
+    ) -> Result<()> {
         info!("Telegram message from @{}: {}", sender, text);
 
         // Authorization — fail-closed: if the allowlist is empty, nobody is
@@ -184,8 +194,11 @@ impl TelegramBot {
             }
         });
 
+        // If a file was attached, save it to disk and prepend its path to the task.
+        let task = build_task_with_file(text, file).await;
+
         // Run the agentic loop (drops tx when done, closing the updater channel)
-        let result = self.agent.run(&text, &sender, Some(tx)).await;
+        let result = self.agent.run(&task, &sender, Some(tx)).await;
 
         // Agent finished — abort the stop-watcher (it's no longer needed)
         stop_task.abort();
@@ -229,6 +242,59 @@ impl TelegramBot {
 
         info!("Agent task complete for @{}", sender);
         Ok(())
+    }
+}
+
+/// Save an uploaded file to `UPLOAD_DIR` and return a task string that
+/// includes the file's on-disk path so the agent can read / process it.
+///
+/// If no file is attached the original `text` is returned unchanged.
+/// If the write fails we still deliver the text-only task and log a warning.
+async fn build_task_with_file(
+    text: String,
+    file: Option<crate::telegram::AttachedFile>,
+) -> String {
+    let Some(attached) = file else {
+        return text;
+    };
+
+    // Ensure the upload directory exists.
+    if let Err(e) = fs::create_dir_all(UPLOAD_DIR).await {
+        warn!("Could not create upload dir {}: {}", UPLOAD_DIR, e);
+        return text;
+    }
+
+    // Sanitise the filename to avoid path traversal.
+    let safe_name: String = attached
+        .filename
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let safe_name = if safe_name.is_empty() { "upload".to_string() } else { safe_name };
+
+    let file_path = format!("{}/{}", UPLOAD_DIR, safe_name);
+
+    match fs::write(&file_path, &attached.bytes).await {
+        Ok(()) => {
+            info!("Saved uploaded file to {}", file_path);
+            let user_instruction = if text.trim().is_empty() {
+                "Process or describe the uploaded file.".to_string()
+            } else {
+                text
+            };
+            let mime_line = attached
+                .mime_type
+                .map(|m| format!("\nMIME type: {}", m))
+                .unwrap_or_default();
+            format!(
+                "{}\n\n[Uploaded file saved to: {}]\nFilename: {}{}",
+                user_instruction, file_path, safe_name, mime_line
+            )
+        }
+        Err(e) => {
+            warn!("Failed to write uploaded file to {}: {}", file_path, e);
+            text
+        }
     }
 }
 
