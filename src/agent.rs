@@ -9,6 +9,10 @@ use log::{info, warn};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::mpsc::Sender;
 use tokio::time::{timeout, Duration};
 
@@ -60,6 +64,8 @@ pub struct Agent {
     max_steps: usize,
     memory: Option<Memory>,
     skill_manager: Option<SkillManager>,
+    /// Shared cancellation flag — set to true by a /stop command to abort the running task.
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Agent {
@@ -74,6 +80,7 @@ impl Agent {
             max_steps: config.max_agent_steps,
             memory,
             skill_manager,
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -108,6 +115,12 @@ impl Agent {
                 None
             }
         }
+    }
+
+    /// Return a clone of the cancellation handle.
+    /// Set the returned `Arc<AtomicBool>` to `true` from any thread/task to stop the agent loop.
+    pub fn cancel_token(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
     }
 
     /// Build a system prompt that includes recent conversation history and available skills.
@@ -209,6 +222,9 @@ impl Agent {
     ) -> Result<String> {
         info!("Agent starting task for '{}': {}", user, task);
 
+        // Reset any previous cancellation before starting a new task.
+        self.cancelled.store(false, Ordering::SeqCst);
+
         let system_prompt = self.build_system_prompt(user).await;
 
         let mut conversation: Vec<Value> =
@@ -217,6 +233,13 @@ impl Agent {
         let mut final_answer: Option<String> = None;
 
         'agent_loop: for step in 0..self.max_steps {
+            // Check for /stop between every Gemini round-trip.
+            if self.cancelled.load(Ordering::SeqCst) {
+                info!("Agent task cancelled by /stop request.");
+                final_answer = Some("🛑 Task stopped by user.".to_string());
+                break 'agent_loop;
+            }
+
             info!("Agent step {}/{}", step + 1, self.max_steps);
 
             let response = self.call_gemini(&conversation, &system_prompt).await?;

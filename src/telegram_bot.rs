@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use log::{error, info, warn};
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
@@ -34,13 +35,29 @@ impl TelegramBot {
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Clide Telegram bot (agent mode)...");
         println!("Telegram bot running. Send a task to your bot. Ctrl+C to stop.");
+        println!("Send /stop in the chat to abort a running task.");
 
         loop {
             match self.telegram.get_updates().await {
                 Ok(messages) => {
                     for msg in messages {
-                        if let Err(e) =
-                            self.handle_message(msg.chat_id, msg.sender, msg.text).await
+                        // ── /stop command ────────────────────────────────────
+                        // When the bot is idle (here in the poll loop) there is
+                        // no task running, so just inform the user.
+                        // While a task IS running the stop-watcher spawned inside
+                        // handle_message intercepts /stop and cancels the agent.
+                        if msg.text.trim().eq_ignore_ascii_case("/stop") {
+                            info!("Received /stop while idle — no task running.");
+                            let _ = self
+                                .telegram
+                                .send_message(msg.chat_id, "No task is currently running.")
+                                .await;
+                            continue;
+                        }
+
+                        if let Err(e) = self
+                            .handle_message(msg.chat_id, msg.sender, msg.text)
+                            .await
                         {
                             error!("Error handling Telegram message: {}", e);
                         }
@@ -93,8 +110,50 @@ impl TelegramBot {
             log // return full log to caller
         });
 
-        // Run the agentic loop (drops tx when done, closing the channel)
+        // ── Stop-watcher task ─────────────────────────────────────────────────
+        // Cloning TelegramClient shares the Arc<AtomicI64> offset counter, so
+        // messages consumed by the watcher won't be re-delivered to the main loop.
+        let cancel = self.agent.cancel_token();
+        let tg_watcher = self.telegram.clone();
+        let cancel_watcher = cancel.clone();
+        let stop_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+            loop {
+                match tg_watcher.get_updates_short().await {
+                    Ok(updates) => {
+                        for update in updates {
+                            if update.text.trim().eq_ignore_ascii_case("/stop") {
+                                info!("Stop-watcher received /stop — cancelling agent.");
+                                cancel_watcher.store(true, Ordering::SeqCst);
+                                let _ = tg_watcher
+                                    .send_message(
+                                        update.chat_id,
+                                        "🛑 Stopping current task...",
+                                    )
+                                    .await;
+                                return; // watcher's job is done
+                            }
+                            // Non-stop messages received while the agent runs are
+                            // acknowledged (offset advanced) and silently dropped.
+                            // They will NOT be re-delivered to the main loop.
+                            info!(
+                                "Stop-watcher dropped message while agent busy: {}",
+                                update.text
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Stop-watcher poll error: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        });
+
+        // Run the agentic loop (drops tx when done, closing the updater channel)
         let result = self.agent.run(&text, &sender, Some(tx)).await;
+
+        // Agent finished — abort the stop-watcher (it's no longer needed)
+        stop_task.abort();
 
         // Wait for the updater to flush its last edit and collect the log
         let commands_log = updater.await.unwrap_or_default();

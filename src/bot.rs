@@ -63,11 +63,26 @@ impl Bot {
             "Bot running. Send a message in Matrix room {}. Ctrl+C to stop.",
             self.config.matrix_room_id
         );
+        println!("Send /stop in the room to abort a running task.");
 
         loop {
             match self.matrix.receive_messages().await {
                 Ok(messages) => {
                     for msg in messages {
+                        // ── /stop command ────────────────────────────────────
+                        // The Matrix bot processes messages sequentially, so
+                        // /stop received here means no agent task is running.
+                        // (While an agent task runs the poll loop is blocked;
+                        // runtime cancellation is not supported for Matrix.)
+                        if msg.text.trim().eq_ignore_ascii_case("/stop") {
+                            info!("Received /stop while idle — no task running.");
+                            let _ = self
+                                .matrix
+                                .send_message("No task is currently running.")
+                                .await;
+                            continue;
+                        }
+
                         if let Err(e) = self.handle_message(msg.sender, msg.text).await {
                             eprintln!("Error handling message: {}", e);
                         }
