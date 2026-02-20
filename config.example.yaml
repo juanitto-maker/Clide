@@ -69,10 +69,16 @@ require_confirmation: false
 # How long (seconds) to wait for YES/NO reply
 confirmation_timeout: 60
 
-# Matrix user IDs allowed to send commands to the bot.
-# Leave empty ([]) to allow messages from anyone in the room.
-authorized_users: []
-  # - "@youraccount:matrix.org"
+# !! REQUIRED FOR SECURITY !! — Clide controls a real shell.
+# An empty list BLOCKS ALL incoming messages (fail-closed).
+# Add the Matrix user IDs / Telegram usernames that may give commands.
+#
+# Matrix example:   - "@youraccount:matrix.org"
+# Telegram example: - "yourusername"   (no @, no quotes needed)
+#
+# You MUST fill this in or the bot will silently reject every message.
+authorized_users:
+  - "@youraccount:matrix.org"   # ← replace with your real user ID
 
 # Shell command patterns to block (executor safety)
 blocked_commands:

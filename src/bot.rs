@@ -114,8 +114,18 @@ impl Bot {
             return Ok(());
         }
 
-        // Authorization check (skip if no authorized users configured)
-        if !self.config.authorized_users.is_empty() && !self.config.is_authorized(&sender) {
+        // Authorization — fail-closed: if the allowlist is empty, nobody is
+        // allowed in.  An open bot controlling a real shell is unsafe by design.
+        // Add your Matrix user ID(s) to authorized_users in config.yaml.
+        if self.config.authorized_users.is_empty() {
+            warn!(
+                "Matrix message from {} rejected: authorized_users is empty. \
+                 Add your Matrix user ID to authorized_users in ~/.clide/config.yaml.",
+                sender
+            );
+            return Ok(());
+        }
+        if !self.config.is_authorized(&sender) {
             warn!("Unauthorized sender: {}", sender);
             return Ok(());
         }
