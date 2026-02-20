@@ -8,6 +8,7 @@ use anyhow::Result;
 use log::{info, warn};
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{timeout, Duration};
 
@@ -15,6 +16,7 @@ use crate::config::Config;
 use crate::database::Database;
 use crate::executor::Executor;
 use crate::memory::Memory;
+use crate::skills::SkillManager;
 
 /// Maximum output bytes fed back to Gemini per command (avoids context overflow)
 const MAX_OUTPUT_BYTES: usize = 8_000;
@@ -22,6 +24,8 @@ const MAX_OUTPUT_BYTES: usize = 8_000;
 const MAX_PREVIEW_BYTES: usize = 500;
 /// How many past conversations to inject as context
 const MEMORY_CONTEXT_MESSAGES: usize = 10;
+/// Default timeout for skill commands (seconds)
+const SKILL_CMD_TIMEOUT_SECS: u64 = 300;
 
 const SYSTEM_PROMPT: &str = "\
 You are Clide, an autonomous CLI operator running inside a Termux terminal on Android. \
@@ -32,18 +36,20 @@ Your capabilities:\n\
 - Create, read, and edit files\n\
 - Set up cron jobs with crontab\n\
 - Run background processes with nohup / screen / tmux\n\
-- Access the internet with curl / wget\n\n\
+- Access the internet with curl / wget\n\
+- Execute predefined skill workflows via `run_skill`\n\n\
 Your approach:\n\
 1. Break the task into concrete steps.\n\
-2. Execute each step immediately using run_command — do NOT describe or explain first.\n\
-3. Inspect results and adapt if something fails.\n\
-4. When finished, give a concise summary of what was accomplished.\n\n\
+2. Execute each step immediately using run_command or run_skill — do NOT describe or explain first.\n\
+3. Prefer run_skill for known workflows (hardening, VPS management) — it is faster and safer.\n\
+4. Inspect results and adapt if something fails.\n\
+5. When finished, give a concise summary of what was accomplished.\n\n\
 OUTPUT RULES — follow these exactly:\n\
 - When the user asks to LIST, SHOW, DISPLAY, or PRINT something (files, folders, \
 logs, processes, etc.) always include the FULL verbatim command output in your \
 final response, formatted as a code block. Never paraphrase or summarise a listing.\n\
 - For other tasks a brief prose summary is fine, but still quote key output lines.\n\n\
-IMPORTANT: Always use run_command to get information or take action. \
+IMPORTANT: Always use run_command or run_skill to get information or take action. \
 Never respond with 'I would do X' — just do it.";
 
 pub struct Agent {
@@ -53,11 +59,13 @@ pub struct Agent {
     executor: Executor,
     max_steps: usize,
     memory: Option<Memory>,
+    skill_manager: Option<SkillManager>,
 }
 
 impl Agent {
     pub fn new(config: &Config) -> Self {
         let memory = Self::init_memory();
+        let skill_manager = Self::init_skills();
         Self {
             client: Client::new(),
             api_key: config.gemini_api_key.clone(),
@@ -65,6 +73,7 @@ impl Agent {
             executor: Executor::new(config.clone()),
             max_steps: config.max_agent_steps,
             memory,
+            skill_manager,
         }
     }
 
@@ -86,7 +95,22 @@ impl Agent {
         }
     }
 
-    /// Build a system prompt that includes recent conversation history for this user.
+    fn init_skills() -> Option<SkillManager> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let skills_path = format!("{}/.clide/skills", home);
+        match SkillManager::new(&skills_path) {
+            Ok(sm) => {
+                info!("Skills loaded from {}: {} skill(s)", skills_path, sm.skills.len());
+                Some(sm)
+            }
+            Err(e) => {
+                warn!("Could not load skills from {}: {}", skills_path, e);
+                None
+            }
+        }
+    }
+
+    /// Build a system prompt that includes recent conversation history and available skills.
     async fn build_system_prompt(&mut self, user: &str) -> String {
         let context = match self.memory {
             Some(ref mut mem) => mem
@@ -96,14 +120,79 @@ impl Agent {
             None => String::new(),
         };
 
+        let skill_section = self
+            .skill_manager
+            .as_ref()
+            .map(|sm| sm.skill_summary())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("\n\nAvailable skills (use run_skill to execute):\n{}", s))
+            .unwrap_or_default();
+
+        let base = format!("{}{}", SYSTEM_PROMPT, skill_section);
+
         if context.trim().is_empty() {
-            SYSTEM_PROMPT.to_string()
+            base
         } else {
             format!(
                 "{}\n\nRecent conversation history with this user:\n{}",
-                SYSTEM_PROMPT, context
+                base, context
             )
         }
+    }
+
+    /// Build the Gemini tools array — run_command always present, run_skill added when skills exist.
+    fn build_tools(&self) -> Value {
+        let run_command = json!({
+            "name": "run_command",
+            "description": "Execute a shell command in the Termux terminal and return its output",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute (passed to sh -c)"
+                    }
+                },
+                "required": ["command"]
+            }
+        });
+
+        let skill_names: Vec<String> = self
+            .skill_manager
+            .as_ref()
+            .map(|sm| sm.skills.keys().cloned().collect())
+            .unwrap_or_default();
+
+        if skill_names.is_empty() {
+            return json!([{"function_declarations": [run_command]}]);
+        }
+
+        let run_skill = json!({
+            "name": "run_skill",
+            "description": format!(
+                "Execute a predefined named skill workflow. \
+                 Prefer this over run_command for known tasks. \
+                 Available skills: {}",
+                skill_names.join(", ")
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Skill name to execute"
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "Key-value parameters the skill needs (e.g. vps_host, vps_user)",
+                        "additionalProperties": {"type": "string"}
+                    }
+                },
+                "required": ["name"]
+            }
+        });
+
+        json!([{"function_declarations": [run_command, run_skill]}])
     }
 
     /// Run the agentic task loop.
@@ -141,13 +230,7 @@ impl Agent {
             // — Function call branch —
             if let Some(fc_part) = parts.iter().find(|p| p.get("functionCall").is_some()) {
                 let fc = &fc_part["functionCall"];
-                let cmd = fc["args"]["command"].as_str().unwrap_or("").to_string();
-
-                info!("Agent running command: {}", cmd);
-
-                if let Some(ref tx) = progress {
-                    let _ = tx.send(format!("$ {}", cmd)).await;
-                }
+                let fn_name = fc["name"].as_str().unwrap_or("run_command");
 
                 // Record model turn in conversation history
                 conversation.push(json!({
@@ -155,46 +238,93 @@ impl Agent {
                     "parts": parts
                 }));
 
-                // Execute with 60-second timeout
-                let exec_result =
-                    match timeout(Duration::from_secs(60), self.executor.execute(&cmd)).await {
-                        Ok(Ok(r)) => r,
-                        Ok(Err(e)) => {
-                            let err = format!("Command error: {}", e);
-                            Self::send_progress(&progress, format!("  ✗ {}", err)).await;
-                            conversation.push(Self::fn_response("run_command", &err, -1));
-                            continue;
-                        }
-                        Err(_) => {
-                            let err = "Command timed out after 60s".to_string();
-                            Self::send_progress(&progress, format!("  ✗ {}", err)).await;
-                            conversation.push(Self::fn_response("run_command", &err, -1));
-                            continue;
-                        }
-                    };
+                match fn_name {
+                    "run_skill" => {
+                        let skill_name = fc["args"]["name"].as_str().unwrap_or("").to_string();
+                        let params: HashMap<String, String> = fc["args"]["params"]
+                            .as_object()
+                            .map(|m| {
+                                m.iter()
+                                    .filter_map(|(k, v)| {
+                                        v.as_str().map(|s| (k.clone(), s.to_string()))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
 
-                let exit_code = exec_result.exit_code;
-                let output = exec_result.output();
+                        info!("Agent running skill '{}' with params: {:?}", skill_name, params);
+                        Self::send_progress(
+                            &progress,
+                            format!("[skill] {}", skill_name),
+                        )
+                        .await;
 
-                // Progress preview (capped)
-                let preview = if output.len() > MAX_PREVIEW_BYTES {
-                    format!("{}…", &output[..MAX_PREVIEW_BYTES])
-                } else {
-                    output.clone()
-                };
-                Self::send_progress(
-                    &progress,
-                    format!("  exit:{} {}", exit_code, preview),
-                )
-                .await;
+                        let output = self.execute_skill(&skill_name, &params, &progress).await;
+                        let (output_str, exit_code) = match output {
+                            Ok(s) => (s, 0i32),
+                            Err(e) => (format!("Skill error: {}", e), -1),
+                        };
 
-                // Feed truncated output back to Gemini
-                let output_for_gemini = if output.len() > MAX_OUTPUT_BYTES {
-                    output[..MAX_OUTPUT_BYTES].to_string()
-                } else {
-                    output
-                };
-                conversation.push(Self::fn_response("run_command", &output_for_gemini, exit_code));
+                        let truncated = if output_str.len() > MAX_OUTPUT_BYTES {
+                            output_str[..MAX_OUTPUT_BYTES].to_string()
+                        } else {
+                            output_str
+                        };
+
+                        conversation.push(Self::fn_response("run_skill", &truncated, exit_code));
+                    }
+
+                    _ => {
+                        // Default: run_command
+                        let cmd = fc["args"]["command"].as_str().unwrap_or("").to_string();
+
+                        info!("Agent running command: {}", cmd);
+                        Self::send_progress(&progress, format!("$ {}", cmd)).await;
+
+                        let exec_result = match timeout(
+                            Duration::from_secs(60),
+                            self.executor.execute(&cmd),
+                        )
+                        .await
+                        {
+                            Ok(Ok(r)) => r,
+                            Ok(Err(e)) => {
+                                let err = format!("Command error: {}", e);
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
+                                conversation.push(Self::fn_response("run_command", &err, -1));
+                                continue;
+                            }
+                            Err(_) => {
+                                let err = "Command timed out after 60s".to_string();
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
+                                conversation.push(Self::fn_response("run_command", &err, -1));
+                                continue;
+                            }
+                        };
+
+                        let exit_code = exec_result.exit_code;
+                        let output = exec_result.output();
+
+                        let preview = if output.len() > MAX_PREVIEW_BYTES {
+                            format!("{}…", &output[..MAX_PREVIEW_BYTES])
+                        } else {
+                            output.clone()
+                        };
+                        Self::send_progress(
+                            &progress,
+                            format!("  exit:{} {}", exit_code, preview),
+                        )
+                        .await;
+
+                        let output_for_gemini = if output.len() > MAX_OUTPUT_BYTES {
+                            output[..MAX_OUTPUT_BYTES].to_string()
+                        } else {
+                            output
+                        };
+                        conversation
+                            .push(Self::fn_response("run_command", &output_for_gemini, exit_code));
+                    }
+                }
 
             // — Text (final answer) branch —
             } else if let Some(text_part) = parts.iter().find(|p| p.get("text").is_some()) {
@@ -202,7 +332,6 @@ impl Agent {
                 info!("Agent finished after {} step(s)", step + 1);
                 final_answer = Some(text);
                 break 'agent_loop;
-
             } else {
                 warn!("Agent: unexpected response: {:?}", candidate_content);
                 final_answer = Some("Agent received an unexpected response format.".to_string());
@@ -229,6 +358,66 @@ impl Agent {
         }
 
         Ok(answer)
+    }
+
+    /// Execute all commands of a skill and return aggregated output.
+    async fn execute_skill(
+        &self,
+        skill_name: &str,
+        params: &HashMap<String, String>,
+        progress: &Option<Sender<String>>,
+    ) -> Result<String> {
+        let sm = self
+            .skill_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No skill manager available"))?;
+
+        let skill = sm
+            .skills
+            .get(skill_name)
+            .ok_or_else(|| anyhow::anyhow!("Skill '{}' not found", skill_name))?;
+
+        let cmd_timeout = Duration::from_secs(skill.timeout.unwrap_or(SKILL_CMD_TIMEOUT_SECS));
+        let mut outputs: Vec<String> = Vec::new();
+        let mut overall_exit = 0i32;
+
+        for cmd_template in &skill.commands {
+            let mut cmd = cmd_template.clone();
+            for (key, val) in params {
+                cmd = cmd.replace(&format!("{{{{{}}}}}", key), val);
+            }
+
+            Self::send_progress(progress, format!("  [skill:{}] $ {}", skill_name, cmd)).await;
+
+            let res = match timeout(cmd_timeout, self.executor.execute(&cmd)).await {
+                Ok(Ok(r)) => {
+                    if !r.success() {
+                        overall_exit = r.exit_code;
+                    }
+                    let out = r.output();
+                    let preview = if out.len() > MAX_PREVIEW_BYTES {
+                        format!("{}…", &out[..MAX_PREVIEW_BYTES])
+                    } else {
+                        out.clone()
+                    };
+                    Self::send_progress(progress, format!("    exit:{} {}", r.exit_code, preview))
+                        .await;
+                    format!("$ {}\n{}", cmd, out)
+                }
+                Ok(Err(e)) => {
+                    overall_exit = -1;
+                    format!("$ {}\nError: {}", cmd, e)
+                }
+                Err(_) => {
+                    overall_exit = -1;
+                    format!("$ {}\nTimeout after {}s", cmd, cmd_timeout.as_secs())
+                }
+            };
+            outputs.push(res);
+        }
+
+        let _ = overall_exit; // used for caller if needed
+        Ok(outputs.join("\n---\n"))
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
@@ -264,22 +453,7 @@ impl Agent {
             "system_instruction": {
                 "parts": [{"text": system_prompt}]
             },
-            "tools": [{
-                "function_declarations": [{
-                    "name": "run_command",
-                    "description": "Execute a shell command in the Termux terminal and return its output",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "The shell command to execute (passed to sh -c)"
-                            }
-                        },
-                        "required": ["command"]
-                    }
-                }]
-            }],
+            "tools": self.build_tools(),
             "contents": conversation
         });
 

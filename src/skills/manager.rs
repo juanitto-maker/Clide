@@ -1,5 +1,5 @@
 // ============================================
-// skills/manager.rs - Skills Manager (CORRECTED)
+// skills/manager.rs - Skills Manager
 // ============================================
 
 use anyhow::{Context, Result};
@@ -22,11 +22,40 @@ pub struct Skill {
     pub parameters: HashMap<String, ParameterDef>,
     pub commands: Vec<String>,
     #[serde(default)]
+    pub rollback_command: Option<Vec<String>>,
+    #[serde(default)]
     pub require_confirmation: bool,
     #[serde(default)]
     pub retry_count: usize,
     #[serde(default)]
     pub timeout: Option<u64>,
+}
+
+impl Skill {
+    /// One-line summary for injection into the AI system prompt.
+    pub fn summary_line(&self) -> String {
+        let params: Vec<String> = self
+            .parameters
+            .iter()
+            .map(|(k, p)| {
+                if p.required {
+                    format!("{} (required)", k)
+                } else {
+                    format!(
+                        "{} (default: {})",
+                        k,
+                        p.default.as_deref().unwrap_or("none")
+                    )
+                }
+            })
+            .collect();
+
+        if params.is_empty() {
+            format!("• {} — {}", self.name, self.description)
+        } else {
+            format!("• {} — {}  [params: {}]", self.name, self.description, params.join(", "))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,24 +96,52 @@ impl SkillManager {
 
     pub fn load_skills(&mut self) -> Result<()> {
         self.skills.clear();
-        let entries = std::fs::read_dir(&self.path)?;
+        Self::load_dir(&self.path, &mut self.skills);
+        info!("Loaded {} skill(s)", self.skills.len());
+        Ok(())
+    }
 
-        for entry in entries {
-            let entry = entry?;
+    /// Recursively walk `dir` and load every `.yaml` file as a Skill.
+    fn load_dir(dir: &Path, map: &mut HashMap<String, Skill>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Cannot read skills dir {:?}: {}", dir, e);
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
-                let content = std::fs::read_to_string(&path)?;
+            if path.is_dir() {
+                Self::load_dir(&path, map);
+            } else if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("Cannot read skill file {:?}: {}", path, e);
+                        continue;
+                    }
+                };
                 match serde_yaml::from_str::<Skill>(&content) {
                     Ok(skill) => {
-                        debug!("Loaded skill: {}", skill.name);
-                        self.skills.insert(skill.name.clone(), skill);
+                        debug!("Loaded skill '{}' from {:?}", skill.name, path);
+                        map.insert(skill.name.clone(), skill);
                     }
-                    Err(e) => warn!("Failed to load skill at {:?}: {}", path, e),
+                    Err(e) => warn!("Failed to parse skill {:?}: {}", path, e),
                 }
             }
         }
-        info!("Loaded {} skills", self.skills.len());
-        Ok(())
+    }
+
+    /// Multi-line summary of all loaded skills, ready for injection into a prompt.
+    pub fn skill_summary(&self) -> String {
+        if self.skills.is_empty() {
+            return String::new();
+        }
+        let mut lines: Vec<String> = self.skills.values().map(|s| s.summary_line()).collect();
+        lines.sort();
+        lines.join("\n")
     }
 
     pub async fn execute_skill(
@@ -93,7 +150,9 @@ impl SkillManager {
         params: &HashMap<String, String>,
         executor: &Executor,
     ) -> Result<SkillResult> {
-        let skill = self.skills.get(name)
+        let skill = self
+            .skills
+            .get(name)
             .context(format!("Skill '{}' not found", name))?;
 
         let mut results = Vec::new();

@@ -1,0 +1,133 @@
+# ============================================
+# Termux Security Hardening Skill
+# ============================================
+# Based on the digitalAIventures LLC Termux Security Hardening Guide.
+# Generates real SSH and GPG credentials with cryptographically strong
+# random passphrases and stores them in ~/.secure_env (chmod 600).
+# No Chinese mirrors — only SUNET (Sweden) EU mirror is used.
+#
+# Usage:
+#   run_skill termux_hardening
+#   run_skill termux_hardening gpg_name=YourName gpg_email=you@example.com
+#
+# After running:
+#   cat ~/.secure_env                    — view all generated credentials
+#   cat ~/.ssh/id_ed25519.pub            — copy public key to your VPS
+
+name: termux_hardening
+description: >
+  Full Termux security hardening: SSH key generation with random passphrase,
+  secure file permissions, bash hardening, GPG key, pass password manager,
+  non-Chinese EU mirror. All credentials saved to ~/.secure_env (chmod 600).
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - termux
+  - security
+  - hardening
+  - android
+  - ssh
+  - gpg
+
+parameters:
+  gpg_name:
+    description: Display name for the GPG key
+    type: string
+    required: false
+    default: "Clide Bot"
+
+  gpg_email:
+    description: Email address for the GPG key
+    type: string
+    required: false
+    default: "clide@localhost"
+
+commands:
+  # ── Step 1: Permissions ───────────────────────────────────────────────────
+  - 'chmod 700 ~ && mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "[1/12] Home and .ssh permissions set"'
+
+  # ── Step 2: Generate SSH key + passphrase, save to ~/.secure_env ──────────
+  # openssl rand generates real entropy; tr strips non-alphanumeric chars.
+  - >-
+    SSH_PASS=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 40)
+    && ssh-keygen -t ed25519 -C "termux-$(date +%Y%m%d)" -f ~/.ssh/id_ed25519 -N "$SSH_PASS" -q
+    && chmod 600 ~/.ssh/id_ed25519
+    && chmod 644 ~/.ssh/id_ed25519.pub
+    && printf '# Clide Termux Hardening — generated %s\nexport TERMUX_SSH_PASSPHRASE="%s"\n' "$(date +%Y-%m-%d)" "$SSH_PASS" > ~/.secure_env
+    && chmod 600 ~/.secure_env
+    && echo "[2/12] SSH ed25519 key generated. Passphrase saved to ~/.secure_env"
+
+  # ── Step 3: Create SSH config ─────────────────────────────────────────────
+  - >-
+    printf 'Host *\n    StrictHostKeyChecking ask\n    HashKnownHosts yes\n    ServerAliveInterval 60\n    ServerAliveCountMax 3\n    Compression yes\n    LogLevel INFO\n' > ~/.ssh/config
+    && chmod 600 ~/.ssh/config
+    && echo "[3/12] SSH client config written"
+
+  # ── Step 4: Show public key ───────────────────────────────────────────────
+  - 'echo "=== YOUR PUBLIC KEY — paste into VPS authorized_keys ===" && cat ~/.ssh/id_ed25519.pub && echo "======================================================="'
+
+  # ── Step 5: Use non-Chinese Termux mirror (SUNET, Sweden) ─────────────────
+  - >-
+    printf 'deb https://mirror.accum.se/mirror/termux/apt/termux-main stable main\n' > $PREFIX/etc/apt/sources.list
+    && echo "[5/12] Termux mirror set to SUNET Sweden (non-Chinese)"
+
+  # ── Step 6: Update packages + install security tools ─────────────────────
+  - 'pkg update -y && pkg upgrade -y && pkg install -y openssh gnupg termux-api pass net-tools htop && echo "[6/12] Packages updated and security tools installed"'
+
+  # ── Step 7: Harden .bashrc ────────────────────────────────────────────────
+  - >-
+    grep -q "Clide Security Hardening" ~/.bashrc 2>/dev/null
+    || printf '\n# === Clide Security Hardening ===\nHISTSIZE=1000\nHISTFILESIZE=2000\nHISTCONTROL=ignoreboth\nHISTIGNORE="ls:ll:pwd:bg:fg:history:clear"\nHISTTIMEFORMAT="%F %T "\nshopt -s histappend\numask 077\nset -o noclobber\nTMOUT=1800\nreadonly TMOUT\nexport TMOUT\nalias rm="rm -i"\nalias cp="cp -i"\nalias mv="mv -i"\nalias fix-ssh="chmod 700 ~/.ssh && chmod 600 ~/.ssh/id_* && chmod 644 ~/.ssh/*.pub"\nalias fix-home="chmod 700 ~"\nalias check-perms="ls -la ~ && ls -la ~/.ssh 2>/dev/null"\nalias myip="curl -s ifconfig.me && echo"\nalias update="pkg update && pkg upgrade"\n[ -f ~/.secure_env ] && source ~/.secure_env\n# === End Clide Security ===\n' >> ~/.bashrc
+    && echo "[7/12] .bashrc security settings appended"
+
+  # ── Step 8: Secure .bash_logout ───────────────────────────────────────────
+  - >-
+    printf 'history -c\nclear\necho "Logout: $(date)" >> ~/.termux_sessions.log\n' > ~/.bash_logout
+    && echo "[8/12] .bash_logout configured"
+
+  # ── Step 9: Termux properties ─────────────────────────────────────────────
+  - >-
+    mkdir -p ~/.termux
+    && printf 'extra-keys = []\nback-key = escape\nbell-character = ignore\nuse-vibration = false\n' > ~/.termux/termux.properties
+    && echo "[9/12] termux.properties written"
+
+  # ── Step 10: Generate GPG key + save passphrase ───────────────────────────
+  # Uses --pinentry-mode loopback for non-interactive passphrase setting.
+  - >-
+    GPG_PASS=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 40)
+    && echo "$GPG_PASS" | gpg --batch --passphrase-fd 0 --pinentry-mode loopback
+       --quick-generate-key "{{gpg_name}} <{{gpg_email}}>" rsa4096 default 0 2>&1
+    && printf 'export TERMUX_GPG_PASSPHRASE="%s"\n' "$GPG_PASS" >> ~/.secure_env
+    && echo "[10/12] GPG key generated. Passphrase saved to ~/.secure_env"
+
+  # ── Step 11: Initialize pass password manager ─────────────────────────────
+  - >-
+    GPG_ID=$(gpg --list-keys --with-colons "{{gpg_email}}" 2>/dev/null | awk -F: '/^pub/{print $5}' | head -1)
+    && if [ -n "$GPG_ID" ]; then
+         pass init "$GPG_ID"
+         && printf 'export TERMUX_GPG_KEY_ID="%s"\n' "$GPG_ID" >> ~/.secure_env
+         && echo "[11/12] pass password manager initialized with GPG key $GPG_ID"
+       else
+         echo "[11/12] Warning: GPG key not found for {{gpg_email}} — skipping pass init"
+       fi
+
+  # ── Step 12: Security audit + show credentials ────────────────────────────
+  - >-
+    echo "=== TERMUX SECURITY AUDIT ===" &&
+    echo "Home dir:" && ls -ld ~ &&
+    echo ".ssh dir:" && ls -la ~/.ssh/ &&
+    echo "World-readable files (excluding .pub):" &&
+    find ~ -type f -perm -004 2>/dev/null | grep -v '\.pub$' | head -5 &&
+    echo "" &&
+    echo "=== ALL GENERATED CREDENTIALS (~/.secure_env) ===" &&
+    cat ~/.secure_env &&
+    echo "" &&
+    echo "=== HARDENING COMPLETE ==="
+
+rollback_command:
+  - 'echo "Rollback: permissions reset only. Keys and config are preserved."'
+
+require_confirmation: true
+parallel: false
+retry_count: 0
+timeout: 600

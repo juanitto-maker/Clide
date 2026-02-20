@@ -175,7 +175,29 @@ YAML
 fi
 chmod 600 ~/.clide/config.yaml
 
-# ─── 4. Interactive setup ─────────────────────────────────────────────────────
+# ─── 4. Install skills ────────────────────────────────────────────────────────
+
+step "Installing skills"
+
+# Ensure we have the source repo to copy skills from
+if [ ! -d "$INSTALL_DIR/skills" ]; then
+    echo "   Fetching skills from repository..."
+    git clone --depth=1 "https://github.com/${REPO}.git" "$INSTALL_DIR" \
+        >/dev/null 2>&1 || true
+fi
+
+if [ -d "$INSTALL_DIR/skills" ]; then
+    mkdir -p ~/.clide/skills
+    cp -r "$INSTALL_DIR/skills/"* ~/.clide/skills/ 2>/dev/null || true
+    # Secure skill files (readable only by owner)
+    find ~/.clide/skills -name "*.yaml" -exec chmod 600 {} \; 2>/dev/null || true
+    SKILL_COUNT=$(find ~/.clide/skills -name "*.yaml" | wc -l)
+    echo "✅ $SKILL_COUNT skill(s) installed to ~/.clide/skills/"
+else
+    echo "⏭  Skills directory not found — skipping. Add .yaml files to ~/.clide/skills/ manually."
+fi
+
+# ─── 5. Interactive setup ─────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════" >/dev/tty
@@ -410,7 +432,7 @@ fi
 
 fi  # end Matrix block
 
-# ─── 5. Summary ───────────────────────────────────────────────────────────────
+# ─── 6. Summary ───────────────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════"
