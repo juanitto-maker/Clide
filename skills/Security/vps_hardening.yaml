@@ -1,0 +1,294 @@
+# ============================================
+# VPS Security Hardening Skill (via Tailscale SSH)
+# ============================================
+# Based on the digitalAIventures LLC VPS Hardening Guide.
+# Automates the full hardening sequence over SSH. Uses sed/tee instead of
+# interactive nano. No Chinese mirrors — Docker from download.docker.com,
+# Tailscale from tailscale.com.
+#
+# IMPORTANT SAFETY NOTES:
+#   - kernel.modules_disabled is intentionally NOT set to 1 (causes boot lock).
+#   - The step that removes ufw allow 22/tcp is SKIPPED. After confirming
+#     Tailscale SSH works from a second Termux session, run manually:
+#       sudo ufw delete allow 22/tcp && sudo ufw reload
+#   - Run with require_confirmation: true (default).
+#
+# Usage:
+#   run_skill vps_hardening vps_host=PUBLIC_IP vps_user=root vps_newuser=juanitto
+#   (Use PUBLIC IP for initial run, Tailscale IP for subsequent runs)
+
+name: vps_hardening
+description: >
+  Full VPS security hardening via SSH: system update, admin user creation,
+  SSH/UFW/fail2ban hardening, IPv6 disable, kernel hardening, rkhunter, lynis,
+  Tailscale install, rootless Docker + clawdbot compose setup, final cleanup.
+  No Chinese mirrors. kernel.modules_disabled omitted for safe boot.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - vps
+  - security
+  - hardening
+  - ssh
+  - docker
+  - tailscale
+  - fail2ban
+  - ufw
+
+parameters:
+  vps_host:
+    description: VPS IP address (public IP for first run, Tailscale 100.x.x.x after Tailscale is set up)
+    type: string
+    required: true
+
+  vps_user:
+    description: Initial SSH username (root or default VPS user like ubuntu)
+    type: string
+    required: true
+
+  vps_newuser:
+    description: New admin username to create on the VPS
+    type: string
+    required: false
+    default: "juanitto"
+
+  ssh_key:
+    description: Path to local SSH private key (from termux_hardening skill)
+    type: string
+    required: false
+    default: "~/.ssh/id_ed25519"
+
+commands:
+  # ── 0. Verify SSH connectivity ────────────────────────────────────────────
+  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo Connected as $(whoami) on $(hostname)"'
+
+  # ── 1. System update ──────────────────────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "DEBIAN_FRONTEND=noninteractive sudo apt update && DEBIAN_FRONTEND=noninteractive sudo apt upgrade -y && DEBIAN_FRONTEND=noninteractive sudo apt dist-upgrade -y && sudo apt autoremove -y && sudo apt autoclean && echo [1] System updated"
+
+  # ── 2. Create admin user + copy SSH keys ──────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "id {{vps_newuser}} 2>/dev/null && echo 'User {{vps_newuser}} already exists' || (
+      NEW_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 24)
+      && sudo adduser --disabled-password --gecos '' {{vps_newuser}}
+      && echo '{{vps_newuser}}:'\"$NEW_PASS\" | sudo chpasswd
+      && sudo usermod -aG sudo {{vps_newuser}}
+      && sudo mkdir -p /home/{{vps_newuser}}/.ssh
+      && sudo cp ~/.ssh/authorized_keys /home/{{vps_newuser}}/.ssh/ 2>/dev/null || sudo cp /root/.ssh/authorized_keys /home/{{vps_newuser}}/.ssh/ 2>/dev/null || true
+      && sudo chown -R {{vps_newuser}}:{{vps_newuser}} /home/{{vps_newuser}}/.ssh
+      && sudo chmod 700 /home/{{vps_newuser}}/.ssh
+      && sudo chmod 600 /home/{{vps_newuser}}/.ssh/authorized_keys
+      && echo '[2] User {{vps_newuser}} created. Password: '\"$NEW_PASS\"' — SAVE THIS!'
+    )"
+
+  # ── 3. SSH hardening (sshd_config) ────────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    && sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+    && sudo sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+    && sudo sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+    && sudo sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' /etc/ssh/sshd_config
+    && sudo sshd -t && sudo systemctl restart ssh
+    && echo '[3] SSH hardened: password auth disabled, root login disabled'"
+
+  # ── 4. UFW firewall setup ─────────────────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo ufw default deny incoming
+    && sudo ufw default allow outgoing
+    && sudo ufw allow 22/tcp
+    && sudo ufw --force enable
+    && sudo ufw status verbose
+    && echo '[4] UFW enabled with port 22 open'"
+
+  # ── 5. Install and configure fail2ban ─────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo apt install fail2ban -y
+    && sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+    && printf '\n[sshd]\nenabled = true\nport    = 22\nlogpath = %%(sshd_log)s\nmaxretry = 3\nbantime = 3600\n' | sudo tee -a /etc/fail2ban/jail.local
+    && sudo systemctl start fail2ban
+    && sudo systemctl enable fail2ban
+    && sudo fail2ban-client status sshd
+    && echo '[5] fail2ban configured for SSH (3 retries, 1hr ban)'"
+
+  # ── 6. Unattended security upgrades ──────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo apt install unattended-upgrades -y
+    && DEBIAN_FRONTEND=noninteractive sudo dpkg-reconfigure -plow unattended-upgrades
+    && echo '[6] Unattended upgrades configured'"
+
+  # ── 7. Shared memory protection (/etc/fstab) ──────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "grep -q 'tmpfs /run/shm' /etc/fstab
+    || echo 'tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0' | sudo tee -a /etc/fstab
+    && sudo systemctl daemon-reload
+    && sudo mount -o remount /run/shm 2>/dev/null || true
+    && echo '[7] Shared memory (/run/shm) protected noexec,nosuid'"
+
+  # ── 8. Disable unnecessary services ──────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "for svc in bluetooth cups avahi-daemon ModemManager multipathd packagekit; do
+       sudo systemctl disable --now \$svc 2>/dev/null && echo 'Disabled: '\$svc || echo 'Not found: '\$svc
+     done
+    && echo '[8] Unnecessary services disabled'"
+
+  # ── 9. Disable IPv6 + kernel hardening (no modules_disabled!) ────────────
+  # NOTE: kernel.modules_disabled = 1 is intentionally omitted — it causes
+  # boot lockout (confirmed issue). Score impact is minor vs. risk.
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "grep -q 'disable_ipv6' /etc/sysctl.conf ||
+    printf '\n# === Clide VPS Hardening ===\n# IPv6 disable\nnet.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\nnet.ipv6.conf.lo.disable_ipv6 = 1\n# Kernel hardening\nnet.ipv4.conf.all.rp_filter = 1\nnet.ipv4.conf.default.rp_filter = 1\nnet.ipv4.icmp_echo_ignore_broadcasts = 1\nnet.ipv4.conf.all.send_redirects = 0\nnet.ipv4.conf.default.send_redirects = 0\nnet.ipv4.icmp_ignore_bogus_error_responses = 1\nkernel.dmesg_restrict = 1\nkernel.kptr_restrict = 2\n# Lynis fixes (safe)\nfs.suid_dumpable = 0\nnet.ipv4.conf.all.log_martians = 1\nnet.ipv4.conf.default.log_martians = 1\ndev.tty.ldisc_autoload = 0\nfs.protected_fifos = 2\nkernel.core_uses_pid = 1\nkernel.perf_event_paranoid = 3\nkernel.sysrq = 0\nkernel.unprivileged_bpf_disabled = 1\nnet.core.bpf_jit_harden = 2\nnet.ipv4.conf.all.forwarding = 0\nnet.ipv4.conf.default.accept_source_route = 0\n# === End Clide Hardening ===\n' | sudo tee -a /etc/sysctl.conf
+    && sudo sysctl -p
+    && echo '[9] IPv6 disabled. Kernel hardened. inet6 addresses remaining:' \$(ip addr show | grep -c inet6 || echo 0)"
+
+  # ── 10. Install rkhunter + lynis, run checks ──────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo apt install rkhunter lynis -y
+    && sudo rkhunter --propupd
+    && sudo rkhunter --check --sk 2>&1 | grep -E '(Warning|OK \[)' | tail -10
+    && echo '[10] rkhunter checked. Running lynis...'
+    && sudo lynis audit system 2>&1 | grep -E '(Hardening index|Warning|Suggestion)' | head -15
+    && echo '[10] lynis done — check /var/log/lynis.log for full report'"
+
+  # ── 11. Hide from ping (ufw before.rules) ────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo sed -i 's/-A ufw-before-input -p icmp --icmp-type echo-request -j ACCEPT/-A ufw-before-input -p icmp --icmp-type echo-request -j DROP/' /etc/ufw/before.rules
+    && sudo ufw reload
+    && echo '[11] Ping (ICMP echo-request) blocked'"
+
+  # ── 12. SSH tightening + legal banner ─────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "printf '***************************************************************************\n                            NOTICE TO USERS\nThis system is for authorized use only. All activities are monitored\nand recorded. Unauthorized access will be prosecuted.\n***************************************************************************\n' | sudo tee /etc/issue.net
+    && sudo cp /etc/issue.net /etc/issue
+    && for kv in 'MaxAuthTries 3' 'AllowTcpForwarding no' 'AllowAgentForwarding no' 'LogLevel VERBOSE' 'ClientAliveCountMax 2' 'MaxSessions 2' 'TCPKeepAlive no'; do
+         key=\$(echo \$kv | awk '{print \$1}')
+         grep -q \"^\$key\" /etc/ssh/sshd_config && sudo sed -i \"s/^\$key.*/\$kv/\" /etc/ssh/sshd_config || echo \"\$kv\" | sudo tee -a /etc/ssh/sshd_config
+       done
+    && grep -q '^Banner' /etc/ssh/sshd_config && sudo sed -i 's|^Banner.*|Banner /etc/issue.net|' /etc/ssh/sshd_config || echo 'Banner /etc/issue.net' | sudo tee -a /etc/ssh/sshd_config
+    && sudo sshd -t && sudo systemctl restart ssh
+    && echo '[12] SSH tightened (MaxAuthTries 3, no forwarding, verbose log) + banner set'"
+
+  # ── 13. Install Tailscale (official installer — non-Chinese) ──────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "curl -fsSL https://tailscale.com/install.sh | sh
+    && sudo tailscale up
+    && TSIP=\$(tailscale ip -4 2>/dev/null || echo 'pending')
+    && sudo ufw allow in on tailscale0
+    && sudo ufw allow 41641/udp
+    && sudo ufw reload
+    && echo '[13] Tailscale installed. VPS Tailscale IP: '\$TSIP
+    && echo '>>> NEXT: SSH to '\$TSIP' from a NEW Termux session to verify Tailscale works.'
+    && echo '>>> THEN run: sudo ufw delete allow 22/tcp && sudo ufw reload'"
+
+  # ── 14. Install Docker (official GPG — download.docker.com, non-Chinese) ──
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo apt update
+    && sudo apt install -y ca-certificates curl gnupg uidmap dbus-user-session
+    && sudo install -m 0755 -d /etc/apt/keyrings
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    && sudo chmod a+r /etc/apt/keyrings/docker.gpg
+    && echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \$(. /etc/os-release && echo \$VERSION_CODENAME) stable\" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    && sudo apt update
+    && sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    && sudo systemctl disable --now docker.service docker.socket
+    && echo '[14] Docker installed from official repo. Rootful daemon disabled.'"
+
+  # ── 15. Docker rootless setup + cgroup delegation + AppArmor fix ──────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo -u {{vps_newuser}} bash -c 'dockerd-rootless-setuptool.sh install 2>&1' || true
+    && sudo loginctl enable-linger {{vps_newuser}}
+    && grep -q 'DOCKER_HOST' /home/{{vps_newuser}}/.bashrc || printf '\nexport PATH=/usr/bin:\$PATH\nexport DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock\n' | sudo tee -a /home/{{vps_newuser}}/.bashrc
+    && sudo mkdir -p /etc/systemd/system/user@.service.d
+    && printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+    && sudo systemctl daemon-reload
+    && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+    && echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-apparmor-namespace.conf
+    && echo '[15] Docker rootless configured for {{vps_newuser}}'"
+
+  # ── 16. Docker isolated network + daemon.json + clawdbot compose + auditd ─
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo -u {{vps_newuser}} bash -c '
+      export XDG_RUNTIME_DIR=/run/user/\$(id -u)
+      export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock
+      systemctl --user daemon-reload 2>/dev/null || true
+      systemctl --user start docker 2>/dev/null || true
+      sleep 2
+      docker network create --internal clawdbot_isolated 2>/dev/null || echo \"network exists\"
+      mkdir -p ~/clawdbot ~/clawdbot_data/db
+      chmod 700 ~/clawdbot_data
+      MYUID=\$(id -u)
+      cat > ~/clawdbot/docker-compose.yml << COMPEOF
+services:
+  clawdbot:
+    image: moltbot/agent:latest
+    container_name: clawdbot_agent
+    restart: always
+    user: \"\${MYUID}:\${MYUID}\"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64M
+    volumes:
+      - ~/clawdbot_data:/app/data:rw
+    networks:
+      - clawdbot_isolated
+    deploy:
+      resources:
+        limits:
+          cpus: \"0.50\"
+          memory: 512M
+networks:
+  clawdbot_isolated:
+    internal: true
+COMPEOF
+      mkdir -p ~/.config/docker
+      printf \"{\\n  \\\"log-driver\\\": \\\"json-file\\\",\\n  \\\"log-opts\\\": {\\n    \\\"max-size\\\": \\\"10m\\\",\\n    \\\"max-file\\\": \\\"3\\\"\\n  }\\n}\\n\" > ~/.config/docker/daemon.json
+      docker info | grep -i rootless || echo \"Docker rootless may need user session restart\"
+    '
+    && sudo apt install auditd -y
+    && echo '-w /usr/bin/dockerd -k docker' | sudo tee /etc/audit/rules.d/docker.rules
+    && sudo service auditd restart
+    && echo '[16] Docker network, compose, daemon config, and auditd done'"
+
+  # ── 17. Final SSH hardening + cleanup ─────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y && sudo apt autoclean
+    && sudo dpkg --purge \$(dpkg -l | grep '^rc' | awk '{print \$2}') 2>/dev/null || true
+    && history -c && history -w
+    && echo '[17] Cleanup done. Run: sudo lynis audit system to verify score.'"
+
+  # ── 18. Final lynis audit score ───────────────────────────────────────────
+  - >-
+    ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}}
+    "sudo lynis audit system 2>&1 | grep -E '(Hardening index|Warning|Suggestion)' | head -20
+    && echo ''
+    && echo '[18] VPS HARDENING COMPLETE'
+    && echo '>>> Remember: sudo ufw delete allow 22/tcp ONLY after confirming Tailscale SSH works!'
+    && echo '>>> Reboot recommended: sudo reboot'"
+
+rollback_command:
+  - 'echo "Manual rollback required. Check /etc/ssh/sshd_config and UFW rules before proceeding."'
+
+require_confirmation: true
+parallel: false
+retry_count: 0
+timeout: 900
