@@ -66,6 +66,10 @@ pub struct Agent {
     skill_manager: Option<SkillManager>,
     /// Shared cancellation flag — set to true by a /stop command to abort the running task.
     cancelled: Arc<AtomicBool>,
+    /// Secrets loaded from ~/.clide/secrets.yaml (and env overrides).
+    /// Injected as ${KEY_NAME} placeholders in skill commands at execution time.
+    /// Never sent to the AI model.
+    secrets: HashMap<String, String>,
 }
 
 impl Agent {
@@ -81,6 +85,7 @@ impl Agent {
             memory,
             skill_manager,
             cancelled: Arc::new(AtomicBool::new(false)),
+            secrets: config.secrets.clone(),
         }
     }
 
@@ -405,8 +410,14 @@ impl Agent {
 
         for cmd_template in &skill.commands {
             let mut cmd = cmd_template.clone();
+            // 1. Substitute skill params: {{param_name}} → value
             for (key, val) in params {
                 cmd = cmd.replace(&format!("{{{{{}}}}}", key), val);
+            }
+            // 2. Substitute secrets: ${SECRET_NAME} → value (resolved locally,
+            //    never exposed to the AI model).
+            for (key, val) in &self.secrets {
+                cmd = cmd.replace(&format!("${{{}}}", key), val);
             }
 
             Self::send_progress(progress, format!("  [skill:{}] $ {}", skill_name, cmd)).await;

@@ -3,9 +3,18 @@
 # ============================================
 # Copy this file to ~/.clide/config.yaml and edit.
 # The installer does this automatically.
+#
+# SECRETS MANAGEMENT:
+#   For a cleaner separation of config vs. secrets, copy
+#   secrets.example.yaml → ~/.clide/secrets.yaml and put all API keys there.
+#   Clide loads secrets.yaml on top of this file; env vars override both.
+#   Priority: env var > secrets.yaml > config.yaml > default
+#
+#   Any key in secrets.yaml (or env) is also available as ${KEY_NAME}
+#   inside skill commands — injected at execution time, never sent to the AI.
 
 # Gemini API key (get one free at https://aistudio.google.com/app/apikey)
-# Can also be set via the GEMINI_API_KEY environment variable.
+# Recommended: leave empty here and set GEMINI_API_KEY in secrets.yaml.
 gemini_api_key: ""
 
 # Gemini model to use
@@ -39,9 +48,18 @@ matrix_room_id: "!roomid:matrix.org"
 # --- Telegram settings ---
 
 # Bot token from @BotFather (required when platform is "telegram" or "both")
-# Can also be set via the TELEGRAM_BOT_TOKEN environment variable.
+# Recommended: set TELEGRAM_BOT_TOKEN in secrets.yaml instead.
 # To create a bot: open Telegram → @BotFather → /newbot → copy the token
 telegram_bot_token: ""
+
+# --- Additional AI provider keys ---
+# These are used by skills (e.g. aiwb_manager) that route to other providers.
+# Recommended: set these in secrets.yaml as ANTHROPIC_API_KEY etc.
+# They are also available as ${ANTHROPIC_API_KEY} placeholders in any skill command.
+anthropic_api_key: ""
+openai_api_key: ""
+groq_api_key: ""
+xai_api_key: ""
 
 # --- Bot behaviour ---
 
