@@ -18,6 +18,7 @@ Cargo.lock
 
 # Configuration files (contain secrets!)
 config.yaml
+secrets.yaml
 .env
 .env.local
 .env.*.local
