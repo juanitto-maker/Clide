@@ -1,27 +1,24 @@
 # ============================================
 # Lynis Security Audit Skill
 # ============================================
-# Installs Lynis and runs a full security audit. Supports two modes:
-#   local  — audit this machine directly (default, works on Termux/Linux)
-#   ssh    — audit a remote VPS via SSH
+# Runs a full Lynis security audit on a remote VPS via SSH.
+# Installs Lynis on the remote server if not already present.
+# Reports the Hardening Index score, top warnings, and suggestions.
 #
-# The 'mode' parameter has a non-empty default ("local") so the skill manager
-# always substitutes it — enabling safe if/else branching in sh.
+# Note: Lynis is not available in Termux repositories and cannot be
+# run locally on this device. Use mode=ssh to audit a remote VPS.
 #
-# Usage (local):
-#   run_skill lynis_audit
-#   run_skill lynis_audit mode=local
-#
-# Usage (remote VPS):
+# Usage:
 #   run_skill lynis_audit mode=ssh vps_host=1.2.3.4
 #   run_skill lynis_audit mode=ssh vps_host=100.x.x.x vps_user=juanitto
 
 name: lynis_audit
 description: >
-  Install Lynis (if not present) and run a full security audit. Reports
-  the Hardening Index score, top warnings, and actionable suggestions.
-  mode=local audits this machine; mode=ssh audits a remote VPS via SSH.
-version: "1.2.0"
+  Run a Lynis security audit on a remote VPS via SSH. Installs Lynis if
+  not present. Reports the Hardening Index score, top warnings, and
+  actionable suggestions. Use after vps_hardening to verify your score.
+  Note: local mode is not supported (Lynis is unavailable in Termux repos).
+version: "1.3.0"
 author: digitalAIventures LLC
 tags:
   - security
@@ -33,43 +30,42 @@ tags:
 parameters:
   mode:
     description: >
-      'local' to audit this machine directly (default),
-      'ssh' to audit a remote VPS over SSH.
+      Audit mode. Only 'ssh' is supported — Lynis is not available in
+      Termux repositories and cannot be run locally on this device.
     type: string
     required: false
-    default: "local"
+    default: "ssh"
 
   vps_host:
-    description: Remote VPS IP or hostname. Only used when mode=ssh.
+    description: VPS IP address or hostname to audit (Tailscale or public IP).
     type: string
-    required: false
-    default: "none"
+    required: true
 
   vps_user:
-    description: SSH username for the remote host. Only used when mode=ssh.
+    description: SSH username on the remote server.
     type: string
     required: false
     default: "root"
 
   ssh_key:
-    description: Path to SSH private key. Only used when mode=ssh.
+    description: Path to local SSH private key.
     type: string
     required: false
     default: "~/.ssh/id_ed25519"
 
 commands:
-  # ── 0. Confirm mode ───────────────────────────────────────────────────────
-  - 'echo "[0] lynis_audit mode: {{mode}} — target: {{vps_host}}"'
-
-  # ── 1. Install Lynis if not present ──────────────────────────────────────
+  # ── 0. Mode guard ─────────────────────────────────────────────────────────
+  # Local mode is blocked: Lynis is not in Termux repos.
   - >-
     if [ "{{mode}}" = "local" ]; then
-    command -v lynis >/dev/null 2>&1
-    && echo "[1] lynis already installed"
-    || (DEBIAN_FRONTEND=noninteractive sudo apt-get install -y lynis 2>/dev/null
-    || pkg install -y lynis 2>/dev/null)
-    && echo "[1] lynis installed";
+    echo "Lynis cannot be installed directly in Termux as it's not available in the default repositories. Therefore, I'm unable to run the Lynis audit locally."
+    && exit 1;
     else
+    echo "[0] lynis_audit mode=ssh — target: {{vps_user}}@{{vps_host}}";
+    fi
+
+  # ── 1. Verify SSH + install Lynis if not present ──────────────────────────
+  - >-
     ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes
     -o ConnectTimeout=15 {{vps_user}}@{{vps_host}}
     "command -v lynis >/dev/null 2>&1
@@ -77,45 +73,17 @@ commands:
     || (DEBIAN_FRONTEND=noninteractive sudo apt-get install -y lynis 2>/dev/null
     || sudo yum install -y lynis 2>/dev/null
     || sudo dnf install -y lynis 2>/dev/null)
-    && echo '[1] lynis installed'";
-    fi
+    && echo '[1] lynis installed'"
 
   # ── 2. Run full audit ─────────────────────────────────────────────────────
   - >-
-    if [ "{{mode}}" = "local" ]; then
-    echo "[2] Running lynis audit system (this takes 60-120 seconds)..."
-    && sudo lynis audit system --quiet 2>&1 | tail -5
-    && echo "[2] Audit complete";
-    else
     ssh -i {{ssh_key}} -o BatchMode=yes {{vps_user}}@{{vps_host}}
-    "echo '[2] Running lynis audit system on {{vps_host}}...'
+    "echo '[2] Running lynis audit system on {{vps_host}} (60-120s)...'
     && sudo lynis audit system --quiet 2>&1 | tail -5
-    && echo '[2] Audit complete'";
-    fi
+    && echo '[2] Audit complete'"
 
   # ── 3. Hardening Index + Warnings ────────────────────────────────────────
   - >-
-    if [ "{{mode}}" = "local" ]; then
-    LYNIS_LOG="${PREFIX:+$PREFIX}/var/log/lynis.log";
-    LYNIS_LOG="${LYNIS_LOG:-/var/log/lynis.log}";
-    LYNIS_DAT="${PREFIX:+$PREFIX}/var/log/lynis-report.dat";
-    LYNIS_DAT="${LYNIS_DAT:-/var/log/lynis-report.dat}";
-    echo ""
-    && echo "============================================"
-    && echo "  LYNIS AUDIT RESULTS: local"
-    && echo "============================================"
-    && echo ""
-    && echo "--- Hardening Index ---"
-    && (sudo grep "Hardening index" /var/log/lynis.log 2>/dev/null
-    || grep "Hardening index" "${LYNIS_LOG}" 2>/dev/null
-    || echo "  (not found — check /var/log/lynis.log or $LYNIS_LOG)") | tail -1
-    && echo ""
-    && echo "--- Warnings (top 20) ---"
-    && (sudo grep "^warning\[\]" /var/log/lynis-report.dat 2>/dev/null
-    || grep "^warning\[\]" "${LYNIS_DAT}" 2>/dev/null
-    || echo "  none found") | sed "s/warning\[\]=/  W: /" | head -20
-    && echo "";
-    else
     ssh -i {{ssh_key}} -o BatchMode=yes {{vps_user}}@{{vps_host}}
     "echo ''
     && echo '============================================'
@@ -130,29 +98,17 @@ commands:
     && (sudo grep '^warning\[\]' /var/log/lynis-report.dat 2>/dev/null
     | sed 's/warning\[\]=/  W: /' | head -20
     || echo '  none found')
-    && echo ''";
-    fi
+    && echo ''"
 
   # ── 4. Top Suggestions ────────────────────────────────────────────────────
   - >-
-    if [ "{{mode}}" = "local" ]; then
-    LYNIS_DAT="${PREFIX:+$PREFIX}/var/log/lynis-report.dat";
-    LYNIS_DAT="${LYNIS_DAT:-/var/log/lynis-report.dat}";
-    echo "--- Suggestions (top 25) ---"
-    && (sudo grep "^suggestion\[\]" /var/log/lynis-report.dat 2>/dev/null
-    || grep "^suggestion\[\]" "${LYNIS_DAT}" 2>/dev/null
-    || echo "  none found") | sed "s/suggestion\[\]=/  S: /" | head -25
-    && echo ""
-    && echo "[Done] Full log: /var/log/lynis.log (or $LYNIS_DAT)";
-    else
     ssh -i {{ssh_key}} -o BatchMode=yes {{vps_user}}@{{vps_host}}
     "echo '--- Suggestions (top 25) ---'
     && (sudo grep '^suggestion\[\]' /var/log/lynis-report.dat 2>/dev/null
     | sed 's/suggestion\[\]=/  S: /' | head -25
     || echo '  none found')
     && echo ''
-    && echo '[Done] Full log: /var/log/lynis.log'";
-    fi
+    && echo '[Done] Full log: /var/log/lynis.log'"
 
 rollback_command:
   - echo "No rollback needed — lynis_audit is read-only."
@@ -166,8 +122,7 @@ timeout: 300
 # Notes
 # ============================================
 # - Hardening Index: 0-100. Score 70+ = good, 80+ = excellent.
-# - mode=local: lynis log is at /var/log/lynis.log (Linux) or
-#   $PREFIX/var/log/lynis.log (Termux). sudo is used where available.
-# - mode=ssh: requires SSH key auth. Run vps_hardening first to set that up.
-# - timeout: 300s. Lynis typically finishes in 60-120s.
-# - After vps_hardening, rerun with mode=ssh to confirm score improved.
+# - Lynis is unavailable in Termux pkg repos — SSH to a VPS to audit.
+# - mode=ssh requires SSH key auth. vps_hardening sets this up.
+# - timeout: 300s (5 min). Lynis typically finishes in 60-120s on a VPS.
+# - After vps_hardening, rerun this skill to confirm your score improved.
