@@ -1,0 +1,258 @@
+# ============================================
+# Clide Debugger Skill
+# ============================================
+# Reactive, multi-phase diagnostic for a Docker container,
+# a systemd service, or the host itself. Output is a
+# structured, AI-ready fault report in /tmp/.
+#
+# Three target types auto-detected:
+#   container  — docker inspect, docker logs, docker stats
+#   service    — systemctl status, journalctl
+#   host       — generic: journalctl, free, df, ps
+#
+# Modes:
+#   logs       — filtered error/warn log capture only
+#   process    — process tree + zombie count
+#   resources  — mem/cpu/disk/OOM events
+#   network    — open ports, endpoint reachability
+#   full       — all of the above (default)
+#
+# The report file is written to:
+#   /tmp/clide-debug-<target>.txt
+# Feed it directly to an AI agent for root-cause analysis.
+#
+# Usage:
+#   run_skill debugger target=my-bot-container
+#   run_skill debugger target=nginx mode=network
+#   run_skill debugger target=host mode=resources
+#   run_skill debugger target=my-bot endpoints=ollama:11434,api.telegram.org:443
+# ============================================
+
+name: debugger
+description: >
+  Multi-phase diagnostic for a Docker container, systemd service, or host.
+  Captures logs, processes, resources, and network state, then writes
+  a structured AI-ready fault report with pattern-based hints.
+version: "1.0.0"
+author: Clide Team
+tags:
+  - debug
+  - diagnostics
+  - docker
+  - containers
+  - health
+  - ai
+  - monitoring
+
+parameters:
+  target:
+    description: Docker container name, systemd service name, or "host"
+    type: string
+    required: true
+
+  mode:
+    description: "Diagnostic scope: logs | process | resources | network | full"
+    type: string
+    required: false
+    default: "full"
+
+  tail_lines:
+    description: How many log tail lines to capture
+    type: number
+    required: false
+    default: "200"
+
+  since:
+    description: Capture logs/events from this duration back (e.g. 10m, 1h, 6h)
+    type: string
+    required: false
+    default: "1h"
+
+  endpoints:
+    description: Comma-separated host:port pairs to probe (e.g. "ollama:11434,api.telegram.org:443")
+    type: string
+    required: false
+    default: "ollama:11434"
+
+commands:
+  # ── 0. INIT — report file + detect target type ────────────────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    printf '=== CLIDE DEBUG REPORT ===\nTarget   : {{target}}\nMode     : {{mode}}\nCaptured : %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$REPORT" &&
+    if docker inspect {{target}} > /dev/null 2>&1; then
+      echo "container" > /tmp/clide-debug-{{target}}.type &&
+      echo "[0] Target type: Docker container";
+    elif systemctl status {{target}} > /dev/null 2>&1; then
+      echo "service" > /tmp/clide-debug-{{target}}.type &&
+      echo "[0] Target type: Systemd service";
+    else
+      echo "host" > /tmp/clide-debug-{{target}}.type &&
+      echo "[0] Target type: Host (generic)";
+    fi
+
+  # ── 1. STATE — status, exit code, restart count, uptime ──────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    TYPE=$(cat /tmp/clide-debug-{{target}}.type 2>/dev/null || echo "host") &&
+    printf '[STATE]\n' >> "$REPORT" &&
+    if [ "$TYPE" = "container" ]; then
+      docker inspect {{target}} 2>/dev/null |
+        python3 -c "import sys,json; d=json.load(sys.stdin)[0]; s=d['State']; print('  Status    :', s.get('Status','?')); print('  Exit code :', s.get('ExitCode','?'), '(OOM kill)' if s.get('OOMKilled') else ''); print('  OOM killed:', s.get('OOMKilled',False)); print('  Restarts  :', d.get('RestartCount',0)); print('  Started   :', s.get('StartedAt','?')[:19]); print('  Finished  :', s.get('FinishedAt','?')[:19] if s.get('FinishedAt','0001')[:4] != '0001' else 'still running')" >> "$REPORT" 2>&1 ||
+        docker inspect {{target}} 2>&1 | grep -E '"Status"|"ExitCode"|"OOMKilled"|"RestartCount"' | head -6 >> "$REPORT";
+    elif [ "$TYPE" = "service" ]; then
+      systemctl status {{target}} --no-pager 2>&1 | head -12 >> "$REPORT";
+    else
+      printf '  Uptime: %s\n' "$(uptime)" >> "$REPORT" &&
+      printf '  Kernel: %s\n' "$(uname -r)" >> "$REPORT";
+    fi &&
+    echo "[1] State captured"
+
+  # ── 2. LOGS — filtered errors + raw tail ─────────────────────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    TYPE=$(cat /tmp/clide-debug-{{target}}.type 2>/dev/null || echo "host") &&
+    case "{{mode}}" in logs|full)
+      printf '\n[LOGS — errors/warns from last {{since}}, tail {{tail_lines}}]\n' >> "$REPORT" &&
+      if [ "$TYPE" = "container" ]; then
+        docker logs --since {{since}} --tail {{tail_lines}} {{target}} 2>&1 |
+          grep -iE '(error|warn|critical|fatal|exception|traceback|oom|killed|panic|refused|timeout|fail)' |
+          tail -{{tail_lines}} >> "$REPORT" 2>/dev/null || true &&
+        printf '\n  --- raw tail (last 20 lines) ---\n' >> "$REPORT" &&
+        docker logs --tail 20 {{target}} 2>&1 >> "$REPORT" || true;
+      elif [ "$TYPE" = "service" ]; then
+        journalctl -u {{target}} --since "-{{since}}" --no-pager -n {{tail_lines}} 2>&1 |
+          grep -iE '(error|warn|critical|fatal|oom|killed|panic|refused|timeout|fail)' >> "$REPORT" || true &&
+        printf '\n  --- raw tail (last 20 lines) ---\n' >> "$REPORT" &&
+        journalctl -u {{target}} --no-pager -n 20 2>&1 >> "$REPORT" || true;
+      else
+        journalctl --since "-{{since}}" --no-pager -n {{tail_lines}} 2>&1 |
+          grep -iE '(error|warn|critical|oom|killed|panic|refused|timeout|fail)' >> "$REPORT" || true;
+      fi ;;
+    esac &&
+    echo "[2] Logs captured"
+
+  # ── 3. PROCESS TREE — top CPU consumers + zombie count ───────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    TYPE=$(cat /tmp/clide-debug-{{target}}.type 2>/dev/null || echo "host") &&
+    case "{{mode}}" in process|full)
+      printf '\n[PROCESSES — top 15 by CPU]\n' >> "$REPORT" &&
+      if [ "$TYPE" = "container" ]; then
+        docker exec {{target}} ps aux --sort=-%cpu 2>/dev/null | head -16 >> "$REPORT" ||
+          printf '  (exec failed — container may be stopped or ps unavailable)\n' >> "$REPORT";
+        ZOMBIES=$(docker exec {{target}} ps aux 2>/dev/null | awk '$8=="Z"' | wc -l 2>/dev/null || echo "?");
+        printf '  Zombie processes: %s\n' "$ZOMBIES" >> "$REPORT";
+      else
+        ps aux --sort=-%cpu | head -16 >> "$REPORT" &&
+        ZOMBIES=$(ps aux | awk '$8=="Z"' | wc -l);
+        printf '  Zombie processes: %s\n' "$ZOMBIES" >> "$REPORT";
+      fi ;;
+    esac &&
+    echo "[3] Processes captured"
+
+  # ── 4. RESOURCES — mem, cpu, disk, OOM events ────────────────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    TYPE=$(cat /tmp/clide-debug-{{target}}.type 2>/dev/null || echo "host") &&
+    case "{{mode}}" in resources|full)
+      printf '\n[RESOURCES]\n' >> "$REPORT" &&
+      if [ "$TYPE" = "container" ]; then
+        printf '  Container stats (one-shot):\n' >> "$REPORT" &&
+        docker stats {{target}} --no-stream 2>/dev/null >> "$REPORT" ||
+          printf '  (stats unavailable — container may be stopped)\n' >> "$REPORT";
+      fi &&
+      printf '\n  Host memory:\n' >> "$REPORT" &&
+      free -h 2>/dev/null >> "$REPORT" || true &&
+      printf '\n  Disk usage:\n' >> "$REPORT" &&
+      df -h 2>/dev/null | grep -v tmpfs | head -10 >> "$REPORT" || true &&
+      printf '\n  OOM events (dmesg):\n' >> "$REPORT" &&
+      dmesg --level=err,warn --time-format=reltime 2>/dev/null |
+        grep -i 'oom\|kill\|out of memory' | tail -10 >> "$REPORT" || true &&
+      printf '\n  Top 5 memory consumers (host):\n' >> "$REPORT" &&
+      ps aux --sort=-%mem | head -6 | awk 'NR>1 {printf "  %5.1f%% MEM  %s\n", $4, $11}' >> "$REPORT" || true ;;
+    esac &&
+    echo "[4] Resources captured"
+
+  # ── 5. NETWORK — ports, networks, endpoint probes ────────────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    TYPE=$(cat /tmp/clide-debug-{{target}}.type 2>/dev/null || echo "host") &&
+    case "{{mode}}" in network|full)
+      printf '\n[NETWORK]\n' >> "$REPORT" &&
+      if [ "$TYPE" = "container" ]; then
+        printf '  Container networks:\n' >> "$REPORT" &&
+        docker inspect {{target}} 2>/dev/null |
+          python3 -c "import sys,json; d=json.load(sys.stdin)[0]; [print(f'    {n}: IP={cfg.get(\"IPAddress\",\"none\")} gw={cfg.get(\"Gateway\",\"?\")}') for n,cfg in d.get('NetworkSettings',{}).get('Networks',{}).items()]" >> "$REPORT" 2>/dev/null || true &&
+        printf '  Open connections inside container:\n' >> "$REPORT" &&
+        docker exec {{target}} ss -tupn 2>/dev/null | head -20 >> "$REPORT" ||
+          printf '  (ss unavailable inside container)\n' >> "$REPORT";
+      else
+        printf '  Listening sockets (host):\n' >> "$REPORT" &&
+        ss -tlnp 2>/dev/null | head -20 >> "$REPORT" || true;
+      fi &&
+      printf '\n  Endpoint reachability:\n' >> "$REPORT" &&
+      IFS=',' read -ra EPS <<< "{{endpoints}}" &&
+      for ep in "${EPS[@]}"; do
+        H="${ep%%:*}";
+        P="${ep##*:}";
+        if nc -z -w3 "$H" "$P" 2>/dev/null; then
+          printf '    %-35s OK\n' "$ep" >> "$REPORT";
+        else
+          printf '    %-35s UNREACHABLE\n' "$ep" >> "$REPORT";
+        fi;
+      done &&
+      printf '\n  DNS check:\n' >> "$REPORT" &&
+      nslookup google.com 2>/dev/null | grep -E '(Address|Server)' | head -4 >> "$REPORT" ||
+        printf '  (nslookup unavailable)\n' >> "$REPORT" ;;
+    esac &&
+    echo "[5] Network captured"
+
+  # ── 6. HINTS — pattern-based recommendations ─────────────────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    printf '\n[HINTS]\n' >> "$REPORT" &&
+    HINTS=0 &&
+    grep -qi 'OOMKilled.*True\|OOM kill\|out of memory\|killed process' "$REPORT" 2>/dev/null &&
+      printf '  !! OOM kill detected — raise bot_mem_limit or use a smaller model\n' >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    RESTARTS=$(grep 'Restarts' "$REPORT" 2>/dev/null | grep -oP '\d+' | head -1 || echo 0) &&
+    [ "${RESTARTS:-0}" -gt 4 ] 2>/dev/null &&
+      printf '  !! %s container restarts — check restart policy, add circuit breaker\n' "$RESTARTS" >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    grep -qi 'connection refused' "$REPORT" 2>/dev/null &&
+      printf '  !! Connection refused — target service not listening or wrong port\n' >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    grep -qi 'UNREACHABLE' "$REPORT" 2>/dev/null &&
+      printf '  !! Endpoint unreachable — check network config and internal/external routing\n' >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    grep -qi 'timeout\|timed out' "$REPORT" 2>/dev/null &&
+      printf '  !! Timeout errors — check upstream latency and increase client timeouts\n' >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    grep -qi 'permission denied' "$REPORT" 2>/dev/null &&
+      printf '  !! Permission denied — check volume mounts, container user, and capabilities\n' >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    grep -qi 'no space left\|disk full' "$REPORT" 2>/dev/null &&
+      printf '  !! Disk full — clear Docker logs/images or expand volume\n' >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    grep -qi 'traceback\|exception\|panic\|segfault' "$REPORT" 2>/dev/null &&
+      printf '  !! Runtime crash detected — review error logs for stack trace\n' >> "$REPORT" && HINTS=$((HINTS+1)) || true &&
+    [ "${HINTS:-0}" -eq 0 ] &&
+      printf '  No obvious pattern match — review full report and feed to AI for analysis\n' >> "$REPORT" || true &&
+    echo "[6] Hints generated: $HINTS"
+
+  # ── 7. SUMMARY — print digest + report path ──────────────────────────────
+  - >-
+    REPORT="/tmp/clide-debug-{{target}}.txt" &&
+    printf '\n=== END REPORT — saved to: %s ===\n' "$REPORT" >> "$REPORT" &&
+    echo "" &&
+    echo "╔══════════════════════════════════════════════╗" &&
+    echo "║         CLIDE DEBUGGER — SUMMARY             ║" &&
+    echo "╚══════════════════════════════════════════════╝" &&
+    grep -E '(Target|Mode|Captured|Status|Exit code|OOM|Restarts|!!)' "$REPORT" | sed 's/^/  /' &&
+    echo "" &&
+    echo "  Full report : $REPORT" &&
+    echo "  AI feed     : cat $REPORT | clide ask 'diagnose this fault report'" &&
+    echo "" &&
+    rm -f /tmp/clide-debug-{{target}}.type
+
+rollback_command:
+  - rm -f /tmp/clide-debug-{{target}}.txt /tmp/clide-debug-{{target}}.type
+  - echo "Debug report and temp files cleaned up."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 120
