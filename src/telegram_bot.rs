@@ -15,6 +15,10 @@ use crate::telegram::TelegramClient;
 /// Directory where files uploaded by Telegram users are stored.
 const UPLOAD_DIR: &str = "/tmp/clide_uploads";
 
+/// Directory scanned after every agent task — any files here are sent back
+/// to the user as downloadable Telegram documents.
+const EXPORT_DIR: &str = "/tmp/clide_exports";
+
 /// Telegram messages are capped at 4096 chars; leave some headroom.
 const TG_MAX_CHARS: usize = 3900;
 
@@ -48,6 +52,15 @@ impl TelegramBot {
         // after a restart.
         self.telegram.load_offset(OFFSET_FILE);
 
+        // Clear any active webhook so getUpdates long-polling can work.
+        // A leftover webhook causes Telegram to return 409 Conflict on every
+        // getUpdates call, making the bot appear completely unresponsive.
+        info!("Clearing any active webhook...");
+        match self.telegram.delete_webhook().await {
+            Ok(()) => info!("Webhook cleared (or was already unset)."),
+            Err(e) => warn!("Could not clear webhook (continuing anyway): {}", e),
+        }
+
         loop {
             // Hot-reload config on every poll cycle so edits to config.yaml
             // (e.g. adding authorized_users) take effect immediately without
@@ -63,7 +76,26 @@ impl TelegramBot {
                     self.telegram.save_offset(OFFSET_FILE);
 
                     for msg in messages {
-                        // ── /stop command ────────────────────────────────────
+                        // ── Built-in commands ────────────────────────────────
+
+                        // /ping or /start — health-check, useful to confirm the
+                        // bot is alive without running a full agent task.
+                        if msg.text.trim().eq_ignore_ascii_case("/ping")
+                            || msg.text.trim().eq_ignore_ascii_case("/start")
+                        {
+                            let _ = self
+                                .telegram
+                                .send_message(
+                                    msg.chat_id,
+                                    "🟢 Clide is online and ready!\n\
+                                     Send me a task to execute.\n\
+                                     Use /stop to cancel a running task.",
+                                )
+                                .await;
+                            continue;
+                        }
+
+                        // /stop command ─────────────────────────────────────
                         // When the bot is idle (here in the poll loop) there is
                         // no task running, so just inform the user.
                         // While a task IS running the stop-watcher spawned inside
@@ -141,6 +173,14 @@ impl TelegramBot {
                 )
                 .await;
             return Ok(());
+        }
+
+        // ── Prepare the export directory ──────────────────────────────────────
+        // Clear previous task's exports so we don't re-send stale files.
+        // The agent is told to save output files here; we forward them after the task.
+        let _ = fs::remove_dir_all(EXPORT_DIR).await;
+        if let Err(e) = fs::create_dir_all(EXPORT_DIR).await {
+            warn!("Could not create export dir {}: {}", EXPORT_DIR, e);
         }
 
         // Send initial "working" placeholder message
@@ -258,8 +298,57 @@ impl TelegramBot {
             }
         }
 
+        // ── Send export files ─────────────────────────────────────────────────
+        // Any files the agent saved to EXPORT_DIR are forwarded to the user as
+        // downloadable document attachments.
+        self.send_export_files(chat_id).await;
+
         info!("Agent task complete for @{}", sender);
         Ok(())
+    }
+
+    /// Scan the export directory and send every file as a Telegram document.
+    ///
+    /// The agent is instructed (via the system prompt) to save output files,
+    /// reports, and logs to `/tmp/clide_exports/`.  This method picks them up
+    /// and forwards them to the chat so the user can download them directly.
+    async fn send_export_files(&self, chat_id: i64) {
+        let mut read_dir = match fs::read_dir(EXPORT_DIR).await {
+            Ok(rd) => rd,
+            Err(_) => return, // Export dir doesn't exist — nothing to send.
+        };
+
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            // Skip directories and symlinks — only send plain files.
+            let file_type = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !file_type.is_file() {
+                continue;
+            }
+
+            let path = entry.path();
+            let path_str = match path.to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+
+            info!("Sending export file to chat: {}", path_str);
+            match self
+                .telegram
+                .send_document(chat_id, &path_str, Some(&format!("📎 {}", filename)))
+                .await
+            {
+                Ok(msg_id) => info!("Sent '{}' as message {}", filename, msg_id),
+                Err(e) => warn!("Failed to send export file '{}': {}", filename, e),
+            }
+        }
     }
 }
 

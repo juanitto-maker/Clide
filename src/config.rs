@@ -197,8 +197,12 @@ Tokens or IDs containing special characters (like ':') must be quoted.",
         &self.gemini_model
     }
 
+    /// Check if a Telegram username is in the authorized_users list.
+    /// Comparison is case-insensitive because Telegram usernames are case-insensitive
+    /// (the API may return them in a different case than the user configured).
     pub fn is_authorized(&self, user: &str) -> bool {
-        self.authorized_users.contains(&user.to_string())
+        let lower = user.to_lowercase();
+        self.authorized_users.iter().any(|u| u.to_lowercase() == lower)
     }
 }
 

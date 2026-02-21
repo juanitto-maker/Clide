@@ -1,0 +1,36 @@
+name: telegram_bot_manager
+description: >
+  Check the health of the Clide Telegram bot, inspect webhook status,
+  get bot identity info, and verify the token is valid.
+  Run this skill to diagnose connectivity or configuration issues.
+version: "1.0.0"
+author: juanitto-maker
+tags: [telegram, bot, management, diagnostics, debug]
+
+parameters:
+  action:
+    description: "Action to perform: status (default), info, webhook"
+    type: string
+    required: false
+    default: "status"
+
+commands:
+  - "echo '=== Telegram Bot Identity (getMe) ==='"
+  - >
+    curl -sf "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"
+    | python3 -m json.tool 2>/dev/null
+    || echo 'ERROR: Could not reach Telegram API or token is invalid'
+  - "echo ''"
+  - "echo '=== Webhook Status (getWebhookInfo) ==='"
+  - >
+    curl -sf "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+    | python3 -m json.tool 2>/dev/null
+    || echo 'ERROR: Could not retrieve webhook info'
+  - "echo ''"
+  - "echo '=== Bot Config Check ==='"
+  - "grep -E 'platform|telegram_bot_token|authorized_users' ~/.clide/config.yaml 2>/dev/null | grep -v 'token' || echo 'config.yaml not found'"
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 30

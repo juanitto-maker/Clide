@@ -9,7 +9,7 @@ description = "AI bot for Termux - chat via Element/Matrix, powered by Gemini"
 # Async and HTTP
 tokio = { version = "1.0", features = ["full"] }
 # rustls = pure-Rust TLS, no OpenSSL dependency — works on Linux and Android/Termux
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 async-trait = "0.1"
 
 # Serialization
