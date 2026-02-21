@@ -140,6 +140,22 @@ impl TelegramClient {
         }
     }
 
+    /// Load the last acknowledged offset from disk so restarts don't re-deliver
+    /// already-processed messages.  Call this once after `new()`.
+    pub fn load_offset(&self, path: &str) {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            if let Ok(v) = s.trim().parse::<i64>() {
+                self.offset.store(v, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Persist the current offset to disk so it survives restarts.
+    pub fn save_offset(&self, path: &str) {
+        let v = self.offset.load(Ordering::SeqCst);
+        let _ = std::fs::write(path, v.to_string());
+    }
+
     /// Long-poll Telegram for new messages (timeout=30s).
     /// Updates the shared offset so each message is delivered exactly once.
     /// Takes `&self` because the offset is behind an Arc — clones share it.

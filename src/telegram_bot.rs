@@ -18,6 +18,9 @@ const UPLOAD_DIR: &str = "/tmp/clide_uploads";
 /// Telegram messages are capped at 4096 chars; leave some headroom.
 const TG_MAX_CHARS: usize = 3900;
 
+/// File where the Telegram update offset is persisted across restarts.
+const OFFSET_FILE: &str = "/tmp/clide_tg_offset";
+
 pub struct TelegramBot {
     config: Config,
     agent: Agent,
@@ -41,9 +44,17 @@ impl TelegramBot {
         println!("Telegram bot running. Send a task to your bot. Ctrl+C to stop.");
         println!("Send /stop in the chat to abort a running task.");
 
+        // Restore offset from disk so already-processed messages aren't re-delivered
+        // after a restart.
+        self.telegram.load_offset(OFFSET_FILE);
+
         loop {
             match self.telegram.get_updates().await {
                 Ok(messages) => {
+                    // Persist the offset after every successful poll so a restart
+                    // doesn't cause previously-seen messages to be re-delivered.
+                    self.telegram.save_offset(OFFSET_FILE);
+
                     for msg in messages {
                         // ── /stop command ────────────────────────────────────
                         // When the bot is idle (here in the poll loop) there is
@@ -278,7 +289,7 @@ async fn build_task_with_file(
         Ok(()) => {
             info!("Saved uploaded file to {}", file_path);
             let user_instruction = if text.trim().is_empty() {
-                "Process or describe the uploaded file.".to_string()
+                "The user sent a file. Read and describe it using run_command.".to_string()
             } else {
                 text
             };
@@ -287,7 +298,9 @@ async fn build_task_with_file(
                 .map(|m| format!("\nMIME type: {}", m))
                 .unwrap_or_default();
             format!(
-                "{}\n\n[Uploaded file saved to: {}]\nFilename: {}{}",
+                "{}\n\nThe file is stored on the local filesystem at: {}\nFilename: {}{}\n\
+                Use run_command to access it (e.g. `cat` for text, `file` to identify type, \
+                `python3` to process it). Do NOT say you cannot see the file — use the shell.",
                 user_instruction, file_path, safe_name, mime_line
             )
         }
