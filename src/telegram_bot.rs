@@ -45,21 +45,65 @@ impl TelegramBot {
     /// Start the polling loop.
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Clide Telegram bot (agent mode)...");
-        println!("Telegram bot running. Send a task to your bot. Ctrl+C to stop.");
-        println!("Send /stop in the chat to abort a running task.");
 
-        // Restore offset from disk so already-processed messages aren't re-delivered
-        // after a restart.
+        // ── Step 1: Validate the token with getMe ────────────────────────────
+        // This fails fast with a clear error instead of silently polling forever
+        // with a bad token.
+        print!("Connecting to Telegram... ");
+        match self.telegram.get_me().await {
+            Ok(username) => {
+                println!("✅ Connected as @{}", username);
+                println!("  → Open Telegram and send a message to @{}", username);
+            }
+            Err(e) => {
+                println!("❌ FAILED");
+                eprintln!();
+                eprintln!("ERROR: Could not connect to Telegram API: {}", e);
+                eprintln!();
+                eprintln!("Most likely causes:");
+                eprintln!("  1. TELEGRAM_BOT_TOKEN is wrong or missing");
+                eprintln!("     Check: ~/.clide/config.yaml  (telegram_bot_token: ...)");
+                eprintln!("         or ~/.clide/secrets.yaml (TELEGRAM_BOT_TOKEN: ...)");
+                eprintln!("  2. No internet connection");
+                eprintln!("  3. Token was revoked — create a new one via @BotFather");
+                return Err(e);
+            }
+        }
+
+        // ── Step 2: Show config summary ──────────────────────────────────────
+        if self.config.authorized_users.is_empty() {
+            println!("  ⚠️  authorized_users is EMPTY — nobody can send commands.");
+            println!("     Add your Telegram username to ~/.clide/config.yaml:");
+            println!("     authorized_users:");
+            println!("       - \"your_username\"");
+        } else {
+            println!(
+                "  Authorized users: {}",
+                self.config.authorized_users.join(", ")
+            );
+        }
+        println!("  Gemini model: {}", self.config.gemini_model);
+        println!();
+        println!("Send /stop in the chat to abort a running task.");
+        println!("Send /ping to confirm the bot sees your messages.");
+        println!("Press Ctrl+C here to shut the bot down.");
+        println!();
+
+        // ── Step 3: Restore persisted offset ────────────────────────────────
+        // Prevents re-delivering already-processed messages after a restart.
         self.telegram.load_offset(OFFSET_FILE);
 
-        // Clear any active webhook so getUpdates long-polling can work.
+        // ── Step 4: Clear any active webhook ────────────────────────────────
         // A leftover webhook causes Telegram to return 409 Conflict on every
         // getUpdates call, making the bot appear completely unresponsive.
-        info!("Clearing any active webhook...");
+        print!("Clearing any active webhook... ");
         match self.telegram.delete_webhook().await {
-            Ok(()) => info!("Webhook cleared (or was already unset)."),
-            Err(e) => warn!("Could not clear webhook (continuing anyway): {}", e),
+            Ok(()) => println!("done."),
+            Err(e) => println!("skipped ({}).", e),
         }
+
+        println!("Polling for messages (long-poll 30s)…");
+        println!();
 
         loop {
             // Hot-reload config on every poll cycle so edits to config.yaml
@@ -106,6 +150,41 @@ impl TelegramBot {
                                 .telegram
                                 .send_message(msg.chat_id, "No task is currently running.")
                                 .await;
+                            continue;
+                        }
+
+                        // /debug — show live config and bot status without
+                        // running a full agent task.  Useful for diagnosing
+                        // authorization or config problems quickly.
+                        if msg.text.trim().eq_ignore_ascii_case("/debug") {
+                            let auth_status = if self.config.authorized_users.is_empty() {
+                                "⚠️ authorized_users is EMPTY — add your username to config.yaml".to_string()
+                            } else if self.config.is_authorized(&msg.sender) {
+                                format!("✅ @{} is authorized", msg.sender)
+                            } else {
+                                format!(
+                                    "🚫 @{} is NOT in authorized_users.\n\
+                                     Add it to ~/.clide/config.yaml:\n\
+                                     authorized_users:\n  - \"{}\"",
+                                    msg.sender, msg.sender
+                                )
+                            };
+                            let reply = format!(
+                                "🔍 Clide Debug\n\
+                                 Version: {}\n\
+                                 Platform: {}\n\
+                                 Model: {}\n\
+                                 Auth: {}\n\
+                                 Sender username: @{}\n\
+                                 Gemini key set: {}",
+                                crate::VERSION,
+                                self.config.platform,
+                                self.config.gemini_model,
+                                auth_status,
+                                msg.sender,
+                                !self.config.gemini_api_key.is_empty(),
+                            );
+                            let _ = self.telegram.send_message(msg.chat_id, &reply).await;
                             continue;
                         }
 
