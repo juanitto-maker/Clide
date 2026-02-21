@@ -111,9 +111,15 @@ impl Config {
                     e,
                 )
             })?;
-        // Strip Windows-style carriage returns (\r) so configs edited on
-        // Windows or copy-pasted from certain apps parse without errors.
-        let content = raw.replace('\r', "");
+        // Strip control characters that YAML doesn't allow.
+        // Only tab (0x09) and newline (0x0A) are valid control chars in YAML.
+        // This silently removes \r (Windows line endings) and stray control
+        // chars that can creep in when copy-pasting tokens from apps like
+        // Telegram, email clients, or web browsers.
+        let content: String = raw
+            .chars()
+            .filter(|&c| c == '\t' || c == '\n' || (c >= ' ' && c != '\x7f'))
+            .collect();
         let mut cfg: Config = serde_yaml::from_str(&content).map_err(|e| {
             anyhow::anyhow!(
                 "{}\n\nHint: Make sure all values (especially matrix_access_token and matrix_room_id) \
