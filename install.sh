@@ -298,6 +298,62 @@ if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
     fi
 fi
 
+# ── 4c-2. Telegram authorized users ──────────────────────────────────────────
+
+if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
+    echo "" >/dev/tty
+    echo "👤 Authorized Telegram Users" >/dev/tty
+    echo "───────────────────────────────────────" >/dev/tty
+    echo "   Only users in this list can send commands to the bot." >/dev/tty
+    echo "   Enter Telegram usernames WITHOUT the @ sign." >/dev/tty
+    echo "   (Press Enter with no name to skip or finish the list.)" >/dev/tty
+    echo "" >/dev/tty
+
+    TG_AUTHORIZED_USERS=()
+    while true; do
+        if [ ${#TG_AUTHORIZED_USERS[@]} -eq 0 ]; then
+            ask "Your Telegram username (or press Enter to skip): " TG_AUTH_USER
+        else
+            ask "Add another username (or press Enter to finish): " TG_AUTH_USER
+        fi
+        [ -z "$TG_AUTH_USER" ] && break
+        TG_AUTH_USER="${TG_AUTH_USER#@}"   # strip leading @ if the user included it
+        TG_AUTHORIZED_USERS+=("$TG_AUTH_USER")
+        echo "   ✅ Added: @$TG_AUTH_USER" >/dev/tty
+    done
+
+    if [ ${#TG_AUTHORIZED_USERS[@]} -gt 0 ]; then
+        # Write a temp file with the new authorized_users block.
+        TEMP_BLOCK=$(mktemp)
+        echo "authorized_users:" > "$TEMP_BLOCK"
+        for u in "${TG_AUTHORIZED_USERS[@]}"; do
+            echo "  - \"$u\"" >> "$TEMP_BLOCK"
+        done
+
+        # Replace the existing authorized_users section in config.yaml.
+        # Handles both single-line "authorized_users: []" and multi-line formats.
+        TEMP_CFG=$(mktemp)
+        SKIP_LIST=false
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^authorized_users: ]]; then
+                cat "$TEMP_BLOCK"
+                SKIP_LIST=true
+            elif $SKIP_LIST && [[ "$line" =~ ^[[:space:]]+-[[:space:]] ]]; then
+                : # skip old list items
+            else
+                SKIP_LIST=false
+                echo "$line"
+            fi
+        done < ~/.clide/config.yaml > "$TEMP_CFG"
+        mv "$TEMP_CFG" ~/.clide/config.yaml
+        rm -f "$TEMP_BLOCK"
+        chmod 600 ~/.clide/config.yaml
+        echo "✅ Authorized users saved" >/dev/tty
+    else
+        echo "⏭  Skipped. Add usernames to authorized_users in ~/.clide/config.yaml later." >/dev/tty
+    fi
+fi
+
 # ── 4d. Matrix/Element credentials ───────────────────────────────────────────
 
 if [ "$CLIDE_PLATFORM" = "matrix" ] || [ "$CLIDE_PLATFORM" = "both" ]; then

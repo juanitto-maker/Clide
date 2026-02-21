@@ -49,6 +49,13 @@ impl TelegramBot {
         self.telegram.load_offset(OFFSET_FILE);
 
         loop {
+            // Hot-reload config on every poll cycle so edits to config.yaml
+            // (e.g. adding authorized_users) take effect immediately without
+            // needing to restart the bot.
+            if let Ok(refreshed) = Config::load() {
+                self.config = refreshed;
+            }
+
             match self.telegram.get_updates().await {
                 Ok(messages) => {
                     // Persist the offset after every successful poll so a restart
