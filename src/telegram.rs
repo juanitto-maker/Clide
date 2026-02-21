@@ -3,7 +3,7 @@
 // ============================================
 
 use anyhow::Result;
-use log::warn;
+use log::{error, warn};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::{
@@ -53,6 +53,9 @@ struct GetUpdatesResponse {
     ok: bool,
     #[serde(default)]
     result: Vec<Update>,
+    /// Present when ok=false (e.g. 401 Unauthorized, 409 Conflict).
+    error_code: Option<i64>,
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -137,10 +140,42 @@ struct SendResponse {
 
 impl TelegramClient {
     pub fn new(token: String) -> Self {
+        // Set a connect timeout so the bot doesn't hang indefinitely on Android
+        // when the network is unavailable (e.g. after screen-off).
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
         Self {
             token,
-            client: Client::new(),
+            client,
             offset: Arc::new(AtomicI64::new(0)),
+        }
+    }
+
+    /// Call getMe to verify the bot token and return the bot's username.
+    /// Use this on startup to confirm the token is valid before polling.
+    pub async fn get_me(&self) -> Result<String> {
+        let url = format!("https://api.telegram.org/bot{}/getMe", self.token);
+        let resp: serde_json::Value = self
+            .client
+            .get(&url)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if resp["ok"].as_bool() == Some(true) {
+            let username = resp["result"]["username"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();
+            Ok(username)
+        } else {
+            let desc = resp["description"]
+                .as_str()
+                .unwrap_or("Unknown error — check your TELEGRAM_BOT_TOKEN");
+            Err(anyhow::anyhow!("{}", desc))
         }
     }
 
@@ -205,6 +240,13 @@ impl TelegramClient {
         let resp: GetUpdatesResponse = self.client.get(&url).send().await?.json().await?;
 
         if !resp.ok {
+            // Log the specific Telegram error so we can diagnose it at runtime.
+            // Common codes: 401 = bad token, 409 = webhook conflict, 429 = rate limit.
+            error!(
+                "Telegram getUpdates returned ok=false (code={:?}): {:?}",
+                resp.error_code,
+                resp.description
+            );
             return Ok(vec![]);
         }
 
