@@ -45,9 +45,13 @@ pub struct TelegramMessage {
 
 // ── Telegram API response types ────────────────────────────────────────────────
 
+/// BUG FIX: `result` must be `#[serde(default)]` so that error responses like
+/// `{"ok":false,"error_code":409,"description":"Conflict: can't use getUpdates…"}`
+/// (returned when a webhook is active) deserialise without panicking the loop.
 #[derive(Deserialize)]
 struct GetUpdatesResponse {
     ok: bool,
+    #[serde(default)]
     result: Vec<Update>,
 }
 
@@ -154,6 +158,26 @@ impl TelegramClient {
     pub fn save_offset(&self, path: &str) {
         let v = self.offset.load(Ordering::SeqCst);
         let _ = std::fs::write(path, v.to_string());
+    }
+
+    /// Delete any active webhook so getUpdates long-polling can work.
+    /// Call this once on startup to clear a webhook that may have been set
+    /// previously (e.g. by another bot framework or during manual testing).
+    /// Telegram returns 409 Conflict when getUpdates is called while a webhook
+    /// is active, which would otherwise cause the polling loop to fail silently.
+    pub async fn delete_webhook(&self) -> Result<()> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/deleteWebhook?drop_pending_updates=false",
+            self.token
+        );
+        let _: serde_json::Value = self
+            .client
+            .get(&url)
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(())
     }
 
     /// Long-poll Telegram for new messages (timeout=30s).
@@ -386,5 +410,62 @@ impl TelegramClient {
             .send()
             .await?;
         Ok(())
+    }
+
+    /// Send a local file as a Telegram document for the user to download.
+    ///
+    /// `file_path` must be a valid path on the local filesystem.
+    /// `caption` is optional text shown below the file.
+    /// Returns the sent message's message_id.
+    pub async fn send_document(
+        &self,
+        chat_id: i64,
+        file_path: &str,
+        caption: Option<&str>,
+    ) -> Result<i64> {
+        let bytes = tokio::fs::read(file_path).await?;
+        let filename = std::path::Path::new(file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        self.send_document_bytes(chat_id, bytes, &filename, caption).await
+    }
+
+    /// Send raw bytes as a Telegram document (file download).
+    ///
+    /// Useful when the file is already in memory (e.g. just generated).
+    /// `filename` is shown in Telegram's UI as the document name.
+    /// Returns the sent message's message_id.
+    pub async fn send_document_bytes(
+        &self,
+        chat_id: i64,
+        bytes: Vec<u8>,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> Result<i64> {
+        let url = format!("https://api.telegram.org/bot{}/sendDocument", self.token);
+
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename.to_string());
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", part);
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let resp: SendResponse = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
     }
 }
