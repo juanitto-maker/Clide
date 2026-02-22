@@ -145,8 +145,11 @@ commands:
   # ── 1. WRITE PROMPT TO TEMP FILE — avoids shell quoting issues ────────────
   # Filename is mode-scoped (not PID-based) so all commands share it even
   # when the skill runner spawns each command in a fresh shell.
+  # Uses ${TMPDIR:-/tmp} for Termux compatibility (Termux has no /tmp).
   - >-
-    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-{{mode}}.md" &&
+    CLIDE_TMP="${TMPDIR:-/tmp}" &&
+    mkdir -p "$CLIDE_TMP" &&
+    AIWB_PROMPT_FILE="$CLIDE_TMP/clide-aiwb-prompt-{{mode}}.md" &&
     printf '%s' '{{prompt}}' > "$AIWB_PROMPT_FILE" &&
     echo "[1] Prompt written to: $AIWB_PROMPT_FILE" &&
     echo "    $(wc -c < "$AIWB_PROMPT_FILE") bytes, mode: {{mode}}"
@@ -154,13 +157,15 @@ commands:
   # ── 2. BUILD AND RUN HEADLESS COMMAND ─────────────────────────────────────
   - >-
     export PATH="$HOME/.local/bin:$PATH" &&
-    AIWB_PROMPT_FILE="/tmp/clide-aiwb-prompt-{{mode}}.md" &&
+    CLIDE_TMP="${TMPDIR:-/tmp}" &&
+    AIWB_PROMPT_FILE="$CLIDE_TMP/clide-aiwb-prompt-{{mode}}.md" &&
+    AIWB_VERIFIER="{{verifier}}" &&
     AIWB_CMD="aiwb headless --mode {{mode}} --instruct $AIWB_PROMPT_FILE" &&
     if [ -n "{{model}}" ]; then
       AIWB_CMD="$AIWB_CMD --model {{model}}";
     fi &&
-    if [ "{{verifier}}" != "none" ]; then
-      AIWB_CMD="$AIWB_CMD --verifier {{verifier}}";
+    if [ "${AIWB_VERIFIER}" != "none" ] && [ -n "${AIWB_VERIFIER}" ]; then
+      AIWB_CMD="$AIWB_CMD --verifier ${AIWB_VERIFIER}";
     fi &&
     if [ -n "{{context}}" ]; then
       AIWB_CMD="$AIWB_CMD --context {{context}}";
@@ -174,12 +179,13 @@ commands:
 
   # ── 3. CLEANUP TEMP FILE ──────────────────────────────────────────────────
   - >-
-    rm -f "/tmp/clide-aiwb-prompt-{{mode}}.md" &&
+    CLIDE_TMP="${TMPDIR:-/tmp}" &&
+    rm -f "$CLIDE_TMP/clide-aiwb-prompt-{{mode}}.md" &&
     echo "" &&
     echo "[3] Done. AIWB outputs saved to: ~/.aiwb/workspace/outputs/"
 
 rollback_command:
-  - rm -f /tmp/clide-aiwb-prompt-*.md
+  - rm -f "${TMPDIR:-/tmp}/clide-aiwb-prompt-*.md"
   - echo "Cleaned up AIWB temp prompt files."
 
 require_confirmation: false
