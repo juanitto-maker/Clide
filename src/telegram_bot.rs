@@ -105,6 +105,9 @@ impl TelegramBot {
         println!("Polling for messages (long-poll 30s)…");
         println!();
 
+        let ctrl_c_fut = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c_fut);
+
         loop {
             // Hot-reload config on every poll cycle so edits to config.yaml
             // (e.g. adding authorized_users) take effect immediately without
@@ -113,7 +116,16 @@ impl TelegramBot {
                 self.config = refreshed;
             }
 
-            match self.telegram.get_updates().await {
+            let updates = tokio::select! {
+                biased;
+                _ = &mut ctrl_c_fut => {
+                    println!("\nShutting down Clide Telegram bot...");
+                    break Ok(());
+                }
+                r = self.telegram.get_updates() => r,
+            };
+
+            match updates {
                 Ok(messages) => {
                     // Persist the offset after every successful poll so a restart
                     // doesn't cause previously-seen messages to be re-delivered.
