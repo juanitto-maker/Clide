@@ -65,9 +65,15 @@ impl Executor {
 
         debug!("Executing command: {}", command_str);
 
+        // Always set a valid CWD so the child shell never fails with
+        // "getcwd() failed: No such file or directory" (common on Termux
+        // when the process was started from an inaccessible directory).
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(command_str)
+            .current_dir(&home_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

@@ -131,9 +131,9 @@ struct SentMessage {
 
 #[derive(Deserialize)]
 struct SendResponse {
-    #[allow(dead_code)]
     ok: bool,
     result: Option<SentMessage>,
+    description: Option<String>,
 }
 
 // ── Client implementation ──────────────────────────────────────────────────────
@@ -391,6 +391,10 @@ impl TelegramClient {
             .json()
             .await?;
 
+        if !resp.ok {
+            let desc = resp.description.as_deref().unwrap_or("unknown error");
+            return Err(anyhow::anyhow!("sendMessage failed: {}", desc));
+        }
         Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
     }
 
@@ -427,6 +431,10 @@ impl TelegramClient {
             .await?
             .json()
             .await?;
+        if !resp.ok {
+            let desc = resp.description.as_deref().unwrap_or("unknown error");
+            return Err(anyhow::anyhow!("send_message_html failed: {}", desc));
+        }
         Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
     }
 
@@ -508,6 +516,10 @@ impl TelegramClient {
             .json()
             .await?;
 
+        if !resp.ok {
+            let desc = resp.description.as_deref().unwrap_or("unknown error");
+            return Err(anyhow::anyhow!("sendDocument failed: {}", desc));
+        }
         Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
     }
 }
