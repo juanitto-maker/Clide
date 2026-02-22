@@ -183,12 +183,71 @@ commands:
     echo "" &&
     eval "$AIWB_CMD"
 
-  # ── 3. CLEANUP TEMP FILE ──────────────────────────────────────────────────
+  # ── 3. EXTRACT CODE BLOCKS → individual files in ~/clide_exports/ ────────
+  # AIWB output is a .md file with code inside fenced blocks (```lang ... ```).
+  # This step extracts each block into a standalone file so Clide can send it
+  # as a downloadable Telegram attachment (the user wants the actual file, not
+  # just a markdown report).
+  - >-
+    AIWB_OUT_FILE="" &&
+    if [ -n "{{output}}" ]; then
+      AIWB_OUT_FILE="{{output}}";
+    else
+      AIWB_OUT_FILE="$HOME/clide_exports/aiwb_output.md";
+    fi &&
+    EXPORT_DIR="$HOME/clide_exports" &&
+    mkdir -p "$EXPORT_DIR" &&
+    if [ -f "$AIWB_OUT_FILE" ]; then
+      echo "[3] Extracting code blocks from $AIWB_OUT_FILE ..." &&
+      python3 -c "
+    import re, os, sys
+    md = open(sys.argv[1]).read()
+    export = sys.argv[2]
+    # Match fenced code blocks: ```lang\n...code...\n```
+    blocks = re.findall(r'\`\`\`(\w*)\n(.*?)\n\`\`\`', md, re.DOTALL)
+    if not blocks:
+        print('  No fenced code blocks found — skipping extraction.')
+        sys.exit(0)
+    # Map language hints to file extensions
+    ext_map = {
+        'html': '.html', 'css': '.css', 'js': '.js', 'javascript': '.js',
+        'python': '.py', 'py': '.py', 'json': '.json', 'yaml': '.yaml',
+        'yml': '.yaml', 'sh': '.sh', 'bash': '.sh', 'typescript': '.ts',
+        'ts': '.ts', 'tsx': '.tsx', 'jsx': '.jsx', 'sql': '.sql',
+        'xml': '.xml', 'toml': '.toml', 'rust': '.rs', 'rs': '.rs',
+        'go': '.go', 'java': '.java', 'c': '.c', 'cpp': '.cpp',
+        'rb': '.rb', 'ruby': '.rb', 'php': '.php', 'swift': '.swift',
+        'kt': '.kt', 'kotlin': '.kt', 'dart': '.dart', 'lua': '.lua',
+        'r': '.R', 'scala': '.scala', 'vue': '.vue', 'svelte': '.svelte',
+        'md': '.md', 'markdown': '.md', 'dockerfile': '.Dockerfile',
+        'csv': '.csv', 'txt': '.txt',
+    }
+    count = 0
+    for lang, code in blocks:
+        lang = lang.strip().lower()
+        ext = ext_map.get(lang, '.txt')
+        # Use 'aiwb_code_N' naming; first block gets a clean name
+        if count == 0:
+            fname = 'aiwb_code' + ext
+        else:
+            fname = 'aiwb_code_' + str(count) + ext
+        fpath = os.path.join(export, fname)
+        with open(fpath, 'w') as f:
+            f.write(code)
+        print(f'  Extracted: {fname} ({len(code)} bytes)')
+        count += 1
+    print(f'  Total: {count} file(s) extracted to {export}/')
+    " "$AIWB_OUT_FILE" "$EXPORT_DIR" 2>&1 || echo "  (python3 extraction skipped — not available)";
+    else
+      echo "[3] No AIWB output file found at $AIWB_OUT_FILE — skipping extraction.";
+    fi
+
+  # ── 4. CLEANUP TEMP FILE ──────────────────────────────────────────────────
   - >-
     CLIDE_TMP="${TMPDIR:-$HOME/.clide/tmp}" &&
     rm -f "$CLIDE_TMP/clide-aiwb-prompt-{{mode}}.md" &&
     echo "" &&
-    echo "[3] Done. AIWB output saved to: $HOME/clide_exports/ (or custom --output path)"
+    echo "[4] Done. AIWB output + extracted files saved to: $HOME/clide_exports/"
 
 rollback_command:
   - rm -f "${TMPDIR:-$HOME/.clide/tmp}/clide-aiwb-prompt-*.md"
