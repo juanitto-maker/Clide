@@ -187,6 +187,8 @@ impl TelegramBot {
                                     msg.sender, msg.sender
                                 )
                             };
+                            let exp_dir = export_dir();
+                            let exp_dir_exists = std::path::Path::new(&exp_dir).exists();
                             let reply = format!(
                                 "🔍 Clide Debug\n\
                                  Version: {}\n\
@@ -194,13 +196,16 @@ impl TelegramBot {
                                  Model: {}\n\
                                  Auth: {}\n\
                                  Sender username: @{}\n\
-                                 Gemini key set: {}",
+                                 Gemini key set: {}\n\
+                                 Export dir: {} ({})",
                                 crate::VERSION,
                                 self.config.platform,
                                 self.config.gemini_model,
                                 auth_status,
                                 msg.sender,
                                 !self.config.gemini_api_key.is_empty(),
+                                exp_dir,
+                                if exp_dir_exists { "exists" } else { "not created yet" },
                             );
                             let _ = self.telegram.send_message(msg.chat_id, &reply).await;
                             continue;
@@ -412,11 +417,17 @@ impl TelegramBot {
     /// and forwards them to the chat so the user can download them directly.
     async fn send_export_files(&self, chat_id: i64) {
         let exp_dir = export_dir();
+        info!("Scanning export dir for files to deliver: {}", exp_dir);
+
         let mut read_dir = match fs::read_dir(&exp_dir).await {
             Ok(rd) => rd,
-            Err(_) => return, // Export dir doesn't exist — nothing to send.
+            Err(e) => {
+                info!("Export dir '{}' not readable ({}); nothing to send.", exp_dir, e);
+                return;
+            }
         };
 
+        let mut sent = 0u32;
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             // Skip directories and symlinks — only send plain files.
             let file_type = match entry.file_type().await {
@@ -438,15 +449,21 @@ impl TelegramBot {
                 .unwrap_or("file")
                 .to_string();
 
-            info!("Sending export file to chat: {}", path_str);
+            info!("Sending export file to chat {}: {}", chat_id, path_str);
             match self
                 .telegram
                 .send_document(chat_id, &path_str, Some(&format!("📎 {}", filename)))
                 .await
             {
-                Ok(msg_id) => info!("Sent '{}' as message {}", filename, msg_id),
-                Err(e) => warn!("Failed to send export file '{}': {}", filename, e),
+                Ok(msg_id) => {
+                    info!("Sent '{}' as message {}", filename, msg_id);
+                    sent += 1;
+                }
+                Err(e) => error!("Failed to send export file '{}': {}", filename, e),
             }
+        }
+        if sent == 0 {
+            info!("No files found in export dir '{}' to send.", exp_dir);
         }
     }
 }
