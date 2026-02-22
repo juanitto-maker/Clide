@@ -65,8 +65,20 @@ impl Bot {
         );
         println!("Send /stop in the room to abort a running task.");
 
+        let ctrl_c_fut = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c_fut);
+
         loop {
-            match self.matrix.receive_messages().await {
+            let messages = tokio::select! {
+                biased;
+                _ = &mut ctrl_c_fut => {
+                    println!("\nShutting down Clide bot...");
+                    break Ok(());
+                }
+                r = self.matrix.receive_messages() => r,
+            };
+
+            match messages {
                 Ok(messages) => {
                     for msg in messages {
                         // ── /stop command ────────────────────────────────────
