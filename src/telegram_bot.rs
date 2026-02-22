@@ -12,18 +12,24 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::telegram::TelegramClient;
 
-/// Directory where files uploaded by Telegram users are stored.
-const UPLOAD_DIR: &str = "/tmp/clide_uploads";
-
-/// Directory scanned after every agent task — any files here are sent back
-/// to the user as downloadable Telegram documents.
-const EXPORT_DIR: &str = "/tmp/clide_exports";
-
 /// Telegram messages are capped at 4096 chars; leave some headroom.
 const TG_MAX_CHARS: usize = 3900;
 
+/// Resolve a path under $HOME, falling back to /tmp if HOME is unset.
+fn home_path(subdir: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    format!("{}/{}", home, subdir)
+}
+
+/// Directory where files uploaded by Telegram users are stored.
+fn upload_dir() -> String { home_path("clide_uploads") }
+
+/// Directory scanned after every agent task — any files here are sent back
+/// to the user as downloadable Telegram documents.
+fn export_dir() -> String { home_path("clide_exports") }
+
 /// File where the Telegram update offset is persisted across restarts.
-const OFFSET_FILE: &str = "/tmp/clide_tg_offset";
+fn offset_file() -> String { home_path(".clide/tg_offset") }
 
 pub struct TelegramBot {
     config: Config,
@@ -91,7 +97,7 @@ impl TelegramBot {
 
         // ── Step 3: Restore persisted offset ────────────────────────────────
         // Prevents re-delivering already-processed messages after a restart.
-        self.telegram.load_offset(OFFSET_FILE);
+        self.telegram.load_offset(&offset_file());
 
         // ── Step 4: Clear any active webhook ────────────────────────────────
         // A leftover webhook causes Telegram to return 409 Conflict on every
@@ -117,7 +123,7 @@ impl TelegramBot {
                 Ok(messages) => {
                     // Persist the offset after every successful poll so a restart
                     // doesn't cause previously-seen messages to be re-delivered.
-                    self.telegram.save_offset(OFFSET_FILE);
+                    self.telegram.save_offset(&offset_file());
 
                     for msg in messages {
                         // ── Built-in commands ────────────────────────────────
@@ -257,9 +263,10 @@ impl TelegramBot {
         // ── Prepare the export directory ──────────────────────────────────────
         // Clear previous task's exports so we don't re-send stale files.
         // The agent is told to save output files here; we forward them after the task.
-        let _ = fs::remove_dir_all(EXPORT_DIR).await;
-        if let Err(e) = fs::create_dir_all(EXPORT_DIR).await {
-            warn!("Could not create export dir {}: {}", EXPORT_DIR, e);
+        let exp_dir = export_dir();
+        let _ = fs::remove_dir_all(&exp_dir).await;
+        if let Err(e) = fs::create_dir_all(&exp_dir).await {
+            warn!("Could not create export dir {}: {}", exp_dir, e);
         }
 
         // Send initial "working" placeholder message
@@ -389,10 +396,11 @@ impl TelegramBot {
     /// Scan the export directory and send every file as a Telegram document.
     ///
     /// The agent is instructed (via the system prompt) to save output files,
-    /// reports, and logs to `/tmp/clide_exports/`.  This method picks them up
+    /// reports, and logs to `~/clide_exports/`.  This method picks them up
     /// and forwards them to the chat so the user can download them directly.
     async fn send_export_files(&self, chat_id: i64) {
-        let mut read_dir = match fs::read_dir(EXPORT_DIR).await {
+        let exp_dir = export_dir();
+        let mut read_dir = match fs::read_dir(&exp_dir).await {
             Ok(rd) => rd,
             Err(_) => return, // Export dir doesn't exist — nothing to send.
         };
@@ -445,8 +453,9 @@ async fn build_task_with_file(
     };
 
     // Ensure the upload directory exists.
-    if let Err(e) = fs::create_dir_all(UPLOAD_DIR).await {
-        warn!("Could not create upload dir {}: {}", UPLOAD_DIR, e);
+    let up_dir = upload_dir();
+    if let Err(e) = fs::create_dir_all(&up_dir).await {
+        warn!("Could not create upload dir {}: {}", up_dir, e);
         return text;
     }
 
@@ -458,7 +467,7 @@ async fn build_task_with_file(
         .collect();
     let safe_name = if safe_name.is_empty() { "upload".to_string() } else { safe_name };
 
-    let file_path = format!("{}/{}", UPLOAD_DIR, safe_name);
+    let file_path = format!("{}/{}", up_dir, safe_name);
 
     match fs::write(&file_path, &attached.bytes).await {
         Ok(()) => {
