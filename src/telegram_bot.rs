@@ -95,6 +95,21 @@ impl TelegramBot {
         println!("Press Ctrl+C here to shut the bot down.");
         println!();
 
+        // ── Step 2b: Pre-create required directories ──────────────────────
+        // Ensure export and temp dirs exist before the agent runs any task.
+        // This avoids races where the agent tries to write before the dir
+        // is created, and also ensures /tmp is never needed.
+        let exp = export_dir();
+        let safe_tmp = home_path(".clide/tmp");
+        for dir in [&exp, &safe_tmp] {
+            if let Err(e) = fs::create_dir_all(dir).await {
+                warn!("Could not pre-create directory {}: {}", dir, e);
+            }
+        }
+        // Set TMPDIR so child processes (and skills) use our safe temp dir
+        // instead of /tmp, which may be read-only on this platform.
+        std::env::set_var("TMPDIR", &safe_tmp);
+
         // ── Step 3: Restore persisted offset ────────────────────────────────
         // Prevents re-delivering already-processed messages after a restart.
         self.telegram.load_offset(&offset_file());
@@ -410,35 +425,26 @@ impl TelegramBot {
         Ok(())
     }
 
-    /// Scan the export directory and send every file as a Telegram document.
+    /// Scan the export directory **recursively** and send every file as a
+    /// Telegram document.
     ///
     /// The agent is instructed (via the system prompt) to save output files,
     /// reports, and logs to `~/clide_exports/`.  This method picks them up
     /// and forwards them to the chat so the user can download them directly.
+    /// Subdirectories are traversed so files placed in nested paths (e.g. by
+    /// AIWB or the agent) are not missed.
     async fn send_export_files(&self, chat_id: i64) {
         let exp_dir = export_dir();
-        info!("Scanning export dir for files to deliver: {}", exp_dir);
+        info!("Scanning export dir (recursive) for files to deliver: {}", exp_dir);
 
-        let mut read_dir = match fs::read_dir(&exp_dir).await {
-            Ok(rd) => rd,
-            Err(e) => {
-                info!("Export dir '{}' not readable ({}); nothing to send.", exp_dir, e);
-                return;
-            }
-        };
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        if let Err(e) = collect_files_recursive(&exp_dir, &mut files).await {
+            info!("Export dir '{}' not readable ({}); nothing to send.", exp_dir, e);
+            return;
+        }
 
         let mut sent = 0u32;
-        while let Ok(Some(entry)) = read_dir.next_entry().await {
-            // Skip directories and symlinks — only send plain files.
-            let file_type = match entry.file_type().await {
-                Ok(ft) => ft,
-                Err(_) => continue,
-            };
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let path = entry.path();
+        for path in &files {
             let path_str = match path.to_str() {
                 Some(s) => s.to_string(),
                 None => continue,
@@ -522,6 +528,29 @@ async fn build_task_with_file(
             text
         }
     }
+}
+
+/// Recursively collect all regular files under `dir` into `out`.
+async fn collect_files_recursive(
+    dir: &str,
+    out: &mut Vec<std::path::PathBuf>,
+) -> Result<()> {
+    let mut read_dir = fs::read_dir(dir).await?;
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let ft = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_file() {
+            out.push(entry.path());
+        } else if ft.is_dir() {
+            if let Some(sub) = entry.path().to_str() {
+                // Best-effort: skip unreadable sub-dirs silently
+                let _ = Box::pin(collect_files_recursive(sub, out)).await;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Escape text for use inside Telegram HTML messages.
