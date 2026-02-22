@@ -145,9 +145,10 @@ commands:
   # ── 1. WRITE PROMPT TO TEMP FILE — avoids shell quoting issues ────────────
   # Filename is mode-scoped (not PID-based) so all commands share it even
   # when the skill runner spawns each command in a fresh shell.
-  # Uses ${TMPDIR:-/tmp} for Termux compatibility (Termux has no /tmp).
+  # Prefers $TMPDIR (set on Termux/macOS), falls back to $HOME/.clide/tmp
+  # so we never touch /tmp (which can be read-only on some platforms).
   - >-
-    CLIDE_TMP="${TMPDIR:-/tmp}" &&
+    CLIDE_TMP="${TMPDIR:-$HOME/.clide/tmp}" &&
     mkdir -p "$CLIDE_TMP" &&
     AIWB_PROMPT_FILE="$CLIDE_TMP/clide-aiwb-prompt-{{mode}}.md" &&
     printf '%s' '{{prompt}}' > "$AIWB_PROMPT_FILE" &&
@@ -155,12 +156,20 @@ commands:
     echo "    $(wc -c < "$AIWB_PROMPT_FILE") bytes, mode: {{mode}}"
 
   # ── 2. BUILD AND RUN HEADLESS COMMAND ─────────────────────────────────────
+  # When no output path is given, default to ~/clide_exports/ so Clide can
+  # automatically deliver the file as a Telegram download attachment.
   - >-
     export PATH="$HOME/.local/bin:$PATH" &&
-    CLIDE_TMP="${TMPDIR:-/tmp}" &&
+    CLIDE_TMP="${TMPDIR:-$HOME/.clide/tmp}" &&
     AIWB_PROMPT_FILE="$CLIDE_TMP/clide-aiwb-prompt-{{mode}}.md" &&
     AIWB_VERIFIER="{{verifier}}" &&
-    AIWB_CMD="aiwb headless --mode {{mode}} --instruct $AIWB_PROMPT_FILE" &&
+    if [ -n "{{output}}" ]; then
+      AIWB_OUT="{{output}}";
+    else
+      AIWB_OUT="$HOME/clide_exports/aiwb_output.md";
+    fi &&
+    mkdir -p "$(dirname "$AIWB_OUT")" &&
+    AIWB_CMD="aiwb headless --mode {{mode}} --instruct $AIWB_PROMPT_FILE --output $AIWB_OUT" &&
     if [ -n "{{model}}" ]; then
       AIWB_CMD="$AIWB_CMD --model {{model}}";
     fi &&
@@ -170,22 +179,19 @@ commands:
     if [ -n "{{context}}" ]; then
       AIWB_CMD="$AIWB_CMD --context {{context}}";
     fi &&
-    if [ -n "{{output}}" ]; then
-      AIWB_CMD="$AIWB_CMD --output {{output}}";
-    fi &&
     echo "[2] Running: $AIWB_CMD" &&
     echo "" &&
     eval "$AIWB_CMD"
 
   # ── 3. CLEANUP TEMP FILE ──────────────────────────────────────────────────
   - >-
-    CLIDE_TMP="${TMPDIR:-/tmp}" &&
+    CLIDE_TMP="${TMPDIR:-$HOME/.clide/tmp}" &&
     rm -f "$CLIDE_TMP/clide-aiwb-prompt-{{mode}}.md" &&
     echo "" &&
-    echo "[3] Done. AIWB outputs saved to: ~/.aiwb/workspace/outputs/"
+    echo "[3] Done. AIWB output saved to: $HOME/clide_exports/ (or custom --output path)"
 
 rollback_command:
-  - rm -f "${TMPDIR:-/tmp}/clide-aiwb-prompt-*.md"
+  - rm -f "${TMPDIR:-$HOME/.clide/tmp}/clide-aiwb-prompt-*.md"
   - echo "Cleaned up AIWB temp prompt files."
 
 require_confirmation: false
