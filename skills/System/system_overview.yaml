@@ -1,0 +1,388 @@
+# ============================================================
+# System Overview Skill
+# ============================================================
+# Comprehensive snapshot of a host: identity, hardware,
+# software environment, network state, and an annotated
+# file-tree of any directory — all in one nicely formatted
+# report written to /tmp and echoed to stdout.
+#
+# Modes:
+#   full      — everything (default)
+#   hardware  — CPU / memory / disk / GPU only
+#   software  — OS, shell, runtimes, packages, services
+#   network   — interfaces, routes, open ports, DNS
+#   files     — file tree + metadata only
+#   summary   — one-screen health snapshot
+#
+# Usage examples:
+#   run_skill system_overview
+#   run_skill system_overview mode=hardware
+#   run_skill system_overview mode=files path=/etc depth=2
+#   run_skill system_overview mode=full path=/home depth=4 show_hidden=true
+# ============================================================
+
+name: system_overview
+description: >
+  Comprehensive system snapshot: hardware, software environment,
+  network state, and a richly annotated file-tree.
+  Produces a structured report in /tmp and echoes a summary.
+version: "1.0.0"
+author: Clide Team
+tags:
+  - system
+  - overview
+  - inventory
+  - files
+  - tree
+  - monitoring
+  - diagnostics
+
+parameters:
+  mode:
+    description: "Sections to include: full | hardware | software | network | files | summary"
+    type: string
+    required: false
+    default: "full"
+
+  path:
+    description: "Root directory for the file-tree section (default: current working directory)"
+    type: string
+    required: false
+    default: "."
+
+  depth:
+    description: "Maximum depth for the file-tree display"
+    type: number
+    required: false
+    default: "3"
+
+  show_hidden:
+    description: "Include hidden files/dirs in the tree (true | false)"
+    type: string
+    required: false
+    default: "false"
+
+commands:
+  # ── 0. INIT — report file, banner ─────────────────────────────────────────
+  - >-
+    REPORT="/tmp/clide-sysoverview-$(date +%Y%m%d-%H%M%S).txt" &&
+    echo "$REPORT" > /tmp/clide-sysoverview-latest.path &&
+    HOSTNAME_VAL=$(hostname 2>/dev/null || echo "unknown") &&
+    NOW=$(date -u +"%Y-%m-%d %H:%M:%S UTC") &&
+    printf '%s\n' \
+      "╔══════════════════════════════════════════════════════════════╗" \
+      "║              CLIDE — SYSTEM OVERVIEW REPORT                 ║" \
+      "╚══════════════════════════════════════════════════════════════╝" \
+      "" \
+      "  Host    : $HOSTNAME_VAL" \
+      "  Mode    : {{mode}}" \
+      "  Path    : {{path}}" \
+      "  Depth   : {{depth}}" \
+      "  Hidden  : {{show_hidden}}" \
+      "  Created : $NOW" \
+      "" \
+      > "$REPORT" &&
+    echo "[0] Report initialised → $REPORT"
+
+  # ── 1. IDENTITY — OS, kernel, hostname, uptime, current user ──────────────
+  - >-
+    REPORT=$(cat /tmp/clide-sysoverview-latest.path) &&
+    case "{{mode}}" in full|hardware|software|summary)
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '[1] IDENTITY\n' >> "$REPORT" &&
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '  Hostname   : %s\n' "$(hostname -f 2>/dev/null || hostname)" >> "$REPORT" &&
+      printf '  OS         : %s\n' "$(grep '^PRETTY_NAME' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || uname -s)" >> "$REPORT" &&
+      printf '  Kernel     : %s\n' "$(uname -r)" >> "$REPORT" &&
+      printf '  Arch       : %s\n' "$(uname -m)" >> "$REPORT" &&
+      printf '  User       : %s (uid=%s)\n' "$(whoami)" "$(id -u)" >> "$REPORT" &&
+      printf '  Uptime     : %s\n' "$(uptime -p 2>/dev/null || uptime)" >> "$REPORT" &&
+      printf '  Load avg   : %s\n' "$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || uptime | awk -F'load average:' '{print $2}')" >> "$REPORT" &&
+      printf '  Timezone   : %s\n' "$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || date +%Z)" >> "$REPORT" &&
+      printf '\n' >> "$REPORT" ;;
+    esac &&
+    echo "[1] Identity captured"
+
+  # ── 2. HARDWARE — CPU, memory, disk, GPU ──────────────────────────────────
+  - >-
+    REPORT=$(cat /tmp/clide-sysoverview-latest.path) &&
+    case "{{mode}}" in full|hardware|summary)
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '[2] HARDWARE\n' >> "$REPORT" &&
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '\n  ── CPU ──\n' >> "$REPORT" &&
+      CPU_MODEL=$(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed 's/^ //') &&
+      CPU_CORES=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo "?") &&
+      CPU_SOCKETS=$(grep 'physical id' /proc/cpuinfo 2>/dev/null | sort -u | wc -l) &&
+      printf '  Model      : %s\n' "${CPU_MODEL:-unknown}" >> "$REPORT" &&
+      printf '  Cores      : %s (logical), %s socket(s)\n' "$CPU_CORES" "${CPU_SOCKETS:-1}" >> "$REPORT" &&
+      FREQ=$(grep 'cpu MHz' /proc/cpuinfo 2>/dev/null | awk 'NR==1{printf "%.0f MHz", $4}') &&
+      [ -n "$FREQ" ] && printf '  Frequency  : %s\n' "$FREQ" >> "$REPORT" || true &&
+      printf '\n  ── Memory ──\n' >> "$REPORT" &&
+      free -h 2>/dev/null | awk '
+        /^Mem:/{printf "  Total      : %s\n  Used       : %s\n  Free       : %s\n  Available  : %s\n", $2, $3, $4, $7}
+        /^Swap:/{printf "  Swap       : %s / %s\n", $3, $2}
+      ' >> "$REPORT" || true &&
+      printf '\n  ── Disk ──\n' >> "$REPORT" &&
+      df -h 2>/dev/null | awk '
+        NR==1{printf "  %-20s %6s %6s %6s %5s  %s\n", "Filesystem","Size","Used","Avail","Use%","Mountpoint"}
+        NR>1 && !/tmpfs|devtmpfs|udev/{
+          use=$5+0;
+          flag = (use>=90) ? " !!" : (use>=70) ? " !" : ""
+          printf "  %-20s %6s %6s %6s %5s  %-20s%s\n", $1, $2, $3, $4, $5, $6, flag
+        }
+      ' >> "$REPORT" || true &&
+      printf '\n  ── GPU ──\n' >> "$REPORT" &&
+      if command -v nvidia-smi > /dev/null 2>&1; then
+        nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,utilization.gpu \
+          --format=csv,noheader,nounits 2>/dev/null |
+          awk -F',' '{printf "  GPU %-2s     : %s | Mem: %s/%s MiB | Temp: %s°C | Util: %s%%\n", NR, $1, $2, $3, $4, $5}' >> "$REPORT" ||
+          printf '  (nvidia-smi query failed)\n' >> "$REPORT";
+      elif lspci 2>/dev/null | grep -i 'vga\|3d\|display' > /dev/null; then
+        lspci 2>/dev/null | grep -iE 'vga|3d|display' | awk '{printf "  %s\n", $0}' >> "$REPORT";
+      else
+        printf '  (no GPU detected or lspci unavailable)\n' >> "$REPORT";
+      fi &&
+      printf '\n' >> "$REPORT" ;;
+    esac &&
+    echo "[2] Hardware captured"
+
+  # ── 3. SOFTWARE — runtimes, package managers, key tools ───────────────────
+  - >-
+    REPORT=$(cat /tmp/clide-sysoverview-latest.path) &&
+    case "{{mode}}" in full|software)
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '[3] SOFTWARE ENVIRONMENT\n' >> "$REPORT" &&
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '\n  ── Shell & Runtimes ──\n' >> "$REPORT" &&
+      for TOOL in bash zsh python3 python node npm rust cargo go java ruby php; do
+        BIN=$(command -v $TOOL 2>/dev/null) &&
+        [ -n "$BIN" ] && VER=$($TOOL --version 2>&1 | head -1 | sed 's/^[^0-9]*//' | cut -c1-40) &&
+          printf '  %-12s : %s  (%s)\n' "$TOOL" "${VER:-?}" "$BIN" >> "$REPORT" || true;
+      done &&
+      printf '\n  ── Package counts ──\n' >> "$REPORT" &&
+      if command -v dpkg > /dev/null 2>&1; then
+        printf '  dpkg       : %s packages installed\n' "$(dpkg --list 2>/dev/null | grep '^ii' | wc -l)" >> "$REPORT";
+      fi &&
+      if command -v rpm > /dev/null 2>&1; then
+        printf '  rpm        : %s packages installed\n' "$(rpm -qa 2>/dev/null | wc -l)" >> "$REPORT";
+      fi &&
+      if command -v pip3 > /dev/null 2>&1; then
+        printf '  pip3       : %s packages\n' "$(pip3 list --format=columns 2>/dev/null | tail -n +3 | wc -l)" >> "$REPORT";
+      fi &&
+      if command -v npm > /dev/null 2>&1; then
+        printf '  npm global : %s packages\n' "$(npm list -g --depth=0 2>/dev/null | tail -n +2 | wc -l)" >> "$REPORT";
+      fi &&
+      printf '\n  ── Systemd services (active) ──\n' >> "$REPORT" &&
+      if command -v systemctl > /dev/null 2>&1; then
+        systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null |
+          awk '{printf "  [run] %s\n", $1}' | head -20 >> "$REPORT" ||
+          printf '  (systemctl unavailable)\n' >> "$REPORT";
+        TOTAL_SVC=$(systemctl list-units --type=service --no-pager --no-legend 2>/dev/null | wc -l) &&
+          printf '  ... %s service units total\n' "$TOTAL_SVC" >> "$REPORT" || true;
+      else
+        printf '  (systemd not found)\n' >> "$REPORT";
+      fi &&
+      printf '\n  ── Docker ──\n' >> "$REPORT" &&
+      if command -v docker > /dev/null 2>&1; then
+        DOCKER_VER=$(docker --version 2>/dev/null | head -1) &&
+          printf '  Engine     : %s\n' "$DOCKER_VER" >> "$REPORT";
+        docker ps --format "  [{{.Status}}] {{.Names}}  ({{.Image}})  ports: {{.Ports}}" 2>/dev/null |
+          head -20 >> "$REPORT" ||
+          printf '  (docker daemon not reachable)\n' >> "$REPORT";
+        TOTAL_CT=$(docker ps -aq 2>/dev/null | wc -l) &&
+          printf '  Containers : %s total (%s running)\n' \
+            "$TOTAL_CT" "$(docker ps -q 2>/dev/null | wc -l)" >> "$REPORT" || true;
+        TOTAL_IMG=$(docker images -q 2>/dev/null | wc -l) &&
+          printf '  Images     : %s\n' "$TOTAL_IMG" >> "$REPORT" || true;
+      else
+        printf '  (docker not installed)\n' >> "$REPORT";
+      fi &&
+      printf '\n' >> "$REPORT" ;;
+    esac &&
+    echo "[3] Software environment captured"
+
+  # ── 4. NETWORK — interfaces, routes, open ports, DNS ─────────────────────
+  - >-
+    REPORT=$(cat /tmp/clide-sysoverview-latest.path) &&
+    case "{{mode}}" in full|network|summary)
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '[4] NETWORK\n' >> "$REPORT" &&
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '\n  ── Interfaces & IPs ──\n' >> "$REPORT" &&
+      if command -v ip > /dev/null 2>&1; then
+        ip -br addr show 2>/dev/null |
+          awk '{printf "  %-12s %-10s %s\n", $1, $2, $3}' >> "$REPORT" || true;
+      elif command -v ifconfig > /dev/null 2>&1; then
+        ifconfig 2>/dev/null | grep -E '^[a-z]|inet ' |
+          awk '/^[a-z]/{iface=$1} /inet /{printf "  %-14s %s\n", iface, $2}' >> "$REPORT" || true;
+      fi &&
+      printf '\n  ── Default route ──\n' >> "$REPORT" &&
+      ip route show default 2>/dev/null | awk '{printf "  %s\n", $0}' >> "$REPORT" ||
+        route -n 2>/dev/null | grep '^0.0.0.0' | awk '{printf "  via %s dev %s\n", $2, $8}' >> "$REPORT" || true &&
+      printf '\n  ── Listening ports (TCP/UDP) ──\n' >> "$REPORT" &&
+      ss -tlnp 2>/dev/null |
+        awk 'NR>1{printf "  TCP  %-25s  %s\n", $4, $6}' | head -25 >> "$REPORT" || true &&
+      ss -ulnp 2>/dev/null |
+        awk 'NR>1{printf "  UDP  %-25s  %s\n", $4, $6}' | head -10 >> "$REPORT" || true &&
+      printf '\n  ── DNS resolvers ──\n' >> "$REPORT" &&
+      grep '^nameserver' /etc/resolv.conf 2>/dev/null |
+        awk '{printf "  nameserver %s\n", $2}' >> "$REPORT" ||
+        printf '  (resolv.conf not readable)\n' >> "$REPORT" &&
+      printf '\n  ── Public IP (best-effort) ──\n' >> "$REPORT" &&
+      PUB_IP=$(curl -s --max-time 4 https://ifconfig.me 2>/dev/null || \
+               curl -s --max-time 4 https://api.ipify.org 2>/dev/null || \
+               echo "unavailable") &&
+      printf '  Public IP  : %s\n' "$PUB_IP" >> "$REPORT" &&
+      printf '\n' >> "$REPORT" ;;
+    esac &&
+    echo "[4] Network captured"
+
+  # ── 5. FILE TREE — richly annotated directory listing ────────────────────
+  - >-
+    REPORT=$(cat /tmp/clide-sysoverview-latest.path) &&
+    case "{{mode}}" in full|files)
+      TARGET_PATH="{{path}}" &&
+      TARGET_PATH="${TARGET_PATH:-.}" &&
+      ABS_PATH=$(realpath "$TARGET_PATH" 2>/dev/null || echo "$TARGET_PATH") &&
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '[5] FILE TREE — %s  (depth={{depth}}, hidden={{show_hidden}})\n' "$ABS_PATH" >> "$REPORT" &&
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      if [ ! -d "$ABS_PATH" ]; then
+        printf '  ERROR: path "%s" is not a directory or does not exist.\n' "$ABS_PATH" >> "$REPORT";
+      else
+        printf '\n' >> "$REPORT" &&
+        if command -v tree > /dev/null 2>&1; then
+          TREE_HIDDEN_FLAG="" &&
+          [ "{{show_hidden}}" = "true" ] && TREE_HIDDEN_FLAG="-a" &&
+          tree $TREE_HIDDEN_FLAG -L {{depth}} --dirsfirst -h --du -F \
+            --sort=name "$ABS_PATH" 2>/dev/null >> "$REPORT" ||
+            printf '  (tree command failed)\n' >> "$REPORT";
+        else
+          printf '  (tree not installed — using find fallback)\n\n' >> "$REPORT" &&
+          HIDDEN_OPT="" &&
+          [ "{{show_hidden}}" = "false" ] && HIDDEN_OPT="-not -name '.*'" &&
+          find "$ABS_PATH" -maxdepth {{depth}} $HIDDEN_OPT 2>/dev/null |
+            sort |
+            while IFS= read -r ENTRY; do
+              REL="${ENTRY#$ABS_PATH/}" &&
+              [ "$ENTRY" = "$ABS_PATH" ] && REL="." &&
+              DEPTH_COUNT=$(echo "$REL" | awk -F'/' '{print NF-1}') &&
+              INDENT=$(printf '%*s' $((DEPTH_COUNT * 2)) '') &&
+              STAT_OUT=$(stat -c "%s %A %U %G %y" "$ENTRY" 2>/dev/null || stat -f "%z %Sp %Su %Sg %Sm" "$ENTRY" 2>/dev/null) &&
+              SIZE=$(echo "$STAT_OUT" | awk '{print $1}') &&
+              PERMS=$(echo "$STAT_OUT" | awk '{print $2}') &&
+              OWNER=$(echo "$STAT_OUT" | awk '{print $3":"$4}') &&
+              MDATE=$(echo "$STAT_OUT" | awk '{print $5}') &&
+              BASENAME=$(basename "$ENTRY") &&
+              if [ -d "$ENTRY" ]; then
+                printf '  %s%s/  [dir  %-12s %-18s %s]\n' \
+                  "$INDENT" "$BASENAME" "$PERMS" "$OWNER" "$MDATE" >> "$REPORT";
+              elif [ -x "$ENTRY" ]; then
+                printf '  %s%s*  [exec %-6s %-12s %-18s %s]\n' \
+                  "$INDENT" "$BASENAME" \
+                  "$(numfmt --to=iec-i --suffix=B $SIZE 2>/dev/null || echo ${SIZE}B)" \
+                  "$PERMS" "$OWNER" "$MDATE" >> "$REPORT";
+              elif [ -L "$ENTRY" ]; then
+                LINK_TARGET=$(readlink -f "$ENTRY" 2>/dev/null || readlink "$ENTRY") &&
+                printf '  %s%s@ → %s\n' "$INDENT" "$BASENAME" "$LINK_TARGET" >> "$REPORT";
+              else
+                printf '  %s%-30s  [%-6s %-12s %-18s %s]\n' \
+                  "$INDENT" "$BASENAME" \
+                  "$(numfmt --to=iec-i --suffix=B $SIZE 2>/dev/null || echo ${SIZE}B)" \
+                  "$PERMS" "$OWNER" "$MDATE" >> "$REPORT";
+              fi;
+            done;
+        fi &&
+        printf '\n  ── Tree statistics ──\n' >> "$REPORT" &&
+        FILE_COUNT=$(find "$ABS_PATH" -maxdepth {{depth}} -type f 2>/dev/null | wc -l) &&
+        DIR_COUNT=$(find "$ABS_PATH" -maxdepth {{depth}} -type d 2>/dev/null | wc -l) &&
+        TOTAL_SIZE=$(du -sh "$ABS_PATH" 2>/dev/null | awk '{print $1}') &&
+        LARGEST=$(find "$ABS_PATH" -maxdepth {{depth}} -type f -printf '%s %p\n' 2>/dev/null | sort -rn | head -5 |
+          awk '{cmd="numfmt --to=iec-i --suffix=B " $1 " 2>/dev/null"; cmd | getline h; close(cmd); printf "  %-8s %s\n", (h?h:$1"B"), $2}') &&
+        printf '  Files      : %s\n' "$FILE_COUNT" >> "$REPORT" &&
+        printf '  Dirs       : %s\n' "$DIR_COUNT" >> "$REPORT" &&
+        printf '  Total size : %s\n' "${TOTAL_SIZE:-?}" >> "$REPORT" &&
+        if [ -n "$LARGEST" ]; then
+          printf '  Largest files:\n' >> "$REPORT" &&
+          echo "$LARGEST" | awk '{printf "    %s\n", $0}' >> "$REPORT";
+        fi;
+      fi &&
+      printf '\n' >> "$REPORT" ;;
+    esac &&
+    echo "[5] File tree captured"
+
+  # ── 6. ENVIRONMENT — shell env, PATH, key vars ────────────────────────────
+  - >-
+    REPORT=$(cat /tmp/clide-sysoverview-latest.path) &&
+    case "{{mode}}" in full|software)
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '[6] ENVIRONMENT\n' >> "$REPORT" &&
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+      printf '\n  ── PATH entries ──\n' >> "$REPORT" &&
+      echo "$PATH" | tr ':' '\n' | awk '{printf "  %s\n", $0}' >> "$REPORT" &&
+      printf '\n  ── Key environment variables ──\n' >> "$REPORT" &&
+      for VAR in HOME USER SHELL LANG TERM EDITOR VISUAL PAGER \
+                 VIRTUAL_ENV CONDA_DEFAULT_ENV NVM_DIR GOPATH GOROOT \
+                 JAVA_HOME ANDROID_HOME DOCKER_HOST; do
+        VAL=$(printenv $VAR 2>/dev/null) &&
+        [ -n "$VAL" ] && printf '  %-20s = %s\n' "$VAR" "$VAL" >> "$REPORT" || true;
+      done &&
+      printf '\n' >> "$REPORT" ;;
+    esac &&
+    echo "[6] Environment captured"
+
+  # ── 7. SUMMARY — one-screen digest + report path ─────────────────────────
+  - >-
+    REPORT=$(cat /tmp/clide-sysoverview-latest.path) &&
+    printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+    printf '[7] QUICK-GLANCE SUMMARY\n' >> "$REPORT" &&
+    printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' >> "$REPORT" &&
+    OS_LINE=$(grep '^PRETTY_NAME' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || uname -s) &&
+    KERNEL_LINE=$(uname -r) &&
+    UPTIME_LINE=$(uptime -p 2>/dev/null || uptime) &&
+    LOAD_LINE=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || echo "?") &&
+    MEM_LINE=$(free -h 2>/dev/null | awk '/^Mem:/{printf "%s used / %s total", $3, $2}') &&
+    DISK_LINE=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s used / %s total (%s)", $3, $2, $5}') &&
+    printf '\n  OS         : %s\n'         "$OS_LINE"     >> "$REPORT" &&
+    printf '  Kernel     : %s\n'           "$KERNEL_LINE" >> "$REPORT" &&
+    printf '  Uptime     : %s\n'           "$UPTIME_LINE" >> "$REPORT" &&
+    printf '  Load       : %s\n'           "$LOAD_LINE"   >> "$REPORT" &&
+    printf '  Memory     : %s\n'           "$MEM_LINE"    >> "$REPORT" &&
+    printf '  Root disk  : %s\n'           "$DISK_LINE"   >> "$REPORT" &&
+    DISK_WARN=$(df -h 2>/dev/null | awk 'NR>1 && !/tmpfs|devtmpfs/{gsub(/%/,"",$5); if($5+0>=85) print "  !! Disk " $6 " at " $5+0 "% — consider cleanup"}') &&
+    [ -n "$DISK_WARN" ] && printf '%s\n' "$DISK_WARN" >> "$REPORT" || true &&
+    MEM_PCT=$(free 2>/dev/null | awk '/^Mem:/{if($2>0)printf "%.0f", ($3/$2)*100}') &&
+    [ "${MEM_PCT:-0}" -ge 85 ] 2>/dev/null &&
+      printf '  !! Memory at %s%% — check top consumers\n' "$MEM_PCT" >> "$REPORT" || true &&
+    printf '\n  Full report: %s\n' "$REPORT" >> "$REPORT" &&
+    printf '  AI feed    : cat %s | clide ask "summarise this system overview"\n' "$REPORT" >> "$REPORT" &&
+    printf '\n╔══════════════════════════════════════════════════════════════╗\n' >> "$REPORT" &&
+    printf '║              END OF SYSTEM OVERVIEW REPORT                  ║\n' >> "$REPORT" &&
+    printf '╚══════════════════════════════════════════════════════════════╝\n' >> "$REPORT" &&
+    echo "" &&
+    echo "╔══════════════════════════════════════════════════════════════╗" &&
+    echo "║              CLIDE — SYSTEM OVERVIEW REPORT                 ║" &&
+    echo "╚══════════════════════════════════════════════════════════════╝" &&
+    echo "" &&
+    echo "  OS         : $OS_LINE" &&
+    echo "  Kernel     : $KERNEL_LINE" &&
+    echo "  Uptime     : $UPTIME_LINE" &&
+    echo "  Load avg   : $LOAD_LINE" &&
+    echo "  Memory     : $MEM_LINE" &&
+    echo "  Root disk  : $DISK_LINE" &&
+    echo "" &&
+    echo "  Full report saved → $REPORT" &&
+    echo "  AI feed    : cat $REPORT | clide ask 'summarise this system overview'" &&
+    echo "" &&
+    rm -f /tmp/clide-sysoverview-latest.path &&
+    echo "[7] Done."
+
+rollback_command:
+  - rm -f "$(cat /tmp/clide-sysoverview-latest.path 2>/dev/null)" /tmp/clide-sysoverview-latest.path
+  - echo "System overview report cleaned up."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 90
