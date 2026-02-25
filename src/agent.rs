@@ -55,7 +55,18 @@ markdown output file. The skill automatically extracts code blocks into separate
 files in ~/clide_exports/. If for any reason it doesn't, manually extract the \
 code from the .md output and save it as a proper file in ~/clide_exports/.\n\
 - For skill-generated temp files: use ${TMPDIR:-$HOME/.clide/tmp} as the \
-temp directory, never hardcode /tmp.\n\n\
+temp directory, never hardcode /tmp.\n\
+- AIWB ROUTING: ALWAYS use `run_skill aiwb_manager` for AIWB tasks — NEVER run \
+`aiwb headless` directly via run_command. The skill has a 10-minute timeout; \
+run_command has a much shorter one and will time out.\n\
+- SIMPLE FILES: For simple, single-file tasks (one HTML page, a CSS file, a \
+small script, etc.) you do NOT need AIWB. Just write the file directly to \
+~/clide_exports/ using cat/printf/tee via run_command. This is faster and more \
+reliable. Only use AIWB for complex multi-file generation or when the user \
+explicitly asks for it.\n\
+- FALLBACK: If AIWB (run_skill aiwb_manager) fails or times out, fall back to \
+writing the code yourself directly into ~/clide_exports/ using run_command. \
+Do not give up — always deliver a file to the user.\n\n\
 Your approach:\n\
 1. Break the task into concrete steps.\n\
 2. Execute each step immediately using run_command or run_skill — do NOT describe or explain first.\n\
@@ -90,6 +101,8 @@ pub struct Agent {
     model: String,
     executor: Executor,
     max_steps: usize,
+    /// Per-command timeout for run_command calls (seconds).
+    command_timeout: u64,
     memory: Option<Memory>,
     skill_manager: Option<SkillManager>,
     /// Shared cancellation flag — set to true by a /stop command to abort the running task.
@@ -110,6 +123,7 @@ impl Agent {
             model: config.get_model().to_string(),
             executor: Executor::new(config.clone()),
             max_steps: config.max_agent_steps,
+            command_timeout: config.command_timeout,
             memory,
             skill_manager,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -336,8 +350,9 @@ impl Agent {
                         info!("Agent running command: {}", cmd);
                         Self::send_progress(&progress, format!("$ {}", cmd)).await;
 
+                        let cmd_timeout = Duration::from_secs(self.command_timeout);
                         let exec_result = match timeout(
-                            Duration::from_secs(60),
+                            cmd_timeout,
                             self.executor.execute(&cmd),
                         )
                         .await
@@ -350,7 +365,7 @@ impl Agent {
                                 continue;
                             }
                             Err(_) => {
-                                let err = "Command timed out after 60s".to_string();
+                                let err = format!("Command timed out after {}s", self.command_timeout);
                                 Self::send_progress(&progress, format!("  ✗ {}", err)).await;
                                 conversation.push(Self::fn_response("run_command", &err, -1));
                                 continue;

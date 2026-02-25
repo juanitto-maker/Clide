@@ -58,6 +58,11 @@ pub struct Config {
     #[serde(default = "default_agent_steps")]
     pub max_agent_steps: usize,
 
+    /// Per-command timeout in seconds for run_command calls (default 120).
+    /// Skills override this with their own `timeout` field.
+    #[serde(default = "default_command_timeout")]
+    pub command_timeout: u64,
+
     #[serde(default)]
     pub logging: LoggingConfig,
 
@@ -82,6 +87,10 @@ fn default_timeout() -> u64 {
 
 fn default_agent_steps() -> usize {
     20
+}
+
+fn default_command_timeout() -> u64 {
+    120
 }
 
 fn default_blocked_commands() -> Vec<String> {

@@ -80,6 +80,11 @@ confirmation_timeout: 60
 authorized_users:
   - "@youraccount:matrix.org"   # ← replace with your real user ID
 
+# Per-command timeout in seconds for run_command calls (default 120).
+# Skills have their own timeout field and are not affected by this.
+# Increase this if you use slow tools (e.g. AIWB) via run_command.
+command_timeout: 120
+
 # Shell command patterns to block (executor safety)
 blocked_commands:
   - "rm -rf /"
