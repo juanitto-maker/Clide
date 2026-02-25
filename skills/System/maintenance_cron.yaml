@@ -1,0 +1,192 @@
+# ============================================
+# Maintenance Cron Job Skill
+# ============================================
+# Installs, removes, or lists a scheduled cron job that
+# runs routine system maintenance tasks automatically.
+#
+# Maintenance tasks performed on each run:
+#   - Remove temp files older than N days
+#   - Truncate large log files
+#   - Clear package manager caches (apt / pkg / yum / dnf)
+#   - Report disk usage after cleanup
+#
+# Actions:
+#   install  — write the cron entry (default)
+#   remove   — delete the cron entry
+#   list     — show all current user cron jobs
+#   run      — execute maintenance tasks immediately (no cron change)
+#
+# Usage:
+#   run_skill maintenance_cron
+#   run_skill maintenance_cron action=install schedule="0 3 * * *"
+#   run_skill maintenance_cron action=install keep_days=3 log_max_mb=50
+#   run_skill maintenance_cron action=remove
+#   run_skill maintenance_cron action=list
+#   run_skill maintenance_cron action=run
+# ============================================
+
+name: maintenance_cron
+description: >
+  Schedule (or run immediately) routine system maintenance: temp-file cleanup,
+  log truncation, package-cache pruning, and disk-usage reporting.
+  Supports install, remove, list, and run actions.
+version: "1.0.0"
+author: Clide Team
+tags:
+  - maintenance
+  - cron
+  - automation
+  - cleanup
+  - system
+
+parameters:
+  action:
+    description: >
+      What to do: 'install' to add the cron entry, 'remove' to delete it,
+      'list' to show all current cron jobs, 'run' to execute tasks right now.
+    type: string
+    required: false
+    default: "install"
+
+  schedule:
+    description: >
+      Cron schedule expression (used only when action=install).
+      Default is daily at 03:00 AM.
+    type: string
+    required: false
+    default: "0 3 * * *"
+
+  keep_days:
+    description: Delete files in /tmp older than this many days.
+    type: number
+    required: false
+    default: "2"
+
+  log_max_mb:
+    description: Truncate any single log file in /var/log larger than this many MB.
+    type: number
+    required: false
+    default: "100"
+
+  log_dir:
+    description: Directory to scan for oversized log files.
+    type: string
+    required: false
+    default: "/var/log"
+
+commands:
+  # ── 0. Validate action ────────────────────────────────────────────────────
+  - >-
+    case "{{action}}" in
+      install|remove|list|run)
+        echo "[0] Action: {{action}}" ;;
+      *)
+        echo "ERROR: Unknown action '{{action}}'. Valid: install | remove | list | run" >&2
+        exit 1 ;;
+    esac
+
+  # ── 1. LIST — show current crontab ───────────────────────────────────────
+  - >-
+    if [ "{{action}}" = "list" ]; then
+      echo "[1] Current crontab for $(whoami):";
+      crontab -l 2>/dev/null || echo "  (no crontab installed)";
+      echo "[1] Done.";
+      exit 0;
+    else
+      echo "[1] Skipping list (action={{action}}).";
+    fi
+
+  # ── 2. REMOVE — delete cron entry ────────────────────────────────────────
+  - >-
+    if [ "{{action}}" = "remove" ]; then
+      echo "[2] Removing maintenance cron entry...";
+      ( crontab -l 2>/dev/null | grep -v "# clide-maintenance" ) | crontab - &&
+        echo "[2] Cron entry removed." ||
+        echo "WARNING: Could not update crontab.";
+      exit 0;
+    else
+      echo "[2] Skipping remove (action={{action}}).";
+    fi
+
+  # ── 3. INSTALL — add cron entry ──────────────────────────────────────────
+  - >-
+    if [ "{{action}}" = "install" ]; then
+      echo "[3] Installing maintenance cron job (schedule: {{schedule}})...";
+      MAINT_CMD="find /tmp -type f -mtime +{{keep_days}} -delete 2>/dev/null; \
+    find {{log_dir}} -type f -name '*.log' -size +{{log_max_mb}}M -exec truncate -s 0 {} \; 2>/dev/null; \
+    command -v apt-get >/dev/null 2>&1 && apt-get clean -y 2>/dev/null; \
+    command -v pkg      >/dev/null 2>&1 && pkg clean   2>/dev/null; \
+    command -v yum      >/dev/null 2>&1 && yum clean all -q 2>/dev/null; \
+    command -v dnf      >/dev/null 2>&1 && dnf clean all -q 2>/dev/null; \
+    df -h 2>/dev/null";
+      CRON_LINE="{{schedule}} $MAINT_CMD # clide-maintenance";
+      ( crontab -l 2>/dev/null | grep -v "# clide-maintenance"; echo "$CRON_LINE" ) | crontab - &&
+        echo "[3] Cron entry installed: {{schedule}}" ||
+        echo "WARNING: Could not update crontab.";
+    else
+      echo "[3] Skipping install (action={{action}}).";
+    fi
+
+  # ── 4. RUN — execute maintenance tasks immediately ───────────────────────
+  - >-
+    if [ "{{action}}" = "run" ] || [ "{{action}}" = "install" ]; then
+      echo "[4] Running maintenance tasks now...";
+
+      echo "  → Removing /tmp files older than {{keep_days}} day(s)...";
+      BEFORE_TMP=$(du -sh /tmp 2>/dev/null | cut -f1);
+      find /tmp -type f -mtime +{{keep_days}} -delete 2>/dev/null;
+      AFTER_TMP=$(du -sh /tmp 2>/dev/null | cut -f1);
+      echo "    /tmp: $BEFORE_TMP → $AFTER_TMP";
+
+      echo "  → Truncating log files in {{log_dir}} larger than {{log_max_mb}} MB...";
+      TRUNCATED=0;
+      find {{log_dir}} -type f -name "*.log" -size +{{log_max_mb}}M 2>/dev/null | while read -r f; do
+        echo "    Truncating: $f ($(du -sh "$f" 2>/dev/null | cut -f1))";
+        truncate -s 0 "$f" 2>/dev/null && TRUNCATED=$((TRUNCATED+1)) || true;
+      done;
+      echo "    Log truncation pass complete.";
+
+      echo "  → Clearing package caches...";
+      command -v apt-get >/dev/null 2>&1 && apt-get clean -y 2>/dev/null && echo "    apt: cleaned" || true;
+      command -v pkg      >/dev/null 2>&1 && pkg clean   2>/dev/null && echo "    pkg: cleaned" || true;
+      command -v yum      >/dev/null 2>&1 && yum clean all -q 2>/dev/null && echo "    yum: cleaned" || true;
+      command -v dnf      >/dev/null 2>&1 && dnf clean all -q 2>/dev/null && echo "    dnf: cleaned" || true;
+
+      echo "  → Disk usage after cleanup:";
+      df -h 2>/dev/null | grep -v tmpfs | awk 'NR==1 || NR>1' | head -10;
+
+      echo "[4] Maintenance tasks complete.";
+    else
+      echo "[4] Skipping run (action=remove or list — already handled above).";
+    fi
+
+  # ── 5. SUMMARY ────────────────────────────────────────────────────────────
+  - >-
+    echo "";
+    echo "╔══════════════════════════════════════════════╗";
+    echo "║       CLIDE MAINTENANCE CRON — DONE          ║";
+    echo "╚══════════════════════════════════════════════╝";
+    case "{{action}}" in
+      install)
+        echo "  Cron schedule : {{schedule}}";
+        echo "  Temp cleanup  : /tmp files older than {{keep_days}} day(s)";
+        echo "  Log truncation: {{log_dir}}/*.log > {{log_max_mb}} MB";
+        echo "  View entry    : run_skill maintenance_cron action=list";
+        echo "  Remove entry  : run_skill maintenance_cron action=remove" ;;
+      remove)
+        echo "  Maintenance cron entry removed." ;;
+      list)
+        echo "  Crontab listing complete." ;;
+      run)
+        echo "  One-shot maintenance run complete." ;;
+    esac
+
+rollback_command:
+  - >-
+    ( crontab -l 2>/dev/null | grep -v "# clide-maintenance" ) | crontab - 2>/dev/null || true
+  - echo "Rollback: maintenance cron entry removed (if it was added)."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 120
