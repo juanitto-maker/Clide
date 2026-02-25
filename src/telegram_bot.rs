@@ -370,11 +370,12 @@ impl TelegramBot {
             }
         });
 
-        // If a file was attached, save it to disk and prepend its path to the task.
-        let task = build_task_with_file(text, file).await;
+        // If a file was attached, save it to disk and determine whether it can
+        // be fed directly to Gemini as vision inline data (images / PDFs).
+        let (task, vision) = build_task_with_file(text, file).await;
 
         // Run the agentic loop (drops tx when done, closing the updater channel)
-        let result = self.agent.run(&task, &sender, Some(tx)).await;
+        let result = self.agent.run(&task, &sender, Some(tx), vision).await;
 
         // Agent finished — abort the stop-watcher (it's no longer needed)
         stop_task.abort();
@@ -474,24 +475,86 @@ impl TelegramBot {
     }
 }
 
-/// Save an uploaded file to `UPLOAD_DIR` and return a task string that
-/// includes the file's on-disk path so the agent can read / process it.
+/// Maximum file size (in bytes) to send as Gemini vision inline data.
+/// Larger images fall back to the shell-based approach (cat / python3 / etc.).
+const VISION_MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+
+/// Return true when the MIME type is one that Gemini can process visually.
+fn is_vision_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/jpeg"
+            | "image/jpg"
+            | "image/png"
+            | "image/gif"
+            | "image/webp"
+            | "image/heic"
+            | "image/heif"
+            | "image/bmp"
+            | "application/pdf"
+    )
+}
+
+/// Guess from the filename extension whether this is a vision-capable file.
+fn is_vision_filename(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".png")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".heic")
+        || lower.ends_with(".heif")
+        || lower.ends_with(".bmp")
+        || lower.ends_with(".pdf")
+}
+
+/// Infer a MIME type from the filename extension (fallback when Telegram
+/// doesn't supply one, e.g. for photo messages sent as documents).
+fn mime_from_filename(name: &str) -> &'static str {
+    let lower_name = name.to_lowercase();
+    if lower_name.ends_with(".jpg") || lower_name.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower_name.ends_with(".png") {
+        "image/png"
+    } else if lower_name.ends_with(".gif") {
+        "image/gif"
+    } else if lower_name.ends_with(".webp") {
+        "image/webp"
+    } else if lower_name.ends_with(".heic") {
+        "image/heic"
+    } else if lower_name.ends_with(".heif") {
+        "image/heif"
+    } else if lower_name.ends_with(".bmp") {
+        "image/bmp"
+    } else if lower_name.ends_with(".pdf") {
+        "application/pdf"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// Save an uploaded file to `UPLOAD_DIR` and return:
+///   1. A task string augmented with the file's on-disk path.
+///   2. Optional `(bytes, mime_type)` for images / PDFs that Gemini can see
+///      directly as `inlineData` — so the model doesn't need shell commands
+///      to read image content.
 ///
-/// If no file is attached the original `text` is returned unchanged.
-/// If the write fails we still deliver the text-only task and log a warning.
+/// If no file is attached the original `text` is returned unchanged with
+/// `None` vision data.  If a write fails we still deliver the text-only task.
 async fn build_task_with_file(
     text: String,
     file: Option<crate::telegram::AttachedFile>,
-) -> String {
+) -> (String, Option<(Vec<u8>, String)>) {
     let Some(attached) = file else {
-        return text;
+        return (text, None);
     };
 
     // Ensure the upload directory exists.
     let up_dir = upload_dir();
     if let Err(e) = fs::create_dir_all(&up_dir).await {
         warn!("Could not create upload dir {}: {}", up_dir, e);
-        return text;
+        return (text, None);
     }
 
     // Sanitise the filename to avoid path traversal.
@@ -504,28 +567,68 @@ async fn build_task_with_file(
 
     let file_path = format!("{}/{}", up_dir, safe_name);
 
+    // Determine whether this file should be sent to Gemini as vision data.
+    let effective_mime = attached
+        .mime_type
+        .clone()
+        .unwrap_or_else(|| mime_from_filename(&safe_name).to_string());
+    let use_vision = (is_vision_mime(&effective_mime) || is_vision_filename(&safe_name))
+        && attached.bytes.len() <= VISION_MAX_BYTES;
+
     match fs::write(&file_path, &attached.bytes).await {
         Ok(()) => {
-            info!("Saved uploaded file to {}", file_path);
+            info!(
+                "Saved uploaded file to {} ({} bytes, vision={})",
+                file_path,
+                attached.bytes.len(),
+                use_vision
+            );
+
             let user_instruction = if text.trim().is_empty() {
-                "The user sent a file. Read and describe it using run_command.".to_string()
+                if use_vision {
+                    "The user sent an image/file. Describe what you see and, \
+                     if it shows an error or terminal output, suggest or run \
+                     the appropriate commands to address it."
+                        .to_string()
+                } else {
+                    "The user sent a file. Read and describe it using run_command."
+                        .to_string()
+                }
             } else {
                 text
             };
-            let mime_line = attached
-                .mime_type
-                .map(|m| format!("\nMIME type: {}", m))
-                .unwrap_or_default();
-            format!(
-                "{}\n\nThe file is stored on the local filesystem at: {}\nFilename: {}{}\n\
-                Use run_command to access it (e.g. `cat` for text, `file` to identify type, \
-                `python3` to process it). Do NOT say you cannot see the file — use the shell.",
-                user_instruction, file_path, safe_name, mime_line
-            )
+
+            if use_vision {
+                // For images and PDFs: embed the raw bytes as Gemini inline
+                // data so the model can see the content directly.  We still
+                // mention the path so the agent can run shell tools on it if
+                // needed (e.g. to extract text with pdftotext, resize, etc.).
+                let vision_data = Some((attached.bytes, effective_mime));
+                let task = format!(
+                    "{}\n\n[File also saved at {} for shell access if needed]",
+                    user_instruction, file_path
+                );
+                (task, vision_data)
+            } else {
+                // Non-vision files (text, binary, audio, video, etc.): tell
+                // the agent where the file lives and how to access it.
+                let mime_line = attached
+                    .mime_type
+                    .map(|m| format!("\nMIME type: {}", m))
+                    .unwrap_or_default();
+                let task = format!(
+                    "{}\n\nThe file is stored on the local filesystem at: {}\nFilename: {}{}\n\
+                    Use run_command to access it (e.g. `cat` for text, `file` to identify \
+                    type, `python3` to process it). \
+                    Do NOT say you cannot see the file — use the shell.",
+                    user_instruction, file_path, safe_name, mime_line
+                );
+                (task, None)
+            }
         }
         Err(e) => {
             warn!("Failed to write uploaded file to {}: {}", file_path, e);
-            text
+            (text, None)
         }
     }
 }

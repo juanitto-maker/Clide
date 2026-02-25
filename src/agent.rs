@@ -5,6 +5,7 @@
 // until the model produces a final text answer.
 
 use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
 use log::{info, warn};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -35,6 +36,10 @@ const SYSTEM_PROMPT: &str = "\
 You are Clide, an autonomous CLI operator running inside a Termux terminal on Android. \
 You have direct shell access via the `run_command` tool.\n\n\
 Your capabilities:\n\
+- Interpret images and screenshots sent by the user: when an image is attached you can \
+SEE it directly — read error messages, terminal output, UI elements, code, or any visible \
+text in the screenshot and act on it immediately. Translate what you see into the \
+appropriate shell commands without asking for clarification.\n\
 - Execute any shell command (bash, python, node, etc.)\n\
 - Install packages with pkg / apt / pip / npm\n\
 - Create, read, and edit files\n\
@@ -245,6 +250,11 @@ impl Agent {
     /// `user` identifies the sender (Telegram username or Matrix user ID) and is
     /// used to load and persist per-user memory.
     ///
+    /// `vision` optionally carries a (bytes, mime_type) pair for an image or PDF
+    /// that the user uploaded. When present the bytes are base64-encoded and sent
+    /// as `inlineData` alongside the text in the first Gemini turn so the model
+    /// can *see* the file directly (screenshots, error dumps, etc.).
+    ///
     /// Sends incremental progress strings via `progress` (if provided).
     /// Returns the final text answer from the model.
     pub async fn run(
@@ -252,6 +262,7 @@ impl Agent {
         task: &str,
         user: &str,
         progress: Option<Sender<String>>,
+        vision: Option<(Vec<u8>, String)>,
     ) -> Result<String> {
         info!("Agent starting task for '{}': {}", user, task);
 
@@ -260,8 +271,24 @@ impl Agent {
 
         let system_prompt = self.build_system_prompt(user).await;
 
-        let mut conversation: Vec<Value> =
-            vec![json!({"role": "user", "parts": [{"text": task}]})];
+        // Build the first user turn. When an image/PDF is attached we embed it
+        // as inline base64 so Gemini can interpret it visually.
+        let first_turn = match vision {
+            Some((bytes, mime)) => {
+                info!("Vision mode: embedding {} bytes as {} for Gemini", bytes.len(), mime);
+                let b64 = general_purpose::STANDARD.encode(&bytes);
+                json!({
+                    "role": "user",
+                    "parts": [
+                        {"text": task},
+                        {"inlineData": {"mimeType": mime, "data": b64}}
+                    ]
+                })
+            }
+            None => json!({"role": "user", "parts": [{"text": task}]}),
+        };
+
+        let mut conversation: Vec<Value> = vec![first_turn];
 
         let mut final_answer: Option<String> = None;
 
