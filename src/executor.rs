@@ -70,10 +70,22 @@ impl Executor {
         // when the process was started from an inaccessible directory).
         let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
 
+        // Propagate HOME and TMPDIR explicitly so child processes (including
+        // tools like AIWB) inherit correct values even if the parent env is
+        // incomplete.  TMPDIR is set by telegram_bot.rs to $HOME/.clide/tmp
+        // to avoid /tmp which is read-only on Termux/Android.
+        let safe_tmp = std::env::var("TMPDIR")
+            .unwrap_or_else(|_| format!("{}/.clide/tmp", home_dir));
+
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(command_str)
             .current_dir(&home_dir)
+            .env("HOME", &home_dir)
+            .env("TMPDIR", &safe_tmp)
+            .env("TEMPDIR", &safe_tmp)
+            .env("TMP", &safe_tmp)
+            .env("TEMP", &safe_tmp)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
