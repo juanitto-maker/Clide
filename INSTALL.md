@@ -72,7 +72,14 @@ sudo mv clide /usr/local/bin/
 1. Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) (not Google Play)
 2. Run:
 ```bash
-pkg update && pkg install curl
+# Choose a mirror (avoid Chinese mirrors if you are outside China)
+termux-change-repo
+
+# Update and upgrade packages
+pkg update && pkg upgrade -y
+
+# Install curl and run the installer
+pkg install curl
 curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
 ```
 3. Follow the prompts (all steps are skippable)
