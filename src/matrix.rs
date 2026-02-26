@@ -9,6 +9,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+use crate::markdown::{html_escape, markdown_to_html};
+
 pub struct MatrixMessage {
     pub sender: String,
     pub text: String,
@@ -249,6 +251,66 @@ impl MatrixClient {
             let body_text = resp.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
                 "Matrix send_message failed {}: {}",
+                status,
+                body_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Send a Markdown-formatted message to the configured Matrix room.
+    ///
+    /// The Markdown is converted to HTML and sent as `org.matrix.custom.html`
+    /// so that Element and other Matrix clients render bold, code blocks, etc.
+    /// The plain-text `body` field retains the original Markdown as a fallback
+    /// for clients that do not support formatted messages.
+    pub async fn send_message_markdown(&mut self, message: &str) -> Result<()> {
+        let html_body = markdown_to_html(message);
+        // If conversion produces identical content (no Markdown found), just
+        // send a plain message to avoid sending an unnecessary formatted body.
+        if html_body == html_escape(message) {
+            return self.send_message(message).await;
+        }
+
+        self.txn_counter += 1;
+        let txn_id = format!(
+            "clide-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            self.txn_counter
+        );
+
+        let url = format!(
+            "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+            self.homeserver,
+            Self::url_encode(&self.room_id),
+            txn_id
+        );
+
+        let body = json!({
+            "msgtype": "m.text",
+            "body": message,
+            "format": "org.matrix.custom.html",
+            "formatted_body": html_body
+        });
+
+        let resp = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send Matrix message")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Matrix send_message_markdown failed {}: {}",
                 status,
                 body_text
             ));

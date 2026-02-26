@@ -9,6 +9,7 @@ pub mod database;
 pub mod executor;
 pub mod gemini;
 pub mod logger;
+pub mod markdown;
 pub mod matrix;
 pub mod memory;
 pub mod skills;

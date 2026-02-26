@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::Agent;
 use crate::config::Config;
+use crate::markdown::{html_escape, markdown_to_html};
 use crate::telegram::TelegramClient;
 
 /// Telegram messages are capped at 4096 chars; leave some headroom.
@@ -656,26 +657,21 @@ async fn collect_files_recursive(
     Ok(())
 }
 
-/// Escape text for use inside Telegram HTML messages.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// Build the final HTML message: answer prose followed by a spoiler block
-/// containing the commands that were run. The user taps the spoiler to expand
-/// it inline — no need to switch to Termux.
+/// Build the final HTML message: Markdown answer rendered as HTML, followed by
+/// a spoiler block containing the raw commands that were run.
+/// The user taps the spoiler to expand it inline — no need to switch to Termux.
 fn build_final_html(answer: &str, commands_log: &str) -> String {
-    let escaped_answer = html_escape(answer);
+    // Convert the AI's Markdown output to Telegram HTML so formatting
+    // (bold, code blocks, headers, inline code) is rendered properly.
+    let html_answer = markdown_to_html(answer);
 
     if commands_log.trim().is_empty() {
-        return escaped_answer;
+        return html_answer;
     }
 
     let escaped_log = html_escape(commands_log.trim());
     format!(
         "{}\n\n<tg-spoiler>🔍 Commands run:\n<pre>{}</pre></tg-spoiler>",
-        escaped_answer, escaped_log
+        html_answer, escaped_log
     )
 }

@@ -152,7 +152,7 @@ impl Bot {
         info!("Running agent task...");
         let response = self.agent.run(&text, &sender, None, None).await?;
 
-        self.matrix.send_message(&response).await?;
+        self.matrix.send_message_markdown(&response).await?;
         info!("Replied to {}", sender);
 
         Ok(())
