@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::Agent;
 use crate::config::Config;
+use crate::scrubber;
 use crate::telegram::TelegramClient;
 
 /// Telegram messages are capped at 4096 chars; leave some headroom.
@@ -311,24 +312,26 @@ impl TelegramBot {
         // Spawn a task that edits the status message with cumulative progress
         // and returns the full accumulated log when done.
         let tg = self.telegram.clone();
+        let live_secrets = self.config.secrets.clone();
         let updater: tokio::task::JoinHandle<String> = tokio::spawn(async move {
             let mut log = String::new();
             while let Some(line) = rx.recv().await {
                 log.push('\n');
                 log.push_str(&line);
 
-                // Keep within Telegram's limit
-                let display = if log.len() > TG_MAX_CHARS {
+                // Keep within Telegram's limit; scrub before displaying.
+                let display_raw = if log.len() > TG_MAX_CHARS {
                     format!("[…]\n{}", &log[log.len() - (TG_MAX_CHARS - 6)..])
                 } else {
                     log.clone()
                 };
+                let display = scrubber::scrub(&display_raw, &live_secrets);
 
                 let _ = tg
                     .edit_message(chat_id, status_id, &format!("⚙️ Working…{}", display))
                     .await;
             }
-            log // return full log to caller
+            log // return full (unredacted) log; caller scrubs before sending
         });
 
         // ── Stop-watcher task ─────────────────────────────────────────────────
@@ -384,13 +387,16 @@ impl TelegramBot {
         let commands_log = updater.await.unwrap_or_default();
 
         // Build the final HTML message: answer + optional spoiler with command log
-        let final_text = match result {
+        let raw_text = match result {
             Ok(r) if !r.is_empty() => r,
             Ok(_) => "✅ Done.".to_string(),
             Err(e) => format!("❌ Error: {}", e),
         };
+        // Scrub any secret values that leaked into the output before sending to chat.
+        let final_text = scrubber::scrub(&raw_text, &self.config.secrets);
+        let scrubbed_log = scrubber::scrub(&commands_log, &self.config.secrets);
 
-        let final_html = build_final_html(&final_text, &commands_log);
+        let final_html = build_final_html(&final_text, &scrubbed_log);
 
         // Edit the status message with the final HTML answer
         // If it's too large, fall back to split plain-text messages

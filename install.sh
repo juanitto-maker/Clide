@@ -8,6 +8,14 @@ set -e
 
 REPO="juanitto-maker/Clide"
 INSTALL_DIR="$HOME/Clide_Source"
+RESTORE_MODE=false
+
+# ─── Parse flags ──────────────────────────────────────────────────────────────
+for arg in "$@"; do
+    case "$arg" in
+        --restore) RESTORE_MODE=true ;;
+    esac
+done
 
 # ─── Guards ───────────────────────────────────────────────────────────────────
 
@@ -55,8 +63,74 @@ pkg update -y 2>&1 | grep -E "^(Get:|Fetched|Reading)" | tail -5 || true
 echo "✅ Done"
 
 step "Installing dependencies"
-pkg install -y git wget curl 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
+pkg install -y git wget curl age 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
 echo "✅ Done"
+
+# ─── Restore mode: decrypt vault and exit ─────────────────────────────────────
+# Usage:  bash install.sh --restore
+# The user needs:  (1) their GitHub token  (2) their vault Gist ID  (3) passphrase
+if [ "$RESTORE_MODE" = true ]; then
+    step "Vault Restore (--restore mode)"
+
+    echo "This will decrypt your Clide vault from GitHub Gist and restore" >/dev/tty
+    echo "~/.clide/secrets.yaml and ~/.clide/hosts.yaml." >/dev/tty
+    echo "" >/dev/tty
+
+    ask "GitHub personal access token (gist scope): " GITHUB_TOKEN secret
+    ask "Gist ID (from your last 'vault backup' output): " GIST_ID
+    if [ -z "$GITHUB_TOKEN" ] || [ -z "$GIST_ID" ]; then
+        echo "❌ Token and Gist ID are required."
+        exit 1
+    fi
+
+    VAULT_TMP="$HOME/.clide/vault_tmp"
+    mkdir -p "$HOME/.clide" "$VAULT_TMP"
+    chmod 700 "$HOME/.clide" "$VAULT_TMP"
+
+    echo "Fetching vault from Gist $GIST_ID ..." >/dev/tty
+    ENCODED=$(curl -s \
+        -H "Authorization: token $GITHUB_TOKEN" \
+        "https://api.github.com/gists/$GIST_ID" \
+        | grep '"content"' | head -1 \
+        | sed 's/.*"content": *"\(.*\)".*/\1/' \
+        | sed 's/\\n/\n/g')
+
+    if [ -z "$ENCODED" ]; then
+        echo "❌ Empty response. Check your token and Gist ID."
+        exit 1
+    fi
+
+    ENCRYPTED="$VAULT_TMP/vault.tar.gz.age"
+    echo "$ENCODED" | base64 -d > "$ENCRYPTED"
+
+    ARCHIVE="$VAULT_TMP/vault.tar.gz"
+    echo "" >/dev/tty
+    echo ">>> Enter your vault passphrase:" >/dev/tty
+    age -d -o "$ARCHIVE" "$ENCRYPTED"
+    rm -f "$ENCRYPTED"
+
+    tar -xzf "$ARCHIVE" -C "$HOME/.clide"
+    rm -f "$ARCHIVE"
+
+    [ -f "$HOME/.clide/secrets.yaml" ] && chmod 600 "$HOME/.clide/secrets.yaml"
+    [ -f "$HOME/.clide/hosts.yaml"   ] && chmod 600 "$HOME/.clide/hosts.yaml"
+
+    # Save the Gist ID for future vault operations
+    echo "$GIST_ID" > "$HOME/.clide/vault_gist_id"
+    chmod 600 "$HOME/.clide/vault_gist_id"
+
+    echo ""
+    echo "✅ Vault restored!"
+    echo "   secrets.yaml : $([ -f "$HOME/.clide/secrets.yaml" ] && echo "OK" || echo "NOT FOUND")"
+    echo "   hosts.yaml   : $([ -f "$HOME/.clide/hosts.yaml"   ] && echo "OK" || echo "NOT FOUND")"
+    echo ""
+    echo "Now run the installer normally to install the binary:"
+    echo "  bash install.sh   (without --restore)"
+    echo ""
+    echo "Or start the bot directly if already installed:"
+    echo "  clide bot"
+    exit 0
+fi
 
 # ─── 2. Install Clide binary ──────────────────────────────────────────────────
 
@@ -539,4 +613,23 @@ case "$CLIDE_PLATFORM" in
         echo "  3. Run: clide bot  (starts both bots simultaneously)"
         ;;
 esac
+
+echo "─── Secrets & Hosts ────────────────────────────────────────────"
+echo ""
+echo "  clide secret list              # show all stored secret keys"
+echo "  clide secret set MY_KEY        # store a secret (hidden input)"
+echo "  clide secret generate MY_KEY   # generate + store a random secret"
+echo "  clide secret pass-init         # set up GNU pass (optional GPG layer)"
+echo ""
+echo "  clide host add                 # add an SSH host by nickname"
+echo "  clide host list                # show all configured hosts"
+echo ""
+echo "─── Backup & Recovery ──────────────────────────────────────────"
+echo ""
+echo "  Via Telegram: 'backup my vault'"
+echo "  To restore on a fresh device:"
+echo "    bash install.sh --restore"
+echo ""
+echo "  Vault is age-encrypted → GitHub Gist."
+echo "  Recovery needs: GitHub token + Gist ID + your passphrase."
 echo ""
