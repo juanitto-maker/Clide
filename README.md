@@ -32,6 +32,12 @@
   - [Full purge](#full-purge)
   - [Purge and clean reinstall](#purge-and-clean-reinstall)
 - [Configuration](#configuration)
+- [Credential Manager](#credential-manager)
+  - [Secrets file](#secrets-file)
+  - [clide secret CLI](#clide-secret-cli)
+  - [GPG layer via GNU pass](#gpg-layer-via-gnu-pass)
+  - [SSH host registry](#ssh-host-registry)
+  - [Vault backup & restore](#vault-backup--restore)
 - [Secrets & Credentials](#secrets--credentials)
 - [Usage](#usage)
 - [Architecture](#architecture)
@@ -57,6 +63,10 @@
 | Safety | **Allowlist** | Authorize users, block dangerous commands |
 | Logging | **Structured** | Colorful, timestamped audit log |
 | Skills | **YAML workflows** | Reusable automations with parameter injection |
+| Secrets | **Credential manager** | Store API keys and tokens; optional GPG layer via GNU pass |
+| Vault | **Encrypted backup** | Back up secrets and SSH hosts to GitHub Gist with age encryption |
+| Hosts | **SSH host registry** | Named hosts injected into skills — IPs never sent to AI |
+| Privacy | **Secret scrubber** | All outbound text auto-redacted before reaching AI or chat |
 
 ---
 
@@ -327,9 +337,157 @@ See [`config.example.yaml`](config.example.yaml) for all available options.
 
 ---
 
-## Secrets & Credentials
+## Credential Manager
 
-Clide supports a dedicated secrets file (`~/.clide/secrets.yaml`) that is separate from the main config. This keeps API keys and tokens out of your config and makes it easier to share the config file without leaking credentials.
+Clide is not just a terminal bot — it is also a **credential manager** for all the secrets your automations need. Think of it like a lightweight, local alternative to tools like KeePass or `pass`: it stores your API keys, tokens, and server passwords in one place, keeps them out of chat transcripts and AI prompts, and makes them available to your skills at execution time.
+
+There are three storage options, from simplest to most secure:
+
+| Option | At-rest protection | Best for |
+|---|---|---|
+| `secrets.yaml` | File permissions (`chmod 600`) | Most users — simple and effective |
+| GNU pass layer | GPG encryption | High-security setups, shared machines |
+| Environment variables | Process memory only | CI/CD, Docker, ephemeral environments |
+
+---
+
+### Secrets file
+
+All credentials live in `~/.clide/secrets.yaml`, separate from the main config:
+
+```yaml
+# AI providers
+GEMINI_API_KEY: "AIzaSy..."
+ANTHROPIC_API_KEY: "sk-ant-..."
+
+# Messaging
+MATRIX_ACCESS_TOKEN: "syt_..."
+TELEGRAM_BOT_TOKEN: "123456789:ABC..."
+
+# GitHub (for vault backups)
+GITHUB_TOKEN: "ghp_..."
+
+# Your own secrets — add anything skills need
+MY_VPS_ROOT_PASSWORD: "hunter2"
+MY_DISCORD_WEBHOOK: "https://discord.com/api/webhooks/..."
+```
+
+Any key defined here is automatically available as `${KEY_NAME}` in skill commands. **The AI never sees the real values** — substitution happens inside the Executor only after the AI has finished generating the command string.
+
+---
+
+### clide secret CLI
+
+Clide ships a dedicated sub-command to manage the secrets file interactively:
+
+```bash
+# List all stored key names (values never printed)
+clide secret list
+
+# Print a single value (resolves pass references too)
+clide secret get GEMINI_API_KEY
+
+# Store a new secret (hidden input, choose yaml or pass storage)
+clide secret set MY_WEBHOOK_URL
+
+# Generate a random credential and store it
+clide secret generate DB_PASSWORD 32   # 32 chars, default if omitted
+
+# Set up the optional GPG encryption layer
+clide secret pass-init
+
+# Move an existing YAML secret into the GPG store
+clide secret pass-set GEMINI_API_KEY
+```
+
+---
+
+### GPG layer via GNU pass
+
+For an extra layer of encryption, Clide integrates with [GNU pass](https://www.passwordstore.org/) — the standard UNIX password manager. Secrets stored in pass are GPG-encrypted at rest inside `~/.password-store/`.
+
+**Setup:**
+```bash
+# 1. Install dependencies (Termux)
+pkg install gnupg pass
+
+# 2. Run the guided wizard
+clide secret pass-init
+# → lists existing GPG keys, lets you create one, then calls `pass init`
+
+# 3. Store a secret via pass
+clide secret set GEMINI_API_KEY
+# → when prompted, choose option 2 (pass/GPG-encrypted)
+
+# 4. Or migrate an existing YAML secret to pass
+clide secret pass-set GEMINI_API_KEY
+```
+
+After setup, `secrets.yaml` holds a reference instead of the real value:
+```yaml
+GEMINI_API_KEY: "pass:clide/gemini_api_key"
+```
+Clide resolves this transparently at startup by calling `pass show clide/gemini_api_key`.
+
+---
+
+### SSH host registry
+
+Clide maintains a local registry of named SSH hosts in `~/.clide/hosts.yaml`. Reference servers by a friendly nickname in skills, never by raw IP — connection details are injected only at execution time.
+
+```bash
+# Add a server (interactive wizard)
+clide host add
+
+# Add non-interactively (scriptable)
+clide host add prod --ip 1.2.3.4 --user root --key ~/.ssh/id_ed25519_prod --notes "Hetzner VPS"
+
+# List all registered hosts
+clide host list
+
+# Remove a host
+clide host remove prod
+```
+
+After registering a host named `prod`, your skills can reference it as:
+
+```yaml
+commands:
+  - "ssh -i ${HOST_PROD_KEY_PATH} -p ${HOST_PROD_PORT} ${HOST_PROD_USER}@${HOST_PROD_IP} 'systemctl restart myapp'"
+```
+
+The host IP and credentials are **never included in chat messages or AI prompts** — only the `${HOST_PROD_*}` placeholders appear in skill definitions.
+
+---
+
+### Vault backup & restore
+
+Back up your entire credential set (secrets + SSH hosts) to an encrypted GitHub Gist:
+
+```bash
+# Encrypt and upload
+clide vault backup
+# → prompts for a passphrase, encrypts with age, uploads to GitHub Gist
+# → prints the Gist ID — save it
+
+# Restore on a new machine
+clide vault restore
+# → prompts for GitHub token, Gist ID, and passphrase
+```
+
+**What gets backed up:**
+- `~/.clide/secrets.yaml`
+- `~/.clide/hosts.yaml`
+
+**Encryption:** [age](https://age-encryption.org/) with a passphrase. The passphrase is never stored anywhere — only you know it.
+
+**Automated restore during install:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash --restore
+```
+The installer will prompt for your GitHub token, Gist ID, and passphrase, then decrypt and restore everything before completing setup.
+
+--- This keeps API keys and tokens out of your config and makes it easier to share the config file without leaking credentials.
 
 **Quick overview:**
 - `~/.clide/config.yaml` — non-sensitive settings (homeserver, model, behaviour)
@@ -395,6 +553,29 @@ clide bot
 ### Interactive REPL (Gemini, no bot)
 ```bash
 clide
+```
+
+### Manage secrets
+```bash
+clide secret list                    # list all stored key names
+clide secret get <KEY>               # print a single secret value
+clide secret set <KEY>               # store a secret (hidden input)
+clide secret generate <KEY> [LEN]    # generate a random credential
+clide secret pass-init               # set up GPG encryption layer
+clide secret pass-set <KEY>          # migrate a YAML secret into pass
+```
+
+### Manage SSH hosts
+```bash
+clide host list                      # list all registered hosts
+clide host add [nickname] [--ip ...] # add a host (wizard or flags)
+clide host remove <nickname>         # remove a host
+```
+
+### Vault backup / restore
+```bash
+clide vault backup                   # encrypt and upload to GitHub Gist
+clide vault restore                  # restore from encrypted Gist
 ```
 
 ### Version
@@ -583,8 +764,9 @@ Any amount helps keep the project active. Thank you.
 
 | Document | Contents |
 |---|---|
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Step-by-step user guide — start here after installing |
 | [docs/INSTALL.md](docs/INSTALL.md) | Full platform-specific installation guide |
-| [docs/SECRETS.md](docs/SECRETS.md) | Secrets file, credential management, token locations |
+| [docs/SECRETS.md](docs/SECRETS.md) | Credential manager — secrets file, pass, host registry, vault |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security model and best practices |
 | [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | Real-world usage examples and skill templates |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Contribution guidelines |
@@ -614,6 +796,11 @@ MIT — see [LICENSE](LICENSE).
 - [x] Telegram integration
 - [x] Android/Termux support
 - [x] YAML skills system
+- [x] Credential manager (`clide secret` CLI)
+- [x] SSH host registry (`clide host` CLI)
+- [x] GNU pass / GPG encryption layer
+- [x] Age-encrypted vault backup & restore
+- [x] Secret scrubber (auto-redact in AI prompts and chat)
 - [ ] Web UI dashboard
 - [ ] Docker support
 - [ ] Multi-room support
