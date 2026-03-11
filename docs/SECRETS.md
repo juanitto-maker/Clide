@@ -1,6 +1,6 @@
 # Secrets & Credential Management
 
-This document explains how Clide handles secrets, where credentials are stored after installation, how to use the secrets file as a credential store for skills, and where to find auto-generated tokens and passwords on your system.
+Clide is a terminal AI bot **and** a credential manager. This document explains how Clide handles secrets, how to use the built-in CLI to manage them, how to enable the optional GPG encryption layer, how to manage SSH hosts, and how to back up everything to an encrypted vault.
 
 ---
 
@@ -315,9 +315,217 @@ curl -s "https://matrix.org/_matrix/client/v3/account/whoami" \
 
 ---
 
+---
+
+## clide secret CLI
+
+Clide provides a built-in sub-command for managing `secrets.yaml` without opening an editor. All operations work locally — nothing is sent to the bot or AI.
+
+### list
+
+```bash
+clide secret list
+```
+
+Prints all key names. Values are never shown. Keys stored in GNU pass are shown with their pass path:
+
+```
+Stored secrets (keys only):
+
+  ANTHROPIC_API_KEY       [set]
+  GEMINI_API_KEY          → pass:clide/gemini_api_key
+  MATRIX_ACCESS_TOKEN     [set]
+  TELEGRAM_BOT_TOKEN      (empty)
+```
+
+### get
+
+```bash
+clide secret get GEMINI_API_KEY
+```
+
+Prints the resolved value of a single secret. If the value is a `pass:...` reference, Clide calls `pass show` to decrypt it.
+
+### set
+
+```bash
+clide secret set MY_WEBHOOK_URL
+```
+
+Prompts for a value with hidden input. If GNU pass is installed, you can choose to store the secret in the GPG-encrypted store instead of `secrets.yaml`.
+
+### generate
+
+```bash
+clide secret generate DB_PASSWORD        # 32 chars (default)
+clide secret generate API_KEY 48         # 48 chars
+```
+
+Generates a cryptographically random alphanumeric secret, stores it, and prints it **once** on screen. The length defaults to 32 if not specified.
+
+### pass-init
+
+```bash
+clide secret pass-init
+```
+
+Walks you through setting up GNU pass (GPG encryption layer):
+1. Checks if `pass` and `gpg` are installed — prints install command if not.
+2. Lists existing GPG keys.
+3. Lets you pick an existing key or launches `gpg --full-generate-key`.
+4. Runs `pass init <gpg-key-id>` to initialise the password store.
+
+### pass-set
+
+```bash
+clide secret pass-set GEMINI_API_KEY
+```
+
+Moves an existing plaintext `secrets.yaml` entry into the GPG-encrypted pass store. Updates `secrets.yaml` to reference `pass:clide/gemini_api_key`. The original plaintext value is overwritten.
+
+---
+
+## SSH Host Registry
+
+The SSH host registry (`~/.clide/hosts.yaml`) stores named server entries. Skills reference hosts by nickname; the actual IPs and keys are injected at execution time and **never appear in AI prompts or chat**.
+
+### clide host CLI
+
+```bash
+# List all registered hosts
+clide host list
+
+# Add a host — interactive wizard
+clide host add
+
+# Add a host non-interactively (scriptable)
+clide host add prod \
+  --ip 1.2.3.4 \
+  --user root \
+  --key ~/.ssh/id_ed25519_prod \
+  --port 22 \
+  --notes "Hetzner VPS"
+
+# Remove a host
+clide host remove prod
+clide host rm prod      # alias
+```
+
+### Host variables in skills
+
+After adding a host named `prod`, these variables are automatically available in all skills:
+
+| Variable | Value |
+|---|---|
+| `${HOST_PROD_IP}` | IP or Tailscale address |
+| `${HOST_PROD_USER}` | SSH username |
+| `${HOST_PROD_KEY_PATH}` | Path to private SSH key |
+| `${HOST_PROD_PORT}` | Port number (default 22) |
+
+Example skill using a registered host:
+
+```yaml
+name: restart_app
+description: "Restart the app on production"
+commands:
+  - "ssh -i ${HOST_PROD_KEY_PATH} -p ${HOST_PROD_PORT} ${HOST_PROD_USER}@${HOST_PROD_IP} 'systemctl restart myapp'"
+```
+
+### hosts.yaml format
+
+```yaml
+prod:
+  ip: "1.2.3.4"
+  user: "root"
+  key_path: "/home/youruser/.ssh/id_ed25519_prod"
+  port: 22
+  notes: "Main VPS - Hetzner DE"
+
+pi:
+  ip: "100.64.0.1"        # Tailscale IP works too
+  user: "pi"
+  key_path: "~/.ssh/id_ed25519_pi"
+  port: 22
+  notes: "Raspberry Pi home lab"
+```
+
+The file is created with `chmod 600`. It is included in vault backups (encrypted).
+
+---
+
+## Vault Backup & Restore
+
+The vault system encrypts your secrets and SSH host registry and stores them in a GitHub Gist. Use it to migrate to a new device or to recover after losing your device.
+
+### What is backed up
+
+- `~/.clide/secrets.yaml`
+- `~/.clide/hosts.yaml`
+
+### Backup
+
+```bash
+clide vault backup
+```
+
+Prompts for:
+- **GitHub token** — needs `gist` scope. Create at [github.com/settings/tokens](https://github.com/settings/tokens).
+- **Passphrase** — used to encrypt the archive with [age](https://age-encryption.org/). Never stored.
+
+Outputs the Gist ID — save it somewhere safe (e.g. a physical note, or your password manager).
+
+### Restore
+
+```bash
+clide vault restore
+```
+
+Prompts for:
+- GitHub token
+- Gist ID
+- Passphrase
+
+Restores `secrets.yaml` and `hosts.yaml` to `~/.clide/` and applies `chmod 600`.
+
+### Restore during install
+
+Pass `--restore` to the installer to restore your vault before completing setup:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash --restore
+```
+
+### Encryption details
+
+- Algorithm: **age** (X25519 or passphrase — Clide uses passphrase mode)
+- The passphrase is **never stored** on disk or transmitted anywhere
+- The GitHub Gist can be private or public — the content is always encrypted
+
+---
+
+## Secret Scrubber
+
+All text that leaves the local machine — messages sent to Gemini, replies sent to Matrix/Telegram, and log entries — is automatically scrubbed for known secret values before transmission.
+
+**How it works:**
+
+1. After secrets are loaded, a list of all known values (length > 5) is built.
+2. Before any string is sent outbound, the scrubber replaces every match with `***`.
+3. The longest values are checked first to avoid partial shadowing.
+4. Multiple passes are run to catch nested or repeated secrets.
+
+**Example:**
+
+If a command accidentally echoes your Gemini API key, you see `***` in the Telegram response — not the real value.
+
+This is a defence-in-depth measure. The primary protection is that secrets are never passed to the AI at all — only `${KEY_NAME}` placeholders are used in skill definitions.
+
+---
+
 ## See Also
 
 - [config.example.yaml](../config.example.yaml) — full config reference with comments
 - [secrets.example.yaml](../secrets.example.yaml) — full secrets file template
 - [docs/SECURITY.md](SECURITY.md) — threat model and security hardening
+- [docs/USER_GUIDE.md](USER_GUIDE.md) — step-by-step guide for new users
 - [skills/example_skill.yaml](../skills/example_skill.yaml) — skill template showing `${VARIABLE}` usage
