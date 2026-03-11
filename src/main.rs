@@ -6,6 +6,8 @@ use serde_json::json;
 use std::io::{self, Write};
 use colored::*;
 
+use clide::hosts::{self, HostEntry};
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load env-based config (API key etc.) from ~/.config/clide/config.env
@@ -24,8 +26,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_bot().await;
     }
 
+    // ── `clide host` subcommand ───────────────────────────────────────────────
+    if args.get(1).map(|s| s.as_str()) == Some("host") {
+        return run_host_cmd(&args[2..]).await;
+    }
+
     // Default: interactive REPL mode
     run_repl().await
+}
+
+/// Handle `clide host <subcommand> [args]`
+///
+/// This runs LOCALLY only — host data never goes through the bot or AI.
+///
+/// Usage:
+///   clide host list
+///   clide host add <nickname> --ip <IP> --user <USER> [--key <PATH>] [--port <PORT>] [--notes <TEXT>]
+///   clide host remove <nickname>
+async fn run_host_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let sub = args.get(0).map(|s| s.as_str()).unwrap_or("list");
+
+    match sub {
+        "list" => {
+            let map = hosts::load()?;
+            println!("{}", hosts::format_list(&map));
+        }
+
+        "add" => {
+            let nickname = args.get(1).ok_or("Usage: clide host add <nickname> --ip <IP> --user <USER> [--key <PATH>] [--port <PORT>] [--notes <TEXT>]")?;
+            let mut ip = String::new();
+            let mut user = String::new();
+            let mut key_path = format!(
+                "{}/.ssh/id_ed25519",
+                env::var("HOME").unwrap_or_default()
+            );
+            let mut port: u16 = 22;
+            let mut notes = String::new();
+
+            let mut i = 2usize;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--ip"    => { ip    = args.get(i+1).cloned().unwrap_or_default(); i += 2; }
+                    "--user"  => { user  = args.get(i+1).cloned().unwrap_or_default(); i += 2; }
+                    "--key"   => { key_path = args.get(i+1).cloned().unwrap_or_default(); i += 2; }
+                    "--port"  => { port  = args.get(i+1).and_then(|p| p.parse().ok()).unwrap_or(22); i += 2; }
+                    "--notes" => { notes = args.get(i+1).cloned().unwrap_or_default(); i += 2; }
+                    _         => { i += 1; }
+                }
+            }
+
+            if ip.is_empty() || user.is_empty() {
+                eprintln!("{}", "Error: --ip and --user are required.".red());
+                std::process::exit(1);
+            }
+
+            let entry = HostEntry { ip, user, key_path, port, notes };
+            hosts::add(nickname, entry)?;
+            println!("{}", format!("✅ Host '{}' saved to ~/.clide/hosts.yaml", nickname).green());
+        }
+
+        "remove" | "rm" => {
+            let nickname = args.get(1).ok_or("Usage: clide host remove <nickname>")?;
+            hosts::remove(nickname)?;
+            println!("{}", format!("✅ Host '{}' removed.", nickname).green());
+        }
+
+        _ => {
+            eprintln!("Unknown host subcommand: '{}'", sub);
+            eprintln!("Usage: clide host list | add | remove");
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
 }
 
 /// Interactive REPL: type prompts, get Gemini replies

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::hosts;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub gemini_api_key: String,
@@ -187,6 +189,12 @@ Tokens or IDs containing special characters (like ':') must be quoted.",
         sync_to_secrets(&cfg.openai_api_key,       "OPENAI_API_KEY",       &mut cfg.secrets);
         sync_to_secrets(&cfg.groq_api_key,         "GROQ_API_KEY",         &mut cfg.secrets);
         sync_to_secrets(&cfg.xai_api_key,          "XAI_API_KEY",          &mut cfg.secrets);
+
+        // ── 3. Inject named host entries as ${HOST_<NICK>_IP} etc. ────────────
+        // This runs silently — missing hosts.yaml is not an error.
+        if let Ok(host_map) = hosts::load() {
+            hosts::inject_into_secrets(&host_map, &mut cfg.secrets);
+        }
 
         Ok(cfg)
     }

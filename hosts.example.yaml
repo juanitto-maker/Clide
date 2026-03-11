@@ -1,0 +1,43 @@
+# ============================================
+# Clide Host Registry (~/.clide/hosts.yaml)
+# ============================================
+# This file maps short nicknames to SSH connection details.
+# It is managed via:   clide host add / list / remove
+#
+# SECURITY:
+#   chmod 600 ~/.clide/hosts.yaml   ← set automatically by clide host add
+#   This file is NEVER committed to git.
+#   It IS included in vault backups (age-encrypted).
+#
+# HOW IT WORKS:
+#   Clide loads this file on start-up and injects each host's fields
+#   into the secrets map as:
+#     ${HOST_<NICKNAME>_IP}
+#     ${HOST_<NICKNAME>_USER}
+#     ${HOST_<NICKNAME>_KEY_PATH}
+#     ${HOST_<NICKNAME>_PORT}
+#
+#   Skills reference these placeholders — the AI sees nicknames, never IPs.
+#   Example skill command:
+#     - "ssh -i ${HOST_PROD_KEY_PATH} -p ${HOST_PROD_PORT} ${HOST_PROD_USER}@${HOST_PROD_IP} 'uptime'"
+#
+# ADDING A HOST (CLI, local only — never via Telegram):
+#   clide host add prod --ip 1.2.3.4 --user root --key ~/.ssh/id_ed25519_prod --port 22
+#   clide host add pi   --ip 100.x.y.z --user pi --notes "Home Raspberry Pi (Tailscale)"
+#   clide host list
+#   clide host remove prod
+# ============================================
+
+prod:
+  ip: "1.2.3.4"
+  user: "root"
+  key_path: "/data/data/com.termux/files/home/.ssh/id_ed25519_prod"
+  port: 22
+  notes: "Main VPS - Hetzner DE"
+
+pi:
+  ip: "100.x.y.z"
+  user: "pi"
+  key_path: "/data/data/com.termux/files/home/.ssh/id_ed25519_pi"
+  port: 22
+  notes: "Raspberry Pi home lab (Tailscale IP)"
