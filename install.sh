@@ -613,4 +613,23 @@ case "$CLIDE_PLATFORM" in
         echo "  3. Run: clide bot  (starts both bots simultaneously)"
         ;;
 esac
+
+echo "─── Secrets & Hosts ────────────────────────────────────────────"
+echo ""
+echo "  clide secret list              # show all stored secret keys"
+echo "  clide secret set MY_KEY        # store a secret (hidden input)"
+echo "  clide secret generate MY_KEY   # generate + store a random secret"
+echo "  clide secret pass-init         # set up GNU pass (optional GPG layer)"
+echo ""
+echo "  clide host add                 # add an SSH host by nickname"
+echo "  clide host list                # show all configured hosts"
+echo ""
+echo "─── Backup & Recovery ──────────────────────────────────────────"
+echo ""
+echo "  Via Telegram: 'backup my vault'"
+echo "  To restore on a fresh device:"
+echo "    bash install.sh --restore"
+echo ""
+echo "  Vault is age-encrypted → GitHub Gist."
+echo "  Recovery needs: GitHub token + Gist ID + your passphrase."
 echo ""

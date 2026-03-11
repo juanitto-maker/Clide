@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::hosts;
+use crate::pass_store;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -195,6 +196,11 @@ Tokens or IDs containing special characters (like ':') must be quoted.",
         if let Ok(host_map) = hosts::load() {
             hosts::inject_into_secrets(&host_map, &mut cfg.secrets);
         }
+
+        // ── 4. Resolve any "pass:..." references via GNU pass ─────────────────
+        // Optional: requires `pkg install gnupg pass` and a GPG key.
+        // Values that can't be resolved are left as-is with a stderr warning.
+        pass_store::resolve_all(&mut cfg.secrets);
 
         Ok(cfg)
     }

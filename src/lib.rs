@@ -10,6 +10,7 @@ pub mod executor;
 pub mod gemini;
 pub mod hosts;
 pub mod logger;
+pub mod pass_store;
 pub mod matrix;
 pub mod memory;
 pub mod scrubber;
