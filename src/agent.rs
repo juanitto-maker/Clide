@@ -20,6 +20,7 @@ use tokio::time::{timeout, Duration};
 use crate::config::Config;
 use crate::database::Database;
 use crate::executor::Executor;
+use crate::hosts;
 use crate::memory::Memory;
 use crate::skills::SkillManager;
 
@@ -97,6 +98,16 @@ via ${KEY_NAME} substitution at execution time — the values never appear in th
 conversation or reach the AI model. When asked to configure an external tool \
 (e.g. aiwb) with API keys from secrets, use run_skill — it handles key \
 propagation securely without you needing to read or echo any secret.\n\n\
+SSH HOST RULES:\n\
+- When the user asks to do anything on their VPS, server, or remote host: use the \
+registered hosts listed below (injected at runtime). Use those details directly — \
+NEVER ask the user for IP addresses, usernames, or key paths.\n\
+- If only one host is registered, use it automatically without asking.\n\
+- If multiple hosts exist and the request is ambiguous, reply listing the available \
+nicknames and ask the user to pick one — never ask for raw IPs or usernames.\n\
+- Connect using: ssh -i <key_path> -p <port> <user>@<ip> '<command>'\n\
+- Host details are also available as environment variables: ${HOST_<NICK>_IP}, \
+${HOST_<NICK>_USER}, ${HOST_<NICK>_KEY_PATH}, ${HOST_<NICK>_PORT}.\n\n\
 IMPORTANT: Always use run_command or run_skill to get information or take action. \
 Never respond with 'I would do X' — just do it.";
 
@@ -193,7 +204,28 @@ impl Agent {
             .map(|s| format!("\n\nAvailable skills (use run_skill to execute):\n{}", s))
             .unwrap_or_default();
 
-        let base = format!("{}{}", SYSTEM_PROMPT, skill_section);
+        // Inject registered SSH hosts so the model knows what's available
+        // without needing to cat hosts.yaml (which would expose IPs in chat).
+        let hosts_section = match hosts::load() {
+            Ok(map) if !map.is_empty() => {
+                let mut lines = vec![
+                    "\n\nRegistered SSH hosts (use these automatically, never ask user for IP/user):".to_string(),
+                ];
+                let mut names: Vec<&String> = map.keys().collect();
+                names.sort();
+                for name in names {
+                    let h = &map[name];
+                    lines.push(format!(
+                        "  - {}: {}@{} port={} key={}",
+                        name, h.user, h.ip, h.port, h.key_path
+                    ));
+                }
+                lines.join("\n")
+            }
+            _ => String::new(),
+        };
+
+        let base = format!("{}{}{}", SYSTEM_PROMPT, skill_section, hosts_section);
 
         if context.trim().is_empty() {
             base
