@@ -24,8 +24,10 @@ use crate::hosts;
 use crate::memory::Memory;
 use crate::skills::SkillManager;
 
-/// Maximum output bytes fed back to Gemini per command (avoids context overflow)
-const MAX_OUTPUT_BYTES: usize = 8_000;
+/// Maximum output bytes fed back to Gemini per tool call (avoids context overflow).
+/// Skills (especially dashboards like vps_manager) can produce 15-20 KB of useful
+/// output, so this must be generous enough to avoid truncating real data.
+const MAX_OUTPUT_BYTES: usize = 24_000;
 /// Maximum progress preview sent over the channel per command
 const MAX_PREVIEW_BYTES: usize = 500;
 /// How many past conversations to inject as context

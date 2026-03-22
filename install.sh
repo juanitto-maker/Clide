@@ -374,7 +374,14 @@ if [ -n "$GEMINI_KEY" ]; then
 
     echo "✅ Gemini API key saved" >/dev/tty
 else
-    echo "⏭  Skipped. Set later via GEMINI_API_KEY env var or ~/.clide/secrets.yaml" >/dev/tty
+    echo "" >/dev/tty
+    echo "⚠️  WARNING: No Gemini API key entered!" >/dev/tty
+    echo "   Clide WILL NOT WORK without an API key." >/dev/tty
+    echo "   Set it later:" >/dev/tty
+    echo "     export GEMINI_API_KEY=\"your-key-here\"" >/dev/tty
+    echo "     # or add to ~/.clide/secrets.yaml:" >/dev/tty
+    echo "     GEMINI_API_KEY: \"your-key-here\"" >/dev/tty
+    echo "" >/dev/tty
 fi
 
 # ── 4b. Platform selection ────────────────────────────────────────────────────
