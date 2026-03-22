@@ -56,6 +56,11 @@ fn prompt_with_default(label: &str, default: &str) -> Result<String, Box<dyn std
     Ok(if val.is_empty() { default.to_string() } else { val })
 }
 
+/// Validate that a host nickname contains only alphanumeric, hyphens, underscores.
+fn is_valid_nickname(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 fn prompt_required(label: &str) -> Result<String, Box<dyn std::error::Error>> {
     loop {
         print!("  {}: ", label.bright_white());
@@ -172,10 +177,16 @@ async fn run_host_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
                 // ── Interactive wizard ────────────────────────────────────────
                 println!("{}", "\nAdd a new SSH host\n".bright_cyan().bold());
 
-                let nickname = prompt_with_default(
-                    "Nickname (e.g. prod, pi, home)",
-                    nickname_arg.map(|s| s.as_str()).unwrap_or(""),
-                )?;
+                let nickname = loop {
+                    let val = prompt_with_default(
+                        "Nickname (e.g. prod, pi, home)",
+                        nickname_arg.map(|s| s.as_str()).unwrap_or(""),
+                    )?;
+                    if is_valid_nickname(&val) {
+                        break val;
+                    }
+                    eprintln!("  {} Nickname can only contain letters, numbers, hyphens and underscores.", "▶".red());
+                };
 
                 let ip = prompt_required("IP or Tailscale address")?;
                 let user = prompt_required("SSH user")?;
@@ -189,6 +200,11 @@ async fn run_host_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 
                 (nickname, ip, user, key_path, port, notes)
             };
+
+            if !is_valid_nickname(&nickname) {
+                eprintln!("{}", "Error: Nickname can only contain letters, numbers, hyphens and underscores.".red());
+                std::process::exit(1);
+            }
 
             if ip.is_empty() || user.is_empty() {
                 eprintln!("{}", "Error: IP and user are required.".red());

@@ -81,9 +81,9 @@ commands:
     -o ConnectTimeout=15 {{vps_user}}@{{vps_host}}
     "command -v lynis >/dev/null 2>&1
     && echo '[1] lynis already installed'
-    || (DEBIAN_FRONTEND=noninteractive sudo apt-get install -y lynis 2>/dev/null
-    || sudo yum install -y lynis 2>/dev/null
-    || sudo dnf install -y lynis 2>/dev/null)
+    || (echo '${SUDO_PASSWORD}' | DEBIAN_FRONTEND=noninteractive sudo -S apt-get install -y lynis 2>/dev/null
+    || echo '${SUDO_PASSWORD}' | sudo -S yum install -y lynis 2>/dev/null
+    || echo '${SUDO_PASSWORD}' | sudo -S dnf install -y lynis 2>/dev/null)
     && echo '[1] lynis installed'";
     fi
 
@@ -102,7 +102,7 @@ commands:
     else
     ssh -i {{ssh_key}} -o BatchMode=yes {{vps_user}}@{{vps_host}}
     "echo '[2] Running lynis audit system on {{vps_host}} (60-120s)...'
-    && sudo lynis audit system --quiet 2>&1 | tail -5
+    && echo '${SUDO_PASSWORD}' | sudo -S lynis audit system --quiet 2>&1 | tail -5
     && echo '[2] Audit complete'";
     fi
 
@@ -133,11 +133,11 @@ commands:
     && echo '============================================'
     && echo ''
     && echo '--- Hardening Index ---'
-    && (sudo grep 'Hardening index' /var/log/lynis.log 2>/dev/null | tail -1
+    && (echo '${SUDO_PASSWORD}' | sudo -S grep 'Hardening index' /var/log/lynis.log 2>/dev/null | tail -1
     || echo '  (check /var/log/lynis.log)')
     && echo ''
     && echo '--- Warnings (top 20) ---'
-    && (sudo grep '^warning\[\]' /var/log/lynis-report.dat 2>/dev/null
+    && (echo '${SUDO_PASSWORD}' | sudo -S grep '^warning\[\]' /var/log/lynis-report.dat 2>/dev/null
     | sed 's/warning\[\]=/  W: /' | head -20
     || echo '  none found')
     && echo ''";
@@ -156,7 +156,7 @@ commands:
     else
     ssh -i {{ssh_key}} -o BatchMode=yes {{vps_user}}@{{vps_host}}
     "echo '--- Suggestions (top 25) ---'
-    && (sudo grep '^suggestion\[\]' /var/log/lynis-report.dat 2>/dev/null
+    && (echo '${SUDO_PASSWORD}' | sudo -S grep '^suggestion\[\]' /var/log/lynis-report.dat 2>/dev/null
     | sed 's/suggestion\[\]=/  S: /' | head -25
     || echo '  none found')
     && echo ''

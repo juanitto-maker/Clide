@@ -18,7 +18,7 @@ description: >
   Full VPS status dashboard via SSH over Tailscale. Shows system health,
   disk, memory, processes, firewall, fail2ban, Docker, and recent logins.
   Runs system updates when requested. All connections via Tailscale private IP.
-version: "1.0.0"
+version: "1.1.0"
 author: digitalAIventures LLC
 tags:
   - vps
@@ -45,52 +45,79 @@ parameters:
     default: "~/.ssh/id_ed25519"
 
 commands:
-  # ── 1. Tailscale connectivity check ───────────────────────────────────────
+  # ── 1. Tailscale connectivity check (local) ────────────────────────────────
   - >-
     echo "=== Tailscale Status ===" &&
     tailscale status 2>/dev/null | head -5 ||
     echo "Tailscale not running locally — install with: pkg install tailscale"
 
-  # ── 2. Test SSH over Tailscale ────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo OK — connected to $(hostname) as $(whoami) via Tailscale"'
+  # ── 2. Full dashboard in a single SSH session ──────────────────────────────
+  # One connection, one command — avoids per-command truncation and is much
+  # faster than 13 separate SSH sessions.
+  - |
+    ssh -i {{ssh_key}} \
+        -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=10 \
+        -o BatchMode=yes \
+        {{vps_user}}@{{vps_host}} 'bash -s' <<REMOTE_DASHBOARD
+    SP="${SUDO_PASSWORD}"
+    echo "=== SYSTEM ==="
+    uname -a
+    echo ""
+    uptime
+    echo ""
+    grep PRETTY /etc/os-release 2>/dev/null || true
 
-  # ── 3. System info ────────────────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === SYSTEM === && uname -a && echo && uptime && echo && cat /etc/os-release | grep PRETTY"'
+    echo ""
+    echo "=== DISK ==="
+    df -h --total 2>/dev/null | grep -E "(Filesystem|/dev/|total)" || df -h
 
-  # ── 4. Disk usage ─────────────────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === DISK === && df -h"'
+    echo ""
+    echo "=== MEMORY ==="
+    free -h
 
-  # ── 5. Memory ─────────────────────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === MEMORY === && free -h"'
+    echo ""
+    echo "=== TOP PROCESSES (CPU) ==="
+    ps aux --sort=-%cpu | head -11
 
-  # ── 6. Top 10 CPU processes ───────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === TOP PROCESSES (CPU) === && ps aux --sort=-%cpu | head -11"'
+    echo ""
+    echo "=== LISTENING PORTS ==="
+    ss -tuln
 
-  # ── 7. Active network listeners ───────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === LISTENING PORTS === && ss -tuln"'
+    echo ""
+    echo "=== UFW FIREWALL ==="
+    echo "\$SP" | sudo -S ufw status verbose 2>/dev/null || echo "UFW not available"
 
-  # ── 8. UFW firewall status ────────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === UFW FIREWALL === && sudo ufw status verbose 2>/dev/null || echo UFW not available"'
+    echo ""
+    echo "=== FAIL2BAN ==="
+    echo "\$SP" | sudo -S fail2ban-client status 2>/dev/null || echo "fail2ban not running"
+    echo "\$SP" | sudo -S fail2ban-client status sshd 2>/dev/null || true
 
-  # ── 9. Fail2ban status ────────────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === FAIL2BAN === && sudo fail2ban-client status 2>/dev/null || echo fail2ban not running && sudo fail2ban-client status sshd 2>/dev/null || true"'
+    echo ""
+    echo "=== DOCKER ==="
+    docker ps -a 2>/dev/null || echo "Docker not available"
 
-  # ── 10. Docker status ─────────────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === DOCKER === && docker ps -a 2>/dev/null || echo Docker not available"'
+    echo ""
+    echo "=== RECENT LOGINS ==="
+    last | head -10
+    echo ""
+    FAILED=\$(echo "\$SP" | sudo -S grep -c 'Failed' /var/log/auth.log 2>/dev/null || echo "\$SP" | sudo -S journalctl -u ssh --since '24 hours ago' 2>/dev/null | grep -c 'Failed' || echo 0)
+    echo "Failed SSH attempts (24h): \$FAILED"
 
-  # ── 11. Recent SSH login attempts ─────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === RECENT LOGINS === && last | head -10 && echo && echo Failed attempts: && sudo grep -c ''Failed'' /var/log/auth.log 2>/dev/null || sudo journalctl -u ssh --since ''24 hours ago'' | grep -c ''Failed'' 2>/dev/null || echo 0"'
+    echo ""
+    echo "=== AVAILABLE UPDATES ==="
+    echo "\$SP" | sudo -S apt-get -s upgrade 2>/dev/null | grep -E '^[0-9]+ upgraded' || echo "Run: sudo apt update first"
 
-  # ── 12. Available package updates ─────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === AVAILABLE UPDATES === && sudo apt-get -s upgrade 2>/dev/null | grep -E ''^[0-9]+ upgraded'' || echo Run: sudo apt update first"'
+    echo ""
+    echo "=== RKHUNTER LAST RUN ==="
+    echo "\$SP" | sudo -S tail -20 /var/log/rkhunter.log 2>/dev/null | grep -E '(Warning|OK|Rootkit)' | tail -5 || echo "rkhunter not installed"
 
-  # ── 13. Rkhunter last check ───────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === RKHUNTER LAST RUN === && sudo tail -20 /var/log/rkhunter.log 2>/dev/null | grep -E ''(Warning|OK|Rootkit)'' | tail -5 || echo rkhunter not installed"'
+    echo ""
+    echo "=== LYNIS LAST AUDIT SCORE ==="
+    echo "\$SP" | sudo -S grep -i 'hardening index' /var/log/lynis.log 2>/dev/null | tail -1 || echo "Lynis not installed or not run yet"
+    REMOTE_DASHBOARD
 
-  # ── 14. Lynis last score ──────────────────────────────────────────────────
-  - 'ssh -i {{ssh_key}} -o StrictHostKeyChecking=accept-new -o BatchMode=yes {{vps_user}}@{{vps_host}} "echo === LYNIS LAST AUDIT SCORE === && sudo grep -i ''hardening index'' /var/log/lynis.log 2>/dev/null | tail -1 || echo Lynis not installed or not run yet"'
-
-  # ── 15. Summary ───────────────────────────────────────────────────────────
+  # ── 3. Summary ──────────────────────────────────────────────────────────────
   - 'echo "" && echo "=== VPS MANAGER COMPLETE === Connection: {{vps_user}}@{{vps_host}} (Tailscale)"'
 
 require_confirmation: false
