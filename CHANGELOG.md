@@ -17,6 +17,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] - 2026-03-22
+
+### Post-release improvements
+
+Dozens of fixes and features since the v0.3.0 release, focused on Telegram polish, credential management, VPS support, and new security skills.
+
+### Added
+- **Telegram forum topics** — bot can send messages into forum threads (`83a21bc`)
+- **Telegram file/image interpretation** — uploaded files and images are forwarded to Gemini for vision-based analysis (`0eb9b77`, `30ca053`)
+- **`/stop` command** — abort a running agent task from chat (`236d5e0`)
+- **`/debug` command** — Telegram startup diagnostics (`80f317f`)
+- **Centralized secrets management** — `~/.clide/secrets.yaml` with `clide secret` CLI (`3c222f4`)
+- **GNU pass / GPG integration** — optional GPG-encrypted credential storage (`2a5a99e`)
+- **SSH host registry** — `clide host add/list/remove` with `${HOST_*}` variable injection (`fb146f9`)
+- **Age-encrypted vault backup & restore** — `clide vault backup/restore` to GitHub Gist (`fb146f9`)
+- **Secret scrubber** — auto-redact secrets from AI prompts and chat messages (`fb146f9`)
+- **SSH host injection into agent prompt** — registered hosts available to the AI (`723bac8`)
+- **Secrets exported as env vars** in child shell processes (`130e3a2`)
+- **SSH keys included in vault backup** (`0ab8ef1`)
+- **VPS wizard in installer** — automated SSH key setup for remote servers (`3998a0f`)
+- **Linux VPS support in installer and CI** — systemd service setup, x86_64 release binary (`e46ab53`)
+- **Smarter message chunking** — answer and command log split into separate messages (`3e4d1d1`)
+- **Graceful Ctrl+C shutdown** via `tokio::signal::ctrl_c()` (`c95a9d6`)
+- **Fail-closed auth** — unauthorized messages get feedback instead of silent drop (`c891e08`, `3ded14a`)
+- **YAML control-char stripping** on config load (`98a59ae`)
+- **Hot-reload config** for Telegram authorized users (`5393a11`)
+- **New skills shipped:** `lynis_audit`, `clide_install`, `debugger`, `aiwb_manager`, `docker_ai_sandbox`, `system_overview`, `maintenance_cron`, `intrusion_alert`, `vault_auto_backup`, `port_scanner`, `vps_manager`, `vps_hardening`
+
+### Changed
+- Default `max_agent_steps` increased from 20 to 40 (`641b39a`)
+- Migrated from deprecated `gemini-2.0-flash` to `gemini-2.5-flash` (`5e83d8b`)
+- `lynis_audit` skill now requires explicit SSH params instead of defaulting to local mode (`38cb8c0`)
+- Consolidated SSH calls to use `echo ${SUDO_PASSWORD} | sudo -S` pattern (`4af6a61`)
+
+### Fixed
+- Telegram polling restore, file export, auth/webhook conflict (`fd60817`)
+- Telegram bot token validation at startup (`80f317f`)
+- Bot self-response loop prevention via `/whoami` (`df4c1ee`)
+- Gemini API schema error (unsupported `additionalProperties`) (`b34754c`)
+- AIWB integration: timeout, env propagation, file extraction and delivery (`e1c221d`, `413f824`, `0cedecc`)
+- OOM prevention: cap command output at read time on Termux (`2fef820`)
+- Installer: Gemini/VPS prompts, Telegram user storage, nickname validation (`72ffe76`, `94a662b`)
+
+---
+
 ## [0.3.0] - 2026-02-18
 
 ### Migrate from Signal to Element/Matrix
@@ -82,6 +127,7 @@ Complete rewrite from Python to Rust for performance, safety, and zero-dependenc
 
 ## Version History
 
+- **v0.3.1** - Telegram polish, credential manager, VPS support, 12 new skills
 - **v0.3.0** - Element/Matrix migration: no Java, no signal-cli, pure HTTP API
 - **v0.2.0** - Rust rewrite: single static binary, no Python runtime
 - **v0.1.0-alpha** - Initial Python prototype with Signal

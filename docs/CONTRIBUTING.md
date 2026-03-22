@@ -9,7 +9,7 @@ Thank you for considering contributing to clide! We welcome contributions from e
 ### 1. Fork & Clone
 ```bash
 # Fork the repo on GitHub, then:
-git clone https://github.com/yourusername/clide
+git clone https://github.com/juanitto-maker/Clide
 cd clide
 ```
 
@@ -78,11 +78,11 @@ Then create a PR on GitHub with a clear description of your changes.
 - ✅ **Tests** - Increase code coverage
 
 ### Feature Requests
-- 💬 **New messenger integrations** (Telegram, Discord, etc.)
-- 🤖 **Additional LLM support** (Claude, GPT, local models)
+- 🤖 **Additional LLM support** (Claude, GPT, local models via Ollama)
 - 📋 **Workflow templates** - Share your automation recipes
 - 🎨 **UI improvements** - Better terminal output formatting
 - 📊 **Monitoring enhancements** - Advanced alerting systems
+- 🌐 **Web UI dashboard** - Browser-based management interface
 
 ### What We Won't Accept
 - ❌ Features that compromise security
@@ -122,12 +122,27 @@ pub async fn execute_command(command: &str, dry_run: bool) -> anyhow::Result<Com
 ### File Organization
 ```
 src/
-├── main.rs          # Entry point — keep minimal
-├── bot.rs           # Signal message handling
-├── gemini.rs        # Gemini API client
+├── main.rs          # Entry point, CLI commands (bot, secret, host), REPL
+├── agent.rs         # Core AI agent logic, command interpretation, workflow execution
+├── bot.rs           # Bot orchestration layer
+├── config.rs        # Configuration loading and validation (YAML)
+├── database.rs      # SQLite conversation history
 ├── executor.rs      # Command execution — safety-first
-├── config.rs        # Config loading and validation
-└── logger.rs        # Logging setup (tracing)
+├── gemini.rs        # Google Gemini API client
+├── hosts.rs         # SSH host registry management
+├── lib.rs           # Library root
+├── logger.rs        # Logging setup (tracing + file appender)
+├── matrix.rs        # Matrix/Element E2E messaging client
+├── memory.rs        # In-memory state
+├── pass_store.rs    # GNU pass / GPG integration
+├── scrubber.rs      # Secret redaction before AI prompts
+├── ssh.rs           # SSH client wrapper
+├── telegram.rs      # Telegram client wrapper
+├── telegram_bot.rs  # Telegram bot polling + message handling
+├── workflow.rs      # YAML skill execution engine
+└── skills/
+    ├── mod.rs       # Skills module root
+    └── manager.rs   # Skill discovery and loading
 ```
 
 ### Testing
@@ -161,7 +176,7 @@ mod tests {
 ### Reporting Security Issues
 **DO NOT** open public issues for security vulnerabilities!
 
-Instead, email: security@yourproject.com (or create a private security advisory on GitHub)
+Instead, email: See [SECURITY.md](../SECURITY.md) (or create a private security advisory on GitHub)
 
 We'll respond within 48 hours and work with you on a fix.
 
@@ -229,7 +244,7 @@ Look for issues labeled `good-first-issue` - these are perfect for newcomers:
 - Writing tests
 
 ### Need Help?
-- 💬 Ask questions in [Discussions](https://github.com/yourusername/clide/discussions)
+- 💬 Ask questions in [Discussions](https://github.com/juanitto-maker/Clide/discussions)
 - 📧 Reach out to maintainers
 - 📖 Check existing issues and PRs for examples
 
@@ -281,19 +296,25 @@ Instances of unacceptable behavior may be reported to project maintainers. All c
 
 Want to contribute but not sure where to start? Check our roadmap:
 
-### Current Focus (v0.1 - v0.2)
-- Core stability improvements
-- Telegram integration
-- Better error handling
-- Documentation expansion
+### Shipped (v0.1 – v0.3)
+- Core bot functionality + Gemini AI
+- Element/Matrix + Telegram integration
+- YAML skills system (18 shipped skills)
+- Credential manager (`clide secret` CLI)
+- SSH host registry (`clide host` CLI)
+- GNU pass / GPG encryption layer
+- Age-encrypted vault backup & restore
+- Secret scrubber (auto-redact in AI prompts)
+- VPS support with systemd service
 
-### Future Plans (v0.3+)
+### Current Focus (v0.4+)
+- Multi-model LLM support (Claude, Ollama)
+- Web UI dashboard
+- Docker support
 - Workflow marketplace
-- Multi-model LLM support
-- Advanced monitoring features
-- Team collaboration tools
+- Scheduled commands
 
-See [Roadmap](https://github.com/yourusername/clide/projects) for detailed plans.
+See [SKILLS_ROADMAP.md](SKILLS_ROADMAP.md) for the skills development roadmap.
 
 ---
 
@@ -301,8 +322,8 @@ See [Roadmap](https://github.com/yourusername/clide/projects) for detailed plans
 
 Have an idea? We'd love to hear it!
 
-1. Check [existing issues](https://github.com/yourusername/clide/issues) first
-2. If it's new, open a [Feature Request](https://github.com/yourusername/clide/issues/new?template=feature_request.md)
+1. Check [existing issues](https://github.com/juanitto-maker/Clide/issues) first
+2. If it's new, open a [Feature Request](https://github.com/juanitto-maker/Clide/issues/new?template=feature_request.md)
 3. Describe the problem and your proposed solution
 4. Discuss with the community
 5. If approved, feel free to implement it!
@@ -311,10 +332,10 @@ Have an idea? We'd love to hear it!
 
 ## 📞 Contact
 
-- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/yourusername/clide/issues)
-- 💬 **Discussions:** [GitHub Discussions](https://github.com/yourusername/clide/discussions)
-- 🔒 **Security:** security@yourproject.com
-- 📧 **Maintainers:** maintainer@yourproject.com
+- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/juanitto-maker/Clide/issues)
+- 💬 **Discussions:** [GitHub Discussions](https://github.com/juanitto-maker/Clide/discussions)
+- 🔒 **Security:** See [SECURITY.md](../SECURITY.md)
+- 📧 **Maintainers:** [GitHub Discussions](https://github.com/juanitto-maker/Clide/discussions)
 
 ---
 

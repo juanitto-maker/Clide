@@ -1,22 +1,32 @@
 # Clide Skills Roadmap
 
 Suggested skills for future development. Grouped by priority and domain.
-Last updated: 2026-02-20
+Last updated: 2026-03-22
 
 ---
 
-## Shipped
+## Shipped (18 skills)
 
-| Skill | Category | Description |
-|---|---|---|
-| `termux_hardening` | Security | Termux security setup, SSH hardening, environment lockdown |
-| `vps_manager` | System | VPS status dashboard — disk, mem, load, services |
-| `vps_hardening` | Security | Full VPS hardening: UFW, fail2ban, sshd config, auditd |
-| `docker_ai_sandbox` | Security | Install Docker CE + hardened AI sandbox with Ollama, seccomp, isolated networks |
-| `backup_manager` | System | Rclone cloud backup with rotation (S3/Backblaze/Dropbox) |
-| `debugger` | System | Multi-phase Docker/service fault report — logs, processes, resources, network, AI-ready output |
-| `system_monitoring` | System | Disk, memory, CPU, process health check with configurable alert threshold |
-| `aiwb_manager` | AI | Drive AIworkbench make/tweak/debug pipeline headlessly from Clide — Generator-Verifier loop, multi-provider, context files |
+| Skill | Category | File | Description |
+|---|---|---|---|
+| `termux_hardening` | Security | `Security/termux_hardening.yaml` | Termux security setup, SSH hardening, environment lockdown |
+| `vps_hardening` | Security | `Security/vps_hardening.yaml` | Full VPS hardening: UFW, fail2ban, sshd config, auditd |
+| `vps_manager` | Security | `Security/vps_manager.yaml` | VPS status dashboard — disk, mem, load, services |
+| `docker_ai_sandbox` | Security | `Security/docker_ai_sandbox.yaml` | Install Docker CE + hardened AI sandbox with Ollama, seccomp, isolated networks |
+| `lynis_audit` | Security | `Security/lynis_audit.yaml` | Lynis security audit via SSH (requires explicit SSH params) |
+| `port_scanner` | Security | `Security/port_scanner.yaml` | Scan ports on own infrastructure |
+| `intrusion_alert` | Security | `Security/intrusion_alert.yaml` | Intrusion detection and alerting |
+| `vault_auto_backup` | Security | `Security/vault_auto_backup.yaml` | Automated vault backup scheduling |
+| `backup_skill` | System | `System/backup_skill.yaml` | Rclone cloud backup with rotation (S3/Backblaze/Dropbox) |
+| `debugger` | System | `System/debugger.yaml` | Multi-phase Docker/service fault report — logs, processes, resources, network, AI-ready output |
+| `monitoring_skill` | System | `System/monitoring_skill.yaml` | Disk, memory, CPU, process health check with configurable alert threshold |
+| `system_overview` | System | `System/system_overview.yaml` | Comprehensive system status report |
+| `maintenance_cron` | System | `System/maintenance_cron.yaml` | Scheduled system upkeep via cron |
+| `clide_install` | System | `System/clide_install.yaml` | Clide installation automation |
+| `vault_skill` | System | `System/vault_skill.yaml` | Vault backup and restore operations |
+| `aiwb_manager` | AI | `AI/aiwb_manager.yaml` | Drive AIworkbench make/tweak/debug pipeline headlessly — Generator-Verifier loop, multi-provider, context files |
+| `telegram_manager` | Telegram | `Telegram/telegram_manager.yaml` | Telegram bot management operations |
+| `example_skill` | — | `example_skill.yaml` | Template for creating new skills |
 
 ---
 
@@ -165,7 +175,7 @@ skills/System/debugger.yaml
 ## Naming conventions for new skills
 
 - `snake_case`, verb-object style preferred (`backup_manager`, `log_analyzer`)
-- Category folders: `Security/`, `System/`, `AI/`, `Network/`
+- Category folders: `Security/`, `System/`, `AI/`, `Telegram/`, `Network/`
 - One skill = one YAML file, self-contained
 - Always include `rollback_command` for any skill that mutates system state
 - `require_confirmation: true` for anything that installs, deletes, or restarts services

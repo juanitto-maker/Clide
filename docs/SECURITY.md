@@ -37,9 +37,13 @@ blocked_commands:
 - User/group changes need verification
 - Firewall modifications are reviewed before execution
 
-#### 3. Credential Encryption
+#### 3. Credential Management
 
-The `ring` crate (already in Cargo dependencies) provides AES-256-GCM encryption for sensitive values stored at rest. Key derivation uses PBKDF2-SHA256 with 100,000 iterations.
+Clide uses a layered secrets approach:
+- `~/.clide/secrets.yaml` — file-permission protected (`chmod 600`)
+- Optional GNU pass / GPG encryption layer for high-security setups
+- Age-encrypted vault backup to GitHub Gist
+- Secret scrubber auto-redacts all outbound text before reaching AI or chat
 
 #### 4. Audit Logging
 - Every command is logged with timestamp
@@ -91,19 +95,20 @@ echo "*.db" >> .gitignore
 echo "*.log" >> .gitignore
 ```
 
-### Signal Account Security
+### Messaging Account Security
 
 #### Best Practices
-1. **Use a dedicated number** - Don't use your primary Signal account
-2. **Enable registration lock** - Prevents unauthorized re-registration
-3. **Link, don't register** - Link as secondary device when possible
-4. **PIN protection** - Set a strong Signal PIN
+1. **Use a dedicated bot account** — don't use your personal Matrix or Telegram account
+2. **Matrix access token** — never store your password; only the session token is saved
+3. **Telegram bot** — create via @BotFather; the bot token is stored in `secrets.yaml`
+4. **Rotate tokens periodically** — regenerate Matrix access tokens and Telegram bot tokens
 
 #### Limiting Access
 ```yaml
-# config.yaml - Restrict to your messages only
-authorized_numbers:
-  - "+1234567890"  # Your number only
+# config.yaml - Restrict to your accounts only
+authorized_users:
+  - "@youraccount:matrix.org"   # Matrix user ID
+  - "your_telegram_username"     # Telegram username
 ```
 
 ---
@@ -118,14 +123,14 @@ authorized_numbers:
 - No shell string concatenation
 
 ✅ **Unauthorized Access**
-- Phone number whitelist
-- Admin-only mode
+- Matrix user ID / Telegram username allowlist
+- Fail-closed auth (unauthorized messages rejected with feedback)
 - No public API endpoints
 
 ✅ **Credential Theft**
-- Encrypted storage
-- Never logged in plaintext
-- Memory cleared after use
+- Secrets stored in `secrets.yaml` with `chmod 600`, optional GPG encryption via pass
+- Secret scrubber redacts values before sending to AI or chat
+- Vault backups encrypted with age (ChaCha20-Poly1305 + Argon2)
 
 ✅ **Accidental Destruction**
 - Pattern matching for dangerous commands
@@ -158,10 +163,11 @@ authorized_numbers:
 ### For Users
 
 #### 1. Strong Authentication
-```bash
-# Use strong Signal PIN
-Signal → Settings → Account → Signal PIN
-# Use 6+ digits, not birthday/phone number
+```yaml
+# config.yaml — only allow your own accounts
+authorized_users:
+  - "@youraccount:matrix.org"
+  - "your_telegram_username"
 ```
 
 #### 2. Regular Updates
@@ -226,35 +232,33 @@ cargo clippy -- -D warnings
 
 ### Storing Credentials Securely
 
-#### Encryption Implementation
+#### Secrets file (`~/.clide/secrets.yaml`)
+```bash
+# File permissions protect at rest
+chmod 600 ~/.clide/secrets.yaml
 
-Clide uses the `ring` crate (AES-256-GCM) for encrypting sensitive values at rest:
-
-```rust
-use ring::{aead, pbkdf2};
-
-// Key derived from user passphrase via PBKDF2-SHA256
-let mut key = [0u8; 32];
-pbkdf2::derive(
-    pbkdf2::PBKDF2_HMAC_SHA256,
-    NonZeroU32::new(100_000).unwrap(),
-    salt,
-    passphrase.as_bytes(),
-    &mut key,
-);
-
-// Encrypt with AES-256-GCM
-// ... (see src/config.rs)
+# Manage via CLI — values are hidden during input
+clide secret set MY_API_KEY
+clide secret list
+clide secret get MY_API_KEY
 ```
 
-#### User Passphrase
+#### Optional GPG encryption via GNU pass
 ```bash
-# Set during first run
-clide setup
+# Set up GPG + pass for encrypted-at-rest secrets
+clide secret pass-init
 
-# You'll be prompted for a master passphrase
-# This encrypts all stored credentials
-# NEVER forget this passphrase!
+# Store a secret in pass (GPG-encrypted)
+clide secret pass-set GEMINI_API_KEY
+# secrets.yaml then holds: GEMINI_API_KEY: "pass:clide/gemini_api_key"
+```
+
+#### Vault backup (age encryption)
+```bash
+# Encrypt secrets + hosts and upload to GitHub Gist
+clide vault backup
+# Restore on a new machine
+clide vault restore
 ```
 
 ### SSH Key Security
@@ -291,8 +295,9 @@ command="~/clide-allowed-commands.sh",no-port-forwarding,no-X11-forwarding,no-ag
    - Google AI Studio → Revoke Gemini key
    - Generate new key
 
-3. **Change Signal PIN**
-   - Signal → Settings → Account → Signal PIN
+3. **Rotate messaging tokens**
+   - Matrix: generate a new access token via API login
+   - Telegram: revoke and regenerate via @BotFather → `/mybots` → API Token
 
 4. **Review logs**
    ```bash
@@ -310,7 +315,7 @@ command="~/clide-allowed-commands.sh",no-port-forwarding,no-X11-forwarding,no-ag
 **DO NOT** open a public GitHub issue for security vulnerabilities!
 
 Instead:
-1. Email: **security@yourproject.com**
+1. Email: **create a [private security advisory on GitHub](https://github.com/juanitto-maker/Clide/security/advisories/new)**
 2. Subject: "Security Issue in clide"
 3. Include:
    - Description of vulnerability
@@ -332,8 +337,8 @@ Instead:
 # Paranoid mode - maximum security
 require_confirmation: true
 confirmation_timeout: 30
-authorized_numbers:
-  - "+1234567890"  # Only your number
+authorized_users:
+  - "@youraccount:matrix.org"  # Only your account
 blocked_commands:
   - "rm -rf /"
   - "mkfs"
@@ -358,7 +363,7 @@ logging:
 ```yaml
 # For local testing only - NOT for production!
 require_confirmation: false
-authorized_numbers: []  # ⚠️ Anyone can send commands
+authorized_users: []  # ⚠️ Anyone can send commands
 logging:
   level: "debug"
 ```
@@ -368,10 +373,10 @@ logging:
 ## 📋 Security Checklist
 
 ### Initial Setup
-- [ ] Generated strong Signal PIN
+- [ ] Set up dedicated Matrix bot account or Telegram bot
 - [ ] Created dedicated SSH keys
 - [ ] Set restrictive file permissions (600)
-- [ ] Configured admin_only mode
+- [ ] Configured `authorized_users` allowlist
 - [ ] Enabled audit logging
 - [ ] Backed up config.yaml securely
 
@@ -396,10 +401,11 @@ logging:
 Want to audit clide's security yourself?
 
 ### Key Areas to Review
-1. **Input validation** - `src/executor.rs`
-2. **Credential storage** - `src/config.rs`
-3. **Command execution** - `src/executor.rs`
-4. **API interactions** - `src/gemini.rs`
+1. **Input validation** — `src/executor.rs`
+2. **Credential storage** — `src/config.rs`, `src/pass_store.rs`
+3. **Command execution** — `src/executor.rs`, `src/agent.rs`
+4. **Secret redaction** — `src/scrubber.rs`
+5. **API interactions** — `src/gemini.rs`, `src/matrix.rs`, `src/telegram.rs`
 
 ### Tools for Auditing
 ```bash
@@ -417,11 +423,13 @@ grep -r "unsafe" src/
 
 ## 🌐 Network Security
 
-### Termux Network Permissions
+### Network Permissions
 ```bash
-# clide only needs these network permissions:
-# - Signal API (signal-cli)
-# - Gemini API (ai.google.dev)
+# Clide only needs these network connections:
+# - Matrix homeserver API (e.g. matrix.org)
+# - Telegram Bot API (api.telegram.org)
+# - Gemini API (generativelanguage.googleapis.com)
+# - GitHub API (api.github.com) — only for vault backup/restore
 # - SSH to your VPS (optional)
 
 # No other outbound connections are made
@@ -440,9 +448,9 @@ ufw allow 22
 
 ## 📞 Contact
 
-- 🔒 **Security Issues:** security@yourproject.com
-- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/yourusername/clide/issues)
-- 💬 **General Questions:** [Discussions](https://github.com/yourusername/clide/discussions)
+- 🔒 **Security Issues:** create a [private security advisory on GitHub](https://github.com/juanitto-maker/Clide/security/advisories/new)
+- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/juanitto-maker/Clide/issues)
+- 💬 **General Questions:** [Discussions](https://github.com/juanitto-maker/Clide/discussions)
 
 ---
 
@@ -450,7 +458,7 @@ ufw allow 22
 
 We follow responsible disclosure:
 
-1. Report sent to security@yourproject.com
+1. Report sent to create a [private security advisory on GitHub](https://github.com/juanitto-maker/Clide/security/advisories/new)
 2. We acknowledge within 48 hours
 3. We provide timeline for fix
 4. We release patch
