@@ -36,6 +36,7 @@ pub struct AttachedFile {
 #[derive(Debug, Clone)]
 pub struct TelegramMessage {
     pub chat_id: i64,
+    pub thread_id: Option<i64>,
     pub sender: String,
     /// Text body of the message, or caption for media messages.
     pub text: String,
@@ -68,6 +69,8 @@ struct Update {
 struct Message {
     chat: Chat,
     from: Option<User>,
+    /// Present when the message belongs to a forum topic (thread).
+    message_thread_id: Option<i64>,
     /// Set for plain text messages.
     text: Option<String>,
     /// Set for media messages (photo, document, …) when the user adds a caption.
@@ -273,6 +276,7 @@ impl TelegramClient {
                 if !text.is_empty() || file.is_some() {
                     messages.push(TelegramMessage {
                         chat_id: msg.chat.id,
+                        thread_id: msg.message_thread_id,
                         sender,
                         text,
                         file,
@@ -377,15 +381,25 @@ impl TelegramClient {
     }
 
     /// Send a text reply to a chat. Returns the new message's message_id.
-    pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<i64> {
+    /// When `thread_id` is `Some`, the message is posted into that forum topic.
+    pub async fn send_message(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        text: &str,
+    ) -> Result<i64> {
         let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let mut body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+        });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp: SendResponse = self
             .client
             .post(&url)
-            .json(&serde_json::json!({
-                "chat_id": chat_id,
-                "text": text,
-            }))
+            .json(&body)
             .send()
             .await?
             .json()
@@ -417,16 +431,26 @@ impl TelegramClient {
     }
 
     /// Send an HTML-formatted message. Returns the new message's message_id.
-    pub async fn send_message_html(&self, chat_id: i64, html: &str) -> Result<i64> {
+    /// When `thread_id` is `Some`, the message is posted into that forum topic.
+    pub async fn send_message_html(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        html: &str,
+    ) -> Result<i64> {
         let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let mut body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": html,
+            "parse_mode": "HTML",
+        });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp: SendResponse = self
             .client
             .post(&url)
-            .json(&serde_json::json!({
-                "chat_id": chat_id,
-                "text": html,
-                "parse_mode": "HTML",
-            }))
+            .json(&body)
             .send()
             .await?
             .json()
@@ -466,10 +490,12 @@ impl TelegramClient {
     ///
     /// `file_path` must be a valid path on the local filesystem.
     /// `caption` is optional text shown below the file.
+    /// When `thread_id` is `Some`, the document is posted into that forum topic.
     /// Returns the sent message's message_id.
     pub async fn send_document(
         &self,
         chat_id: i64,
+        thread_id: Option<i64>,
         file_path: &str,
         caption: Option<&str>,
     ) -> Result<i64> {
@@ -479,17 +505,19 @@ impl TelegramClient {
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
-        self.send_document_bytes(chat_id, bytes, &filename, caption).await
+        self.send_document_bytes(chat_id, thread_id, bytes, &filename, caption).await
     }
 
     /// Send raw bytes as a Telegram document (file download).
     ///
     /// Useful when the file is already in memory (e.g. just generated).
     /// `filename` is shown in Telegram's UI as the document name.
+    /// When `thread_id` is `Some`, the document is posted into that forum topic.
     /// Returns the sent message's message_id.
     pub async fn send_document_bytes(
         &self,
         chat_id: i64,
+        thread_id: Option<i64>,
         bytes: Vec<u8>,
         filename: &str,
         caption: Option<&str>,
@@ -503,6 +531,9 @@ impl TelegramClient {
             .text("chat_id", chat_id.to_string())
             .part("document", part);
 
+        if let Some(tid) = thread_id {
+            form = form.text("message_thread_id", tid.to_string());
+        }
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
         }
