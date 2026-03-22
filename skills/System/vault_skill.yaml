@@ -1,8 +1,8 @@
 # ============================================
 # Vault Skill — encrypted secrets backup & restore
 # ============================================
-# Backs up ~/.clide/secrets.yaml and ~/.clide/hosts.yaml to a private
-# GitHub Gist, encrypted with `age` (passphrase-based).
+# Backs up ~/.clide/secrets.yaml, ~/.clide/hosts.yaml, and SSH private
+# keys (id_ed25519_*) to a private GitHub Gist, encrypted with `age`.
 #
 # DEPENDENCIES (installed automatically by clide_install.yaml):
 #   pkg install age
@@ -18,7 +18,7 @@
 #
 # HOW IT WORKS:
 #   backup:
-#     1. tar secrets.yaml + hosts.yaml → vault.tar.gz
+#     1. tar secrets.yaml + hosts.yaml + SSH keys → vault.tar.gz
 #     2. age -p vault.tar.gz → vault.tar.gz.age  (prompts for passphrase)
 #     3. Push encrypted blob to private GitHub Gist (base64-encoded so
 #        Gist accepts binary content)
@@ -28,7 +28,7 @@
 #     1. Pull encrypted blob from GitHub Gist (ID from vault_gist_id or arg)
 #     2. Decode base64 → vault.tar.gz.age
 #     3. age -d → vault.tar.gz  (prompts for passphrase)
-#     4. Extract → ~/.clide/secrets.yaml + hosts.yaml
+#     4. Extract → ~/.clide/secrets.yaml + hosts.yaml + SSH keys
 #     5. Fix permissions (chmod 600)
 #
 # USAGE (via Telegram):
@@ -97,6 +97,8 @@ commands:
       echo ""
       echo "Secrets file : $([ -f "$CLIDE_DIR/secrets.yaml" ] && echo "EXISTS" || echo "MISSING")"
       echo "Hosts file   : $([ -f "$CLIDE_DIR/hosts.yaml" ] && echo "EXISTS" || echo "MISSING")"
+      SSH_KEYS=$(find "$HOME/.ssh" -name "id_ed25519_*" ! -name "*.pub" 2>/dev/null | wc -l)
+      echo "SSH keys     : $SSH_KEYS private key(s) in ~/.ssh/"
       echo "age installed: $(command -v age >/dev/null 2>&1 && echo "YES" || echo "NO")"
       exit 0
     fi
@@ -115,11 +117,55 @@ commands:
         exit 1
       fi
 
+      # Copy SSH keys referenced in hosts.yaml into a temp dir for archiving.
+      # This ensures private keys survive a Termux purge/reinstall.
+      SSH_BACKUP_DIR="$VAULT_TMP/ssh_keys"
+      SSH_KEY_COUNT=0
+      rm -rf "$SSH_BACKUP_DIR"
+      mkdir -p "$SSH_BACKUP_DIR"
+      chmod 700 "$SSH_BACKUP_DIR"
+
+      if [ -f "$CLIDE_DIR/hosts.yaml" ]; then
+        # Extract key_path values from hosts.yaml
+        grep 'key_path:' "$CLIDE_DIR/hosts.yaml" 2>/dev/null | \
+          sed 's/.*key_path: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | \
+          while IFS= read -r kp; do
+            kp=$(eval echo "$kp")  # expand ~ and $HOME
+            if [ -f "$kp" ]; then
+              cp "$kp" "$SSH_BACKUP_DIR/"
+              [ -f "${kp}.pub" ] && cp "${kp}.pub" "$SSH_BACKUP_DIR/"
+            fi
+          done
+        SSH_KEY_COUNT=$(find "$SSH_BACKUP_DIR" -type f 2>/dev/null | wc -l)
+      fi
+
+      # Also grab any Clide-generated keys (id_ed25519_<nickname>)
+      for k in "$HOME"/.ssh/id_ed25519_*; do
+        [ -f "$k" ] || continue
+        BASENAME=$(basename "$k")
+        [ -f "$SSH_BACKUP_DIR/$BASENAME" ] && continue  # already copied
+        cp "$k" "$SSH_BACKUP_DIR/"
+        [ -f "${k}.pub" ] && cp "${k}.pub" "$SSH_BACKUP_DIR/"
+      done
+      SSH_KEY_COUNT=$(find "$SSH_BACKUP_DIR" -type f 2>/dev/null | wc -l)
+
       echo "Files: $FILES_TO_BACKUP"
+      if [ "$SSH_KEY_COUNT" -gt 0 ]; then
+        echo "SSH keys: $SSH_KEY_COUNT file(s) included"
+        # Stage SSH keys into clide dir temporarily for tar
+        cp -r "$SSH_BACKUP_DIR" "$CLIDE_DIR/ssh_keys_vault"
+        FILES_TO_BACKUP="$FILES_TO_BACKUP ssh_keys_vault"
+      else
+        echo "SSH keys: none found (skipped)"
+      fi
 
       # Create archive
       ARCHIVE="$VAULT_TMP/vault.tar.gz"
       tar -czf "$ARCHIVE" -C "$CLIDE_DIR" $FILES_TO_BACKUP
+
+      # Clean up staged SSH keys
+      rm -rf "$CLIDE_DIR/ssh_keys_vault" "$SSH_BACKUP_DIR"
+
       echo "Archive created: $(du -h "$ARCHIVE" | cut -f1)"
 
       # Encrypt with age (interactive passphrase prompt)
@@ -238,10 +284,33 @@ commands:
       [ -f "$CLIDE_DIR/secrets.yaml" ] && chmod 600 "$CLIDE_DIR/secrets.yaml"
       [ -f "$CLIDE_DIR/hosts.yaml"   ] && chmod 600 "$CLIDE_DIR/hosts.yaml"
 
+      # Restore SSH keys to ~/.ssh/ if they were included in the backup
+      SSH_RESTORED=0
+      if [ -d "$CLIDE_DIR/ssh_keys_vault" ]; then
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+        for kf in "$CLIDE_DIR/ssh_keys_vault"/*; do
+          [ -f "$kf" ] || continue
+          BASENAME=$(basename "$kf")
+          cp "$kf" "$HOME/.ssh/$BASENAME"
+          # Private keys = 600, public keys = 644
+          if echo "$BASENAME" | grep -q '\.pub$'; then
+            chmod 644 "$HOME/.ssh/$BASENAME"
+          else
+            chmod 600 "$HOME/.ssh/$BASENAME"
+          fi
+          SSH_RESTORED=$((SSH_RESTORED + 1))
+        done
+        rm -rf "$CLIDE_DIR/ssh_keys_vault"
+      fi
+
       echo ""
       echo "✅ Vault restored."
       echo "   secrets.yaml : $([ -f "$CLIDE_DIR/secrets.yaml" ] && echo "OK" || echo "NOT FOUND")"
       echo "   hosts.yaml   : $([ -f "$CLIDE_DIR/hosts.yaml"   ] && echo "OK" || echo "NOT FOUND")"
+      if [ "$SSH_RESTORED" -gt 0 ]; then
+        echo "   SSH keys     : $SSH_RESTORED file(s) restored to ~/.ssh/"
+      fi
       echo ""
       echo "Restart the bot: pkill clide && clide --bot &"
       exit 0

@@ -6,6 +6,11 @@
 
 set -e
 
+# ─── Security: prevent secrets from leaking into shell history ───────────────
+unset HISTFILE 2>/dev/null || true
+export HISTCONTROL=ignorespace
+export HISTSIZE=0
+
 REPO="juanitto-maker/Clide"
 INSTALL_DIR="$HOME/Clide_Source"
 RESTORE_MODE=false
@@ -43,6 +48,48 @@ ask() {
 }
 
 step() { echo ""; echo "── $1 ──────────────────────────────────────────"; }
+
+# Replace a YAML key's value in a file without exposing the value in `ps`.
+# Usage: safe_yaml_set <file> <key> <value>
+# Reads file → replaces line → writes back. The secret never appears in a
+# command-line argument (unlike sed -i which is visible via ps aux).
+safe_yaml_set() {
+    local file="$1" key="$2" value="$3"
+    local tmpf
+    tmpf=$(mktemp)
+    if grep -q "^${key}:" "$file" 2>/dev/null; then
+        while IFS= read -r line; do
+            if echo "$line" | grep -q "^${key}:"; then
+                printf '%s: "%s"\n' "$key" "$value"
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "$file" > "$tmpf"
+        mv "$tmpf" "$file"
+    else
+        printf '%s: "%s"\n' "$key" "$value" >> "$file"
+    fi
+}
+
+# Replace a KEY=VALUE line in an env file without exposing the value in `ps`.
+# Usage: safe_env_set <file> <key> <value>
+safe_env_set() {
+    local file="$1" key="$2" value="$3"
+    local tmpf
+    tmpf=$(mktemp)
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        while IFS= read -r line; do
+            if echo "$line" | grep -q "^${key}="; then
+                printf '%s=%s\n' "$key" "$value"
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "$file" > "$tmpf"
+        mv "$tmpf" "$file"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$file"
+    fi
+}
 
 # Show a simple spinner while a background PID is running
 spinner() {
@@ -115,6 +162,25 @@ if [ "$RESTORE_MODE" = true ]; then
     [ -f "$HOME/.clide/secrets.yaml" ] && chmod 600 "$HOME/.clide/secrets.yaml"
     [ -f "$HOME/.clide/hosts.yaml"   ] && chmod 600 "$HOME/.clide/hosts.yaml"
 
+    # Restore SSH keys if they were included in the vault backup
+    SSH_RESTORED=0
+    if [ -d "$HOME/.clide/ssh_keys_vault" ]; then
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+        for kf in "$HOME/.clide/ssh_keys_vault"/*; do
+            [ -f "$kf" ] || continue
+            BASENAME=$(basename "$kf")
+            cp "$kf" "$HOME/.ssh/$BASENAME"
+            if echo "$BASENAME" | grep -q '\.pub$'; then
+                chmod 644 "$HOME/.ssh/$BASENAME"
+            else
+                chmod 600 "$HOME/.ssh/$BASENAME"
+            fi
+            SSH_RESTORED=$((SSH_RESTORED + 1))
+        done
+        rm -rf "$HOME/.clide/ssh_keys_vault"
+    fi
+
     # Save the Gist ID for future vault operations
     echo "$GIST_ID" > "$HOME/.clide/vault_gist_id"
     chmod 600 "$HOME/.clide/vault_gist_id"
@@ -123,6 +189,9 @@ if [ "$RESTORE_MODE" = true ]; then
     echo "✅ Vault restored!"
     echo "   secrets.yaml : $([ -f "$HOME/.clide/secrets.yaml" ] && echo "OK" || echo "NOT FOUND")"
     echo "   hosts.yaml   : $([ -f "$HOME/.clide/hosts.yaml"   ] && echo "OK" || echo "NOT FOUND")"
+    if [ "$SSH_RESTORED" -gt 0 ]; then
+        echo "   SSH keys     : $SSH_RESTORED file(s) restored to ~/.ssh/"
+    fi
     echo ""
     echo "Now run the installer normally to install the binary:"
     echo "  bash install.sh   (without --restore)"
@@ -290,29 +359,17 @@ echo "" >/dev/tty
 ask "Enter API key (or press Enter to skip): " GEMINI_KEY secret
 
 if [ -n "$GEMINI_KEY" ]; then
-    # Save to env file for REPL mode
-    if grep -q "GEMINI_API_KEY" ~/.config/clide/config.env 2>/dev/null; then
-        sed -i "s|GEMINI_API_KEY=.*|GEMINI_API_KEY=$GEMINI_KEY|" ~/.config/clide/config.env
-    else
-        echo "GEMINI_API_KEY=$GEMINI_KEY" >>~/.config/clide/config.env
-    fi
+    # Save to env file for REPL mode (safe — no secret in ps)
+    safe_env_set ~/.config/clide/config.env "GEMINI_API_KEY" "$GEMINI_KEY"
     chmod 600 ~/.config/clide/config.env
     export GEMINI_API_KEY="$GEMINI_KEY"
 
     # Patch yaml config
-    sed -i "s|gemini_api_key:.*|gemini_api_key: \"$GEMINI_KEY\"|" ~/.clide/config.yaml
+    safe_yaml_set ~/.clide/config.yaml "gemini_api_key" "$GEMINI_KEY"
 
     # Save to secrets.yaml (primary secrets store, highest priority after env vars)
     mkdir -p ~/.clide
-    if [ -f ~/.clide/secrets.yaml ]; then
-        if grep -q "^GEMINI_API_KEY:" ~/.clide/secrets.yaml 2>/dev/null; then
-            sed -i "s|^GEMINI_API_KEY:.*|GEMINI_API_KEY: \"$GEMINI_KEY\"|" ~/.clide/secrets.yaml
-        else
-            echo "GEMINI_API_KEY: \"$GEMINI_KEY\"" >>~/.clide/secrets.yaml
-        fi
-    else
-        echo "GEMINI_API_KEY: \"$GEMINI_KEY\"" >~/.clide/secrets.yaml
-    fi
+    safe_yaml_set ~/.clide/secrets.yaml "GEMINI_API_KEY" "$GEMINI_KEY"
     chmod 600 ~/.clide/secrets.yaml
 
     echo "✅ Gemini API key saved" >/dev/tty
@@ -348,11 +405,7 @@ case "$PLATFORM_CHOICE" in
 esac
 
 # Write platform to config
-if grep -q "^platform:" ~/.clide/config.yaml 2>/dev/null; then
-    sed -i "s|^platform:.*|platform: \"$CLIDE_PLATFORM\"|" ~/.clide/config.yaml
-else
-    echo "platform: \"$CLIDE_PLATFORM\"" >>~/.clide/config.yaml
-fi
+safe_yaml_set ~/.clide/config.yaml "platform" "$CLIDE_PLATFORM"
 
 # ── 4c. Telegram setup ────────────────────────────────────────────────────────
 
@@ -369,28 +422,10 @@ if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
     ask "Telegram bot token (or press Enter to skip): " TG_TOKEN secret
 
     if [ -n "$TG_TOKEN" ]; then
-        if grep -q "telegram_bot_token:" ~/.clide/config.yaml 2>/dev/null; then
-            sed -i "s|telegram_bot_token:.*|telegram_bot_token: \"$TG_TOKEN\"|" ~/.clide/config.yaml
-        else
-            echo "telegram_bot_token: \"$TG_TOKEN\"" >>~/.clide/config.yaml
-        fi
-        if grep -q "TELEGRAM_BOT_TOKEN" ~/.config/clide/config.env 2>/dev/null; then
-            sed -i "s|TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$TG_TOKEN|" ~/.config/clide/config.env
-        else
-            echo "TELEGRAM_BOT_TOKEN=$TG_TOKEN" >>~/.config/clide/config.env
-        fi
+        safe_yaml_set ~/.clide/config.yaml "telegram_bot_token" "$TG_TOKEN"
+        safe_env_set ~/.config/clide/config.env "TELEGRAM_BOT_TOKEN" "$TG_TOKEN"
         chmod 600 ~/.config/clide/config.env
-
-        # Save to secrets.yaml (primary secrets store)
-        if [ -f ~/.clide/secrets.yaml ]; then
-            if grep -q "^TELEGRAM_BOT_TOKEN:" ~/.clide/secrets.yaml 2>/dev/null; then
-                sed -i "s|^TELEGRAM_BOT_TOKEN:.*|TELEGRAM_BOT_TOKEN: \"$TG_TOKEN\"|" ~/.clide/secrets.yaml
-            else
-                echo "TELEGRAM_BOT_TOKEN: \"$TG_TOKEN\"" >>~/.clide/secrets.yaml
-            fi
-        else
-            echo "TELEGRAM_BOT_TOKEN: \"$TG_TOKEN\"" >~/.clide/secrets.yaml
-        fi
+        safe_yaml_set ~/.clide/secrets.yaml "TELEGRAM_BOT_TOKEN" "$TG_TOKEN"
         chmod 600 ~/.clide/secrets.yaml
 
         echo "✅ Telegram bot token saved" >/dev/tty
@@ -516,7 +551,7 @@ fi
 
 if [ -n "$MATRIX_HS" ]; then
     MATRIX_HS="${MATRIX_HS%/}"   # strip trailing slash
-    sed -i "s|matrix_homeserver:.*|matrix_homeserver: \"$MATRIX_HS\"|" ~/.clide/config.yaml
+    safe_yaml_set ~/.clide/config.yaml "matrix_homeserver" "$MATRIX_HS"
 
     echo "" >/dev/tty
     echo "   Homeserver: $MATRIX_HS" >/dev/tty
@@ -526,7 +561,7 @@ if [ -n "$MATRIX_HS" ]; then
     ask "Matrix username (e.g. @yourbot:matrix.org, or press Enter to skip): " MATRIX_USER
 
     if [ -n "$MATRIX_USER" ]; then
-        sed -i "s|matrix_user:.*|matrix_user: \"$MATRIX_USER\"|" ~/.clide/config.yaml
+        safe_yaml_set ~/.clide/config.yaml "matrix_user" "$MATRIX_USER"
         echo "✅ Matrix user saved" >/dev/tty
 
         # ── Password → login to get access token ─────────────────────────────
@@ -557,13 +592,9 @@ if [ -n "$MATRIX_HS" ]; then
                     | sed 's/"errcode":"//;s/"//' || true)
 
                 if [ -n "$ACCESS_TOKEN" ]; then
-                    if grep -q "MATRIX_ACCESS_TOKEN" ~/.config/clide/config.env 2>/dev/null; then
-                        sed -i "s|MATRIX_ACCESS_TOKEN=.*|MATRIX_ACCESS_TOKEN=$ACCESS_TOKEN|" ~/.config/clide/config.env
-                    else
-                        echo "MATRIX_ACCESS_TOKEN=$ACCESS_TOKEN" >>~/.config/clide/config.env
-                    fi
+                    safe_env_set ~/.config/clide/config.env "MATRIX_ACCESS_TOKEN" "$ACCESS_TOKEN"
                     chmod 600 ~/.config/clide/config.env
-                    sed -i "s|matrix_access_token:.*|matrix_access_token: \"$ACCESS_TOKEN\"|" ~/.clide/config.yaml
+                    safe_yaml_set ~/.clide/config.yaml "matrix_access_token" "$ACCESS_TOKEN"
                     echo "✅ Access token obtained and saved" >/dev/tty
                 elif [ -n "$ERRCODE" ]; then
                     ERRMSG=$(echo "$LOGIN_RESP" | grep -o '"error":"[^"]*"' \
@@ -573,14 +604,14 @@ if [ -n "$MATRIX_HS" ]; then
                     echo "" >/dev/tty
                     ask "Access token (or press Enter to skip): " MANUAL_TOKEN secret
                     if [ -n "$MANUAL_TOKEN" ]; then
-                        sed -i "s|matrix_access_token:.*|matrix_access_token: \"$MANUAL_TOKEN\"|" ~/.clide/config.yaml
+                        safe_yaml_set ~/.clide/config.yaml "matrix_access_token" "$MANUAL_TOKEN"
                         echo "✅ Access token saved" >/dev/tty
                     fi
                 else
                     echo "⚠️  Could not parse login response. Enter token manually." >/dev/tty
                     ask "Access token (or press Enter to skip): " MANUAL_TOKEN secret
                     if [ -n "$MANUAL_TOKEN" ]; then
-                        sed -i "s|matrix_access_token:.*|matrix_access_token: \"$MANUAL_TOKEN\"|" ~/.clide/config.yaml
+                        safe_yaml_set ~/.clide/config.yaml "matrix_access_token" "$MANUAL_TOKEN"
                         echo "✅ Access token saved" >/dev/tty
                     fi
                 fi
@@ -595,7 +626,7 @@ if [ -n "$MATRIX_HS" ]; then
             echo "" >/dev/tty
             ask "Access token (or press Enter to skip): " MANUAL_TOKEN secret
             if [ -n "$MANUAL_TOKEN" ]; then
-                sed -i "s|matrix_access_token:.*|matrix_access_token: \"$MANUAL_TOKEN\"|" ~/.clide/config.yaml
+                safe_yaml_set ~/.clide/config.yaml "matrix_access_token" "$MANUAL_TOKEN"
                 echo "✅ Access token saved" >/dev/tty
             else
                 echo "⏭  Skipped. Set later via MATRIX_ACCESS_TOKEN env var." >/dev/tty
@@ -614,7 +645,7 @@ if [ -n "$MATRIX_HS" ]; then
     ask "Room ID (or press Enter to skip): " MATRIX_ROOM
 
     if [ -n "$MATRIX_ROOM" ]; then
-        sed -i "s|matrix_room_id:.*|matrix_room_id: \"$MATRIX_ROOM\"|" ~/.clide/config.yaml
+        safe_yaml_set ~/.clide/config.yaml "matrix_room_id" "$MATRIX_ROOM"
         echo "✅ Room ID saved" >/dev/tty
     else
         echo "⏭  Skipped. Edit matrix_room_id in ~/.clide/config.yaml later." >/dev/tty
