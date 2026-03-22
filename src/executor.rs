@@ -86,6 +86,7 @@ impl Executor {
             .env("TEMPDIR", &safe_tmp)
             .env("TMP", &safe_tmp)
             .env("TEMP", &safe_tmp)
+            .envs(self.config.secrets.iter())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
