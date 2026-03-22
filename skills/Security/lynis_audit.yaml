@@ -19,7 +19,9 @@ description: >
   Install Lynis (if not present) and run a full security audit. Reports
   the Hardening Index score, top warnings, and actionable suggestions.
   mode=local installs via git clone and audits this machine directly;
-  mode=ssh audits a remote VPS via SSH.
+  mode=ssh audits a remote VPS via SSH and requires vps_host, vps_user,
+  ssh_key params — use registered host variables like ${HOST_OVHAS1_IP},
+  ${HOST_OVHAS1_USER}, ${HOST_OVHAS1_KEY_PATH}.
 version: "1.5.0"
 author: digitalAIventures LLC
 tags:
@@ -45,16 +47,14 @@ parameters:
     default: "none"
 
   vps_user:
-    description: SSH username for the remote host. Only used when mode=ssh.
+    description: SSH username for the remote host. Required when mode=ssh. Use ${HOST_<NICK>_USER}.
     type: string
-    required: false
-    default: "root"
+    required: true
 
   ssh_key:
-    description: Path to SSH private key. Only used when mode=ssh.
+    description: Path to SSH private key. Required when mode=ssh. Use ${HOST_<NICK>_KEY_PATH}.
     type: string
-    required: false
-    default: "~/.ssh/id_ed25519"
+    required: true
 
 commands:
   # ── 0. Confirm mode ───────────────────────────────────────────────────────

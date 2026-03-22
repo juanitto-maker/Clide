@@ -111,7 +111,10 @@ nicknames and ask the user to pick one — never ask for raw IPs or usernames.\n
 - Host details are also available as environment variables: ${HOST_<NICK>_IP}, \
 ${HOST_<NICK>_USER}, ${HOST_<NICK>_KEY_PATH}, ${HOST_<NICK>_PORT}.\n\n\
 IMPORTANT: Always use run_command or run_skill to get information or take action. \
-Never respond with 'I would do X' — just do it.";
+Never respond with 'I would do X' — just do it.\n\
+When running skills that require SSH connection params, always look up the \
+registered hosts from ~/.clide/hosts.yaml first, then pass the correct \
+${HOST_<NICK>_*} variables as skill parameters.";
 
 pub struct Agent {
     client: Client,
