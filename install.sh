@@ -38,6 +38,12 @@ elif [[ "$(uname -s)" == "Linux" ]]; then
     BIN_DIR="/usr/local/bin"
     PKG_MANAGER="apt-get"
     echo "✅ Linux detected ($(uname -m))"
+
+    # ─── Bootstrap: ensure essential tools exist on a fresh VPS ───────────
+    echo "   Installing bootstrap dependencies..."
+    sudo apt-get update -qq 2>/dev/null
+    sudo apt-get install -y -qq curl wget git build-essential 2>/dev/null
+    echo "✅ Bootstrap complete"
 else
     echo "❌ Unsupported platform: $(uname -s)"
     echo "   Supported: Termux (Android), Linux (x86_64, aarch64)"
