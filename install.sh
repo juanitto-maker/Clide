@@ -301,9 +301,23 @@ if [ -n "$GEMINI_KEY" ]; then
 
     # Patch yaml config
     sed -i "s|gemini_api_key:.*|gemini_api_key: \"$GEMINI_KEY\"|" ~/.clide/config.yaml
+
+    # Save to secrets.yaml (primary secrets store, highest priority after env vars)
+    mkdir -p ~/.clide
+    if [ -f ~/.clide/secrets.yaml ]; then
+        if grep -q "^GEMINI_API_KEY:" ~/.clide/secrets.yaml 2>/dev/null; then
+            sed -i "s|^GEMINI_API_KEY:.*|GEMINI_API_KEY: \"$GEMINI_KEY\"|" ~/.clide/secrets.yaml
+        else
+            echo "GEMINI_API_KEY: \"$GEMINI_KEY\"" >>~/.clide/secrets.yaml
+        fi
+    else
+        echo "GEMINI_API_KEY: \"$GEMINI_KEY\"" >~/.clide/secrets.yaml
+    fi
+    chmod 600 ~/.clide/secrets.yaml
+
     echo "✅ Gemini API key saved" >/dev/tty
 else
-    echo "⏭  Skipped. Set later via GEMINI_API_KEY env var or ~/.clide/config.yaml" >/dev/tty
+    echo "⏭  Skipped. Set later via GEMINI_API_KEY env var or ~/.clide/secrets.yaml" >/dev/tty
 fi
 
 # ── 4b. Platform selection ────────────────────────────────────────────────────
@@ -366,9 +380,22 @@ if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
             echo "TELEGRAM_BOT_TOKEN=$TG_TOKEN" >>~/.config/clide/config.env
         fi
         chmod 600 ~/.config/clide/config.env
+
+        # Save to secrets.yaml (primary secrets store)
+        if [ -f ~/.clide/secrets.yaml ]; then
+            if grep -q "^TELEGRAM_BOT_TOKEN:" ~/.clide/secrets.yaml 2>/dev/null; then
+                sed -i "s|^TELEGRAM_BOT_TOKEN:.*|TELEGRAM_BOT_TOKEN: \"$TG_TOKEN\"|" ~/.clide/secrets.yaml
+            else
+                echo "TELEGRAM_BOT_TOKEN: \"$TG_TOKEN\"" >>~/.clide/secrets.yaml
+            fi
+        else
+            echo "TELEGRAM_BOT_TOKEN: \"$TG_TOKEN\"" >~/.clide/secrets.yaml
+        fi
+        chmod 600 ~/.clide/secrets.yaml
+
         echo "✅ Telegram bot token saved" >/dev/tty
     else
-        echo "⏭  Skipped. Set later via TELEGRAM_BOT_TOKEN env var or ~/.clide/config.yaml" >/dev/tty
+        echo "⏭  Skipped. Set later via TELEGRAM_BOT_TOKEN env var or ~/.clide/secrets.yaml" >/dev/tty
     fi
 fi
 
@@ -397,7 +424,7 @@ if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
     done
 
     if [ ${#TG_AUTHORIZED_USERS[@]} -gt 0 ]; then
-        # Write a temp file with the new authorized_users block.
+        # Build the new authorized_users YAML block.
         TEMP_BLOCK=$(mktemp)
         echo "authorized_users:" > "$TEMP_BLOCK"
         for u in "${TG_AUTHORIZED_USERS[@]}"; do
@@ -406,12 +433,14 @@ if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
 
         # Replace the existing authorized_users section in config.yaml.
         # Handles both single-line "authorized_users: []" and multi-line formats.
+        FOUND_AUTH=false
         TEMP_CFG=$(mktemp)
         SKIP_LIST=false
         while IFS= read -r line; do
             if [[ "$line" =~ ^authorized_users: ]]; then
                 cat "$TEMP_BLOCK"
                 SKIP_LIST=true
+                FOUND_AUTH=true
             elif $SKIP_LIST && [[ "$line" =~ ^[[:space:]]+-[[:space:]] ]]; then
                 : # skip old list items
             else
@@ -419,10 +448,44 @@ if [ "$CLIDE_PLATFORM" = "telegram" ] || [ "$CLIDE_PLATFORM" = "both" ]; then
                 echo "$line"
             fi
         done < ~/.clide/config.yaml > "$TEMP_CFG"
+
+        # If authorized_users was not found in config, append the block
+        if [ "$FOUND_AUTH" = false ]; then
+            echo "" >> "$TEMP_CFG"
+            cat "$TEMP_BLOCK" >> "$TEMP_CFG"
+        fi
+
         mv "$TEMP_CFG" ~/.clide/config.yaml
         rm -f "$TEMP_BLOCK"
         chmod 600 ~/.clide/config.yaml
-        echo "✅ Authorized users saved" >/dev/tty
+
+        # Verify the usernames were actually written
+        VERIFY_OK=true
+        for u in "${TG_AUTHORIZED_USERS[@]}"; do
+            if ! grep -q "\"$u\"" ~/.clide/config.yaml 2>/dev/null; then
+                VERIFY_OK=false
+                break
+            fi
+        done
+
+        if [ "$VERIFY_OK" = true ]; then
+            echo "✅ Authorized users saved" >/dev/tty
+        else
+            # Fallback: directly write the authorized_users block at end of file
+            echo "" >/dev/tty
+            echo "⚠️  Re-writing authorized users (fallback)..." >/dev/tty
+            # Remove any partial authorized_users lines
+            sed -i '/^authorized_users:/d' ~/.clide/config.yaml
+            sed -i '/^  - ".*"$/d' ~/.clide/config.yaml
+            # Append fresh block
+            echo "" >>~/.clide/config.yaml
+            echo "authorized_users:" >>~/.clide/config.yaml
+            for u in "${TG_AUTHORIZED_USERS[@]}"; do
+                echo "  - \"$u\"" >>~/.clide/config.yaml
+            done
+            chmod 600 ~/.clide/config.yaml
+            echo "✅ Authorized users saved (fallback)" >/dev/tty
+        fi
     else
         echo "⏭  Skipped. Add usernames to authorized_users in ~/.clide/config.yaml later." >/dev/tty
     fi
@@ -561,6 +624,95 @@ else
 fi
 
 fi  # end Matrix block
+
+# ── 4e. VPS / Server credentials (optional) ─────────────────────────────
+
+echo "" >/dev/tty
+echo "🖥️  VPS / Server Setup (optional)" >/dev/tty
+echo "───────────────────────────────────────" >/dev/tty
+echo "   Add SSH hosts so Clide can manage your servers." >/dev/tty
+echo "   You can also do this later with: clide host add" >/dev/tty
+echo "   (Press Enter to skip.)" >/dev/tty
+echo "" >/dev/tty
+ask "Add a server now? [y/N]: " ADD_HOST
+
+if [[ "$ADD_HOST" =~ ^[Yy] ]]; then
+    HOST_COUNT=0
+    while true; do
+        echo "" >/dev/tty
+        ask "  Server nickname (e.g. prod, pi, vps): " HOST_NICK
+        [ -z "$HOST_NICK" ] && break
+
+        ask "  IP address or hostname: " HOST_IP
+        if [ -z "$HOST_IP" ]; then
+            echo "  ⚠️  IP is required, skipping this host." >/dev/tty
+            continue
+        fi
+
+        ask "  SSH user [root]: " HOST_USER
+        HOST_USER="${HOST_USER:-root}"
+
+        ask "  SSH key path [$HOME/.ssh/id_ed25519]: " HOST_KEY
+        HOST_KEY="${HOST_KEY:-$HOME/.ssh/id_ed25519}"
+
+        ask "  SSH port [22]: " HOST_PORT
+        HOST_PORT="${HOST_PORT:-22}"
+
+        ask "  Notes (optional): " HOST_NOTES
+
+        # Write to hosts.yaml
+        mkdir -p ~/.clide
+        if [ ! -f ~/.clide/hosts.yaml ]; then
+            : >~/.clide/hosts.yaml
+        fi
+
+        # Append host entry
+        cat >>~/.clide/hosts.yaml <<HOSTEOF
+
+$HOST_NICK:
+  ip: "$HOST_IP"
+  user: "$HOST_USER"
+  key_path: "$HOST_KEY"
+  port: $HOST_PORT
+  notes: "$HOST_NOTES"
+HOSTEOF
+        chmod 600 ~/.clide/hosts.yaml
+
+        HOST_COUNT=$((HOST_COUNT + 1))
+        echo "  ✅ Host '$HOST_NICK' saved" >/dev/tty
+        echo "" >/dev/tty
+        ask "  Add another server? [y/N]: " ADD_MORE
+        [[ ! "$ADD_MORE" =~ ^[Yy] ]] && break
+    done
+
+    if [ "$HOST_COUNT" -gt 0 ]; then
+        echo "✅ $HOST_COUNT server(s) saved to ~/.clide/hosts.yaml" >/dev/tty
+    fi
+
+    # Ask if they want to store a VPS password in secrets
+    echo "" >/dev/tty
+    ask "  Store a VPS root/sudo password? [y/N]: " STORE_VPS_PASS
+    if [[ "$STORE_VPS_PASS" =~ ^[Yy] ]]; then
+        ask "  Secret name (e.g. VPS_ROOT_PASSWORD): " VPS_SECRET_NAME
+        VPS_SECRET_NAME="${VPS_SECRET_NAME:-VPS_ROOT_PASSWORD}"
+        ask "  Password (hidden): " VPS_SECRET_VAL secret
+        if [ -n "$VPS_SECRET_VAL" ]; then
+            if [ -f ~/.clide/secrets.yaml ]; then
+                if grep -q "^${VPS_SECRET_NAME}:" ~/.clide/secrets.yaml 2>/dev/null; then
+                    sed -i "s|^${VPS_SECRET_NAME}:.*|${VPS_SECRET_NAME}: \"$VPS_SECRET_VAL\"|" ~/.clide/secrets.yaml
+                else
+                    echo "${VPS_SECRET_NAME}: \"$VPS_SECRET_VAL\"" >>~/.clide/secrets.yaml
+                fi
+            else
+                echo "${VPS_SECRET_NAME}: \"$VPS_SECRET_VAL\"" >~/.clide/secrets.yaml
+            fi
+            chmod 600 ~/.clide/secrets.yaml
+            echo "  ✅ ${VPS_SECRET_NAME} saved to secrets.yaml" >/dev/tty
+        fi
+    fi
+else
+    echo "⏭  Skipped. Add servers later with: clide host add" >/dev/tty
+fi
 
 # ─── 6. Summary ───────────────────────────────────────────────────────────────
 
