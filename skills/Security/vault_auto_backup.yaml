@@ -1,0 +1,171 @@
+# ============================================
+# Vault Auto-Backup Skill
+# ============================================
+# Runs the existing vault backup logic (clide vault backup) non-interactively.
+# Uses GITHUB_TOKEN and VAULT_PASSPHRASE from secrets.yaml for authentication
+# and age encryption. Supports installing/removing a weekly cron schedule.
+#
+# Prerequisites:
+#   - clide installed and in PATH
+#   - GITHUB_TOKEN set in ~/.clide/secrets.yaml
+#   - VAULT_PASSPHRASE set in ~/.clide/secrets.yaml
+#   - age encryption tool installed
+#   - gh CLI installed (for Gist operations)
+#
+# Usage:
+#   run_skill vault_auto_backup action=run
+#   run_skill vault_auto_backup action=install-cron
+#   run_skill vault_auto_backup action=remove-cron
+
+name: vault_auto_backup
+description: >
+  Run clide vault backup non-interactively using GITHUB_TOKEN and
+  VAULT_PASSPHRASE from secrets.yaml. Supports manual runs, weekly cron
+  installation (Sunday 2am), and cron removal. Uses age encryption and
+  confirms backup with Gist ID output.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - security
+  - vault
+  - backup
+  - cron
+  - encryption
+  - age
+
+parameters:
+  action:
+    description: >
+      'run' to execute vault backup now (default).
+      'install-cron' to install weekly cron job (Sunday 2am).
+      'remove-cron' to remove the cron job.
+    type: string
+    required: false
+    default: "run"
+
+commands:
+  # ── 0. Confirm action ──────────────────────────────────────────────────────
+  - 'echo "[vault_auto_backup] action={{action}}"'
+
+  # ── 1. Execute based on action ─────────────────────────────────────────────
+  - |
+    case "{{action}}" in
+
+      run)
+        echo "[vault_auto_backup] Starting non-interactive vault backup..."
+        echo ""
+
+        # Validate prerequisites
+        if ! command -v clide >/dev/null 2>&1; then
+          echo "[ERROR] clide is not installed or not in PATH"
+          exit 1
+        fi
+
+        if ! command -v age >/dev/null 2>&1; then
+          echo "[ERROR] age encryption tool is not installed"
+          echo "  Install: apt install age  OR  pkg install age"
+          exit 1
+        fi
+
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "[ERROR] gh CLI is not installed"
+          exit 1
+        fi
+
+        # Load secrets — GITHUB_TOKEN and VAULT_PASSPHRASE are injected
+        # by the Clide executor from ~/.clide/secrets.yaml
+        if [ -z "${GITHUB_TOKEN}" ]; then
+          echo "[ERROR] GITHUB_TOKEN not set — add it to ~/.clide/secrets.yaml"
+          exit 1
+        fi
+
+        if [ -z "${VAULT_PASSPHRASE}" ]; then
+          echo "[ERROR] VAULT_PASSPHRASE not set — add it to ~/.clide/secrets.yaml"
+          exit 1
+        fi
+
+        echo "[1] Credentials loaded from secrets.yaml"
+        echo "[2] Running: clide vault backup ..."
+
+        # Run vault backup non-interactively
+        export GITHUB_TOKEN="${GITHUB_TOKEN}"
+        export VAULT_PASSPHRASE="${VAULT_PASSPHRASE}"
+        BACKUP_OUTPUT=$(clide vault backup 2>&1) || {
+          echo "[ERROR] Vault backup failed:"
+          echo "$BACKUP_OUTPUT"
+          exit 1
+        }
+
+        echo "$BACKUP_OUTPUT"
+        echo ""
+
+        # Extract and confirm Gist ID
+        GIST_ID=$(echo "$BACKUP_OUTPUT" | grep -oP '(gist\.github\.com/|Gist ID:\s*)\K[a-f0-9]+' | head -1 || true)
+        if [ -n "$GIST_ID" ]; then
+          echo "============================================"
+          echo "  BACKUP CONFIRMED"
+          echo "  Gist ID: $GIST_ID"
+          echo "  URL: https://gist.github.com/$GIST_ID"
+          echo "  Encryption: age (VAULT_PASSPHRASE)"
+          echo "  Time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "============================================"
+        else
+          echo "[WARN] Could not extract Gist ID from output"
+          echo "[INFO] Check manually: gh gist list"
+        fi
+        ;;
+
+      install-cron)
+        echo "[vault_auto_backup] Installing weekly cron job (Sunday 2:00 AM)..."
+
+        # Determine the clide binary path
+        CLIDE_BIN=$(command -v clide 2>/dev/null || echo "$HOME/.local/bin/clide")
+        CRON_CMD="0 2 * * 0 GITHUB_TOKEN=\${GITHUB_TOKEN} VAULT_PASSPHRASE=\${VAULT_PASSPHRASE} $CLIDE_BIN vault backup >> $HOME/.clide/vault_backup.log 2>&1"
+        CRON_TAG="# clide-vault-auto-backup"
+
+        # Check if already installed
+        if crontab -l 2>/dev/null | grep -q "clide-vault-auto-backup"; then
+          echo "[INFO] Cron job already installed:"
+          crontab -l 2>/dev/null | grep -A1 "clide-vault-auto-backup"
+          exit 0
+        fi
+
+        # Install cron entry
+        (crontab -l 2>/dev/null; echo "$CRON_TAG"; echo "$CRON_CMD") | crontab -
+
+        echo "[OK] Cron job installed:"
+        crontab -l 2>/dev/null | grep -A1 "clide-vault-auto-backup"
+        echo ""
+        echo "Schedule: Every Sunday at 2:00 AM"
+        echo "Log: $HOME/.clide/vault_backup.log"
+        ;;
+
+      remove-cron)
+        echo "[vault_auto_backup] Removing cron job..."
+
+        if ! crontab -l 2>/dev/null | grep -q "clide-vault-auto-backup"; then
+          echo "[INFO] No vault backup cron job found — nothing to remove"
+          exit 0
+        fi
+
+        crontab -l 2>/dev/null | grep -v "clide-vault-auto-backup" | grep -v "clide vault backup" | crontab -
+
+        echo "[OK] Cron job removed"
+        echo "Remaining cron entries:"
+        crontab -l 2>/dev/null || echo "  (none)"
+        ;;
+
+      *)
+        echo "[ERROR] Unknown action: {{action}}"
+        echo "  Valid actions: run, install-cron, remove-cron"
+        exit 1
+        ;;
+    esac
+
+rollback_command:
+  - echo "No rollback needed — vault_auto_backup does not modify vault data."
+
+require_confirmation: true
+parallel: false
+retry_count: 0
+timeout: 120

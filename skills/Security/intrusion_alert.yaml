@@ -1,0 +1,212 @@
+# ============================================
+# Intrusion Alert Skill
+# ============================================
+# Monitors fail2ban status and /var/log/auth.log on a remote VPS via SSH.
+# Checks for banned IPs, failed login attempts exceeding a threshold,
+# and new SSH connections from unknown IPs.
+#
+# Prerequisites:
+#   - SSH key access to VPS
+#   - fail2ban installed on VPS
+#   - /var/log/auth.log readable (or journalctl available)
+#
+# Usage:
+#   run_skill intrusion_alert vps_host=${HOST_IP} vps_user=${HOST_USER}
+#   run_skill intrusion_alert vps_host=100.x.x.x vps_user=juanitto mode=watch fail_threshold=10
+#   run_skill intrusion_alert vps_host=100.x.x.x vps_user=juanitto mode=check
+
+name: intrusion_alert
+description: >
+  Monitor fail2ban status and auth.log on a remote VPS via SSH. Detects
+  banned IPs, failed login attempts exceeding a configurable threshold,
+  and new SSH connections from unknown IPs. Returns a structured alert summary.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - security
+  - monitoring
+  - intrusion
+  - fail2ban
+  - ssh
+  - vps
+
+parameters:
+  vps_host:
+    description: VPS IP address or hostname (use ${HOST_IP} placeholder)
+    type: string
+    required: true
+    default: "${HOST_IP}"
+
+  vps_user:
+    description: SSH username on the VPS (use ${HOST_USER} placeholder)
+    type: string
+    required: true
+    default: "${HOST_USER}"
+
+  ssh_key:
+    description: Path to SSH private key (use ${HOST_SSH_KEY} placeholder)
+    type: string
+    required: false
+    default: "${HOST_SSH_KEY:-~/.ssh/id_ed25519}"
+
+  fail_threshold:
+    description: Number of failed login attempts before triggering an alert
+    type: number
+    required: false
+    default: "5"
+
+  mode:
+    description: >
+      'check' for a single point-in-time report (default).
+      'watch' to tail auth.log live and stream alerts.
+    type: string
+    required: false
+    default: "check"
+
+commands:
+  # ── 0. Confirm parameters ──────────────────────────────────────────────────
+  - 'echo "[intrusion_alert] mode={{mode}} host={{vps_user}}@{{vps_host}} threshold={{fail_threshold}}"'
+
+  # ── 1. Single consolidated SSH: check mode ─────────────────────────────────
+  - |
+    if [ "{{mode}}" = "watch" ]; then
+      echo "[intrusion_alert] Entering watch mode — tailing auth.log (Ctrl+C to stop)..."
+      ssh -i {{ssh_key}} \
+          -o StrictHostKeyChecking=accept-new \
+          -o ConnectTimeout=10 \
+          -o BatchMode=yes \
+          {{vps_user}}@{{vps_host}} 'bash -s' <<'WATCH_EOF'
+    SP="${SUDO_PASSWORD}"
+    echo "$SP" | sudo -S tail -f /var/log/auth.log 2>/dev/null \
+      || echo "$SP" | sudo -S journalctl -u ssh -f 2>/dev/null \
+      || echo "[ERROR] Cannot tail auth.log or journalctl"
+    WATCH_EOF
+    else
+      ssh -i {{ssh_key}} \
+          -o StrictHostKeyChecking=accept-new \
+          -o ConnectTimeout=10 \
+          -o BatchMode=yes \
+          {{vps_user}}@{{vps_host}} 'bash -s' <<ALERT_EOF
+    SP="${SUDO_PASSWORD}"
+    THRESHOLD={{fail_threshold}}
+
+    echo ""
+    echo "============================================"
+    echo "  INTRUSION ALERT REPORT"
+    echo "  Host: {{vps_host}}"
+    echo "  Time: \$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "============================================"
+
+    # ── Section 1: fail2ban status ──
+    echo ""
+    echo "--- FAIL2BAN STATUS ---"
+    if command -v fail2ban-client >/dev/null 2>&1; then
+      echo "\$SP" | sudo -S fail2ban-client status 2>/dev/null || echo "  [WARN] fail2ban not responding"
+      echo ""
+      echo "\$SP" | sudo -S fail2ban-client status sshd 2>/dev/null || echo "  [INFO] sshd jail not active"
+      echo ""
+      echo "Currently banned IPs:"
+      BANNED=\$(echo "\$SP" | sudo -S fail2ban-client status sshd 2>/dev/null | grep "Banned IP" || true)
+      if [ -n "\$BANNED" ]; then
+        echo "  \$BANNED"
+      else
+        echo "  (none)"
+      fi
+    else
+      echo "  [WARN] fail2ban is not installed"
+    fi
+
+    # ── Section 2: Failed login attempts (24h) ──
+    echo ""
+    echo "--- FAILED LOGIN ATTEMPTS (last 24h) ---"
+    AUTH_LOG=""
+    if echo "\$SP" | sudo -S test -f /var/log/auth.log 2>/dev/null; then
+      AUTH_LOG="/var/log/auth.log"
+    fi
+
+    if [ -n "\$AUTH_LOG" ]; then
+      YESTERDAY=\$(date -d '24 hours ago' '+%b %e' 2>/dev/null || date '+%b %e')
+      FAIL_COUNT=\$(echo "\$SP" | sudo -S grep -c 'Failed password' "\$AUTH_LOG" 2>/dev/null || echo 0)
+      echo "  Total failed password attempts in log: \$FAIL_COUNT"
+      if [ "\$FAIL_COUNT" -ge "\$THRESHOLD" ]; then
+        echo "  ** ALERT: Failed attempts (\$FAIL_COUNT) >= threshold (\$THRESHOLD) **"
+      else
+        echo "  [OK] Below threshold (\$THRESHOLD)"
+      fi
+      echo ""
+      echo "  Top offending IPs:"
+      echo "\$SP" | sudo -S grep 'Failed password' "\$AUTH_LOG" 2>/dev/null \
+        | grep -oP 'from \K[0-9.]+' | sort | uniq -c | sort -rn | head -10 \
+        | while read cnt ip; do
+            if [ "\$cnt" -ge "\$THRESHOLD" ]; then
+              echo "    ** \$cnt  \$ip  [ALERT]"
+            else
+              echo "       \$cnt  \$ip"
+            fi
+          done
+    else
+      echo "  [INFO] Using journalctl fallback..."
+      FAIL_COUNT=\$(echo "\$SP" | sudo -S journalctl -u ssh --since '24 hours ago' 2>/dev/null | grep -c 'Failed password' || echo 0)
+      echo "  Total failed (24h): \$FAIL_COUNT"
+      if [ "\$FAIL_COUNT" -ge "\$THRESHOLD" ]; then
+        echo "  ** ALERT: Failed attempts (\$FAIL_COUNT) >= threshold (\$THRESHOLD) **"
+      fi
+    fi
+
+    # ── Section 3: New/unknown SSH connections (24h) ──
+    echo ""
+    echo "--- NEW SSH CONNECTIONS (last 24h) ---"
+    KNOWN_FILE="\$HOME/.clide/known_ssh_ips.txt"
+    touch "\$KNOWN_FILE" 2>/dev/null || true
+
+    if [ -n "\$AUTH_LOG" ]; then
+      ACCEPTED=\$(echo "\$SP" | sudo -S grep 'Accepted' "\$AUTH_LOG" 2>/dev/null \
+        | grep -oP 'from \K[0-9.]+' | sort -u || true)
+    else
+      ACCEPTED=\$(echo "\$SP" | sudo -S journalctl -u ssh --since '24 hours ago' 2>/dev/null \
+        | grep 'Accepted' | grep -oP 'from \K[0-9.]+' | sort -u || true)
+    fi
+
+    if [ -z "\$ACCEPTED" ]; then
+      echo "  No accepted SSH connections found"
+    else
+      NEW_COUNT=0
+      while IFS= read -r ip; do
+        if ! grep -qx "\$ip" "\$KNOWN_FILE" 2>/dev/null; then
+          echo "  ** NEW IP: \$ip **"
+          NEW_COUNT=\$((NEW_COUNT + 1))
+        else
+          echo "     Known:  \$ip"
+        fi
+      done <<< "\$ACCEPTED"
+      echo ""
+      echo "  New IPs found: \$NEW_COUNT"
+      if [ "\$NEW_COUNT" -gt 0 ]; then
+        echo "  [TIP] Add trusted IPs to \$KNOWN_FILE to suppress future alerts"
+      fi
+    fi
+
+    # ── Summary ──
+    echo ""
+    echo "============================================"
+    echo "  SUMMARY"
+    echo "============================================"
+    echo "  Failed logins:   \$FAIL_COUNT (threshold: \$THRESHOLD)"
+    echo "  Banned IPs:      \$(echo "\$SP" | sudo -S fail2ban-client status sshd 2>/dev/null | grep -oP 'Currently banned:\s+\K[0-9]+' || echo 'N/A')"
+    echo "  New SSH IPs:     \${NEW_COUNT:-0}"
+    ALERT_STATUS="OK"
+    if [ "\${FAIL_COUNT:-0}" -ge "\$THRESHOLD" ] || [ "\${NEW_COUNT:-0}" -gt 0 ]; then
+      ALERT_STATUS="ACTION REQUIRED"
+    fi
+    echo "  Status:          \$ALERT_STATUS"
+    echo "============================================"
+    ALERT_EOF
+    fi
+
+rollback_command:
+  - echo "No rollback needed — intrusion_alert is read-only."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 120

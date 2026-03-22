@@ -1,0 +1,219 @@
+# ============================================
+# Port Scanner Skill (Self-Scan Only)
+# ============================================
+# SSH into a VPS and run nmap against its own IPs only — never scans
+# third-party hosts. Compares open ports against a known-good baseline
+# stored in ~/.clide/port_baseline.txt. Alerts on NEW ports found.
+#
+# Prerequisites:
+#   - SSH key access to VPS
+#   - nmap will be auto-installed if missing
+#   - Baseline file created on first run with mode=baseline
+#
+# Usage:
+#   run_skill port_scanner vps_host=${HOST_IP} vps_user=${HOST_USER} mode=baseline
+#   run_skill port_scanner vps_host=100.x.x.x vps_user=juanitto mode=scan
+#   run_skill port_scanner vps_host=100.x.x.x vps_user=juanitto mode=compare
+
+name: port_scanner
+description: >
+  SSH into a VPS and run nmap self-scan (own IPs only — never scans third
+  parties). Compares open ports against a known-good baseline stored in
+  ~/.clide/port_baseline.txt. Alerts on NEW ports found since last scan.
+  Installs nmap automatically if missing.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - security
+  - nmap
+  - port-scan
+  - baseline
+  - vps
+  - monitoring
+
+parameters:
+  vps_host:
+    description: VPS IP address or hostname (use ${HOST_IP} placeholder)
+    type: string
+    required: true
+    default: "${HOST_IP}"
+
+  vps_user:
+    description: SSH username on the VPS (use ${HOST_USER} placeholder)
+    type: string
+    required: true
+    default: "${HOST_USER}"
+
+  ssh_key:
+    description: Path to SSH private key (use ${HOST_SSH_KEY} placeholder)
+    type: string
+    required: false
+    default: "${HOST_SSH_KEY:-~/.ssh/id_ed25519}"
+
+  mode:
+    description: >
+      'baseline' to scan and save current ports as known-good.
+      'scan' to scan and display open ports (no comparison).
+      'compare' to scan and compare against saved baseline.
+    type: string
+    required: false
+    default: "compare"
+
+commands:
+  # ── 0. Confirm parameters ──────────────────────────────────────────────────
+  - 'echo "[port_scanner] mode={{mode}} host={{vps_user}}@{{vps_host}}"'
+
+  # ── 1. Single consolidated SSH command ─────────────────────────────────────
+  - |
+    ssh -i {{ssh_key}} \
+        -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=10 \
+        -o BatchMode=yes \
+        {{vps_user}}@{{vps_host}} 'bash -s' <<PORTSCAN_EOF
+    SP="${SUDO_PASSWORD}"
+    MODE="{{mode}}"
+    BASELINE_FILE="\$HOME/.clide/port_baseline.txt"
+    SCAN_TMPFILE="/tmp/clide_portscan_\$\$.txt"
+
+    mkdir -p "\$HOME/.clide"
+
+    echo ""
+    echo "============================================"
+    echo "  PORT SCANNER (self-scan only)"
+    echo "  Host: {{vps_host}}"
+    echo "  Mode: \$MODE"
+    echo "  Time: \$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "============================================"
+
+    # ── Install nmap if missing ──
+    if ! command -v nmap >/dev/null 2>&1; then
+      echo ""
+      echo "[INFO] nmap not found — installing..."
+      echo "\$SP" | sudo -S apt-get update -qq 2>/dev/null \
+        && echo "\$SP" | sudo -S apt-get install -y -qq nmap 2>/dev/null \
+        || echo "\$SP" | sudo -S yum install -y nmap 2>/dev/null \
+        || echo "\$SP" | sudo -S dnf install -y nmap 2>/dev/null \
+        || { echo "[ERROR] Could not install nmap"; exit 1; }
+      echo "[OK] nmap installed: \$(nmap --version | head -1)"
+    else
+      echo "[OK] nmap available: \$(nmap --version | head -1)"
+    fi
+
+    # ── Gather own IPs (self-scan targets only) ──
+    OWN_IPS=\$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' | sort -u)
+    if [ -z "\$OWN_IPS" ]; then
+      OWN_IPS="127.0.0.1"
+    fi
+    SCAN_TARGETS=\$(echo "\$OWN_IPS" | tr '\n' ' ')
+    echo ""
+    echo "Scan targets (own IPs only): \$SCAN_TARGETS"
+
+    # ── Run nmap scan ──
+    echo ""
+    echo "[SCANNING] Running: nmap -sT -sU --top-ports 1000 ..."
+    echo "\$SP" | sudo -S nmap -sT -sU --top-ports 1000 \$SCAN_TARGETS 2>/dev/null \
+      | grep '^[0-9]' | grep 'open' | sort -u > "\$SCAN_TMPFILE"
+
+    OPEN_COUNT=\$(wc -l < "\$SCAN_TMPFILE")
+    echo "[DONE] Found \$OPEN_COUNT open port(s)"
+    echo ""
+
+    case "\$MODE" in
+
+      baseline)
+        echo "--- SAVING BASELINE ---"
+        cp "\$SCAN_TMPFILE" "\$BASELINE_FILE"
+        echo "Baseline saved to: \$BASELINE_FILE"
+        echo "Ports in baseline:"
+        cat "\$BASELINE_FILE" | while read line; do echo "  \$line"; done
+        echo ""
+        echo "[OK] Baseline created with \$OPEN_COUNT port(s)"
+        echo "[TIP] Run mode=compare in the future to detect changes"
+        ;;
+
+      scan)
+        echo "--- CURRENT OPEN PORTS ---"
+        if [ -s "\$SCAN_TMPFILE" ]; then
+          cat "\$SCAN_TMPFILE" | while read line; do echo "  \$line"; done
+        else
+          echo "  (no open ports found)"
+        fi
+        ;;
+
+      compare)
+        echo "--- COMPARING AGAINST BASELINE ---"
+        if [ ! -f "\$BASELINE_FILE" ]; then
+          echo "[WARN] No baseline found at \$BASELINE_FILE"
+          echo "[TIP] Run with mode=baseline first to create one"
+          echo ""
+          echo "Current open ports (no comparison available):"
+          cat "\$SCAN_TMPFILE" | while read line; do echo "  \$line"; done
+        else
+          echo "Baseline: \$BASELINE_FILE"
+          echo "  Baseline ports: \$(wc -l < "\$BASELINE_FILE")"
+          echo "  Current ports:  \$OPEN_COUNT"
+          echo ""
+
+          # Find NEW ports (in current scan but not in baseline)
+          NEW_PORTS=\$(comm -23 "\$SCAN_TMPFILE" "\$BASELINE_FILE" 2>/dev/null || \
+                      diff "\$BASELINE_FILE" "\$SCAN_TMPFILE" 2>/dev/null | grep '^>' | sed 's/^> //')
+          # Find CLOSED ports (in baseline but not in current scan)
+          CLOSED_PORTS=\$(comm -13 "\$SCAN_TMPFILE" "\$BASELINE_FILE" 2>/dev/null || \
+                         diff "\$BASELINE_FILE" "\$SCAN_TMPFILE" 2>/dev/null | grep '^<' | sed 's/^< //')
+
+          NEW_COUNT=0
+          CLOSED_COUNT=0
+
+          if [ -n "\$NEW_PORTS" ]; then
+            NEW_COUNT=\$(echo "\$NEW_PORTS" | wc -l)
+            echo "** ALERT: NEW PORTS DETECTED **"
+            echo "\$NEW_PORTS" | while read line; do echo "  ++ \$line"; done
+          else
+            echo "[OK] No new ports detected"
+          fi
+
+          echo ""
+
+          if [ -n "\$CLOSED_PORTS" ]; then
+            CLOSED_COUNT=\$(echo "\$CLOSED_PORTS" | wc -l)
+            echo "Ports closed since baseline:"
+            echo "\$CLOSED_PORTS" | while read line; do echo "  -- \$line"; done
+          else
+            echo "[OK] No ports closed since baseline"
+          fi
+
+          echo ""
+          echo "============================================"
+          echo "  SUMMARY"
+          echo "============================================"
+          echo "  Baseline ports:  \$(wc -l < "\$BASELINE_FILE")"
+          echo "  Current ports:   \$OPEN_COUNT"
+          echo "  New ports:       \$NEW_COUNT"
+          echo "  Closed ports:    \$CLOSED_COUNT"
+          if [ "\$NEW_COUNT" -gt 0 ]; then
+            echo "  Status:          ** ACTION REQUIRED **"
+          else
+            echo "  Status:          OK"
+          fi
+          echo "============================================"
+        fi
+        ;;
+
+      *)
+        echo "[ERROR] Unknown mode: \$MODE"
+        echo "  Valid modes: baseline, scan, compare"
+        exit 1
+        ;;
+    esac
+
+    # Cleanup
+    rm -f "\$SCAN_TMPFILE"
+    PORTSCAN_EOF
+
+rollback_command:
+  - echo "No rollback needed — port_scanner is read-only."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 120
