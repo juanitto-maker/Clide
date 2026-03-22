@@ -49,6 +49,115 @@ sudo cp target/release/clide /usr/local/bin/
 
 ---
 
+### Ubuntu VPS
+
+This section covers a complete setup for running Clide as a persistent background service on an Ubuntu VPS (18.04, 20.04, 22.04, or 24.04).
+
+#### 1. Install prerequisites
+
+```bash
+sudo apt update && sudo apt install -y curl wget
+```
+
+#### 2. Download and install the binary
+
+```bash
+# For x86_64 (most VPS providers)
+wget https://github.com/juanitto-maker/Clide/releases/latest/download/clide-x86_64
+chmod +x clide-x86_64
+sudo mv clide-x86_64 /usr/local/bin/clide
+```
+
+Verify the installation:
+
+```bash
+clide --version
+```
+
+#### 3. Create the configuration
+
+```bash
+mkdir -p ~/.clide
+curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/config.example.yaml \
+  -o ~/.clide/config.yaml
+chmod 600 ~/.clide/config.yaml
+nano ~/.clide/config.yaml
+```
+
+Minimal `config.yaml` for a VPS running the Matrix bot:
+
+```yaml
+gemini_api_key: "YOUR_GEMINI_API_KEY"
+
+matrix_homeserver: "https://matrix.org"
+matrix_user: "@yourbot:matrix.org"
+matrix_access_token: "YOUR_ACCESS_TOKEN"
+matrix_room_id: "!roomid:matrix.org"
+```
+
+See [Post-Installation Setup](#post-installation-setup) below for how to obtain the Matrix token and room ID.
+
+#### 4. Run as a systemd service
+
+Create a systemd unit file so Clide starts automatically on boot and restarts on failure:
+
+```bash
+sudo nano /etc/systemd/system/clide.service
+```
+
+Paste the following, replacing `yourusername` with your actual Linux user:
+
+```ini
+[Unit]
+Description=Clide AI Terminal Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yourusername
+ExecStart=/usr/local/bin/clide bot
+Restart=on-failure
+RestartSec=5s
+Environment=CLIDE_CONFIG=/home/yourusername/.clide/config.yaml
+
+# Harden the service
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable clide
+sudo systemctl start clide
+```
+
+Check that it is running:
+
+```bash
+sudo systemctl status clide
+journalctl -u clide -f          # follow logs in real time
+```
+
+#### 5. Updating on a VPS
+
+```bash
+# Download the new binary
+wget https://github.com/juanitto-maker/Clide/releases/latest/download/clide-x86_64 -O /tmp/clide-new
+chmod +x /tmp/clide-new
+sudo mv /tmp/clide-new /usr/local/bin/clide
+
+# Restart the service
+sudo systemctl restart clide
+```
+
+---
+
 ### macOS
 
 ```bash
