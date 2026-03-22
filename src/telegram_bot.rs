@@ -396,30 +396,54 @@ impl TelegramBot {
         let final_text = scrubber::scrub(&raw_text, &self.config.secrets);
         let scrubbed_log = scrubber::scrub(&commands_log, &self.config.secrets);
 
-        let final_html = build_final_html(&final_text, &scrubbed_log);
-
-        // Edit the status message with the final HTML answer
-        // If it's too large, fall back to split plain-text messages
-        if final_html.len() <= TG_MAX_CHARS {
-            if self
+        // ── Message 1: Answer (edit the status placeholder) ─────────────────
+        // If the answer fits in one message, edit the status placeholder.
+        // If too long, chunk it into multiple plain-text messages.
+        if final_text.len() <= TG_MAX_CHARS {
+            let _ = self
                 .telegram
-                .edit_message_html(chat_id, status_id, &final_html)
-                .await
-                .is_err()
-            {
-                // HTML edit failed (e.g. bad chars) — fall back to plain text
+                .edit_message(chat_id, status_id, &final_text)
+                .await;
+        } else {
+            // First chunk replaces the status message
+            let answer_chunks = chunk_text(&final_text, TG_MAX_CHARS);
+            if let Some(first) = answer_chunks.first() {
                 let _ = self
                     .telegram
-                    .edit_message(chat_id, status_id, &final_text)
+                    .edit_message(chat_id, status_id, first)
                     .await;
             }
-        } else {
-            self.telegram
-                .edit_message(chat_id, status_id, "✅ Done. Full output below:")
-                .await?;
-            for chunk in final_text.as_bytes().chunks(TG_MAX_CHARS) {
-                let chunk_str = String::from_utf8_lossy(chunk);
-                self.telegram.send_message(chat_id, &chunk_str).await?;
+            for chunk in answer_chunks.iter().skip(1) {
+                let _ = self.telegram.send_message(chat_id, chunk).await;
+            }
+        }
+
+        // ── Message 2+: Commands log (separate messages, chunked) ───────────
+        if !scrubbed_log.trim().is_empty() {
+            let log_body = scrubbed_log.trim();
+            let header = "🔍 Commands run:";
+            // If log + header fits in one message, send it as one
+            let full_log_msg = format!("{}\n{}", header, log_body);
+            if full_log_msg.len() <= TG_MAX_CHARS {
+                let _ = self
+                    .telegram
+                    .send_message(chat_id, &full_log_msg)
+                    .await;
+            } else {
+                // Chunk the log body; reserve room for the header line
+                let header_reserve = 30; // "🔍 Commands (xx/xx):\n" max length
+                let chunk_size = TG_MAX_CHARS - header_reserve;
+                let log_chunks = chunk_text(log_body, chunk_size);
+                let total = log_chunks.len();
+                for (i, chunk) in log_chunks.iter().enumerate() {
+                    let msg = format!(
+                        "🔍 Commands ({}/{}):\n{}",
+                        i + 1,
+                        total,
+                        chunk
+                    );
+                    let _ = self.telegram.send_message(chat_id, &msg).await;
+                }
             }
         }
 
@@ -662,26 +686,26 @@ async fn collect_files_recursive(
     Ok(())
 }
 
-/// Escape text for use inside Telegram HTML messages.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// Build the final HTML message: answer prose followed by a spoiler block
-/// containing the commands that were run. The user taps the spoiler to expand
-/// it inline — no need to switch to Termux.
-fn build_final_html(answer: &str, commands_log: &str) -> String {
-    let escaped_answer = html_escape(answer);
-
-    if commands_log.trim().is_empty() {
-        return escaped_answer;
+/// Split `text` into chunks of at most `max_len` bytes, breaking on the last
+/// newline before the limit when possible so output stays readable.
+fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
+    if text.len() <= max_len {
+        return vec![text.to_string()];
     }
-
-    let escaped_log = html_escape(commands_log.trim());
-    format!(
-        "{}\n\n<tg-spoiler>🔍 Commands run:\n<pre>{}</pre></tg-spoiler>",
-        escaped_answer, escaped_log
-    )
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if remaining.len() <= max_len {
+            chunks.push(remaining.to_string());
+            break;
+        }
+        // Try to break at the last newline within the limit
+        let boundary = match remaining[..max_len].rfind('\n') {
+            Some(pos) => pos + 1, // include the newline in this chunk
+            None => max_len,      // no newline found — hard cut
+        };
+        chunks.push(remaining[..boundary].to_string());
+        remaining = &remaining[boundary..];
+    }
+    chunks
 }
