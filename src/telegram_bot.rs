@@ -165,6 +165,7 @@ impl TelegramBot {
                                 .telegram
                                 .send_message(
                                     msg.chat_id,
+                                    msg.thread_id,
                                     "🟢 Clide is online and ready!\n\
                                      Send me a task to execute.\n\
                                      Use /stop to cancel a running task.",
@@ -182,7 +183,7 @@ impl TelegramBot {
                             info!("Received /stop while idle — no task running.");
                             let _ = self
                                 .telegram
-                                .send_message(msg.chat_id, "No task is currently running.")
+                                .send_message(msg.chat_id, msg.thread_id, "No task is currently running.")
                                 .await;
                             continue;
                         }
@@ -223,12 +224,12 @@ impl TelegramBot {
                                 exp_dir,
                                 if exp_dir_exists { "exists" } else { "not created yet" },
                             );
-                            let _ = self.telegram.send_message(msg.chat_id, &reply).await;
+                            let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
                             continue;
                         }
 
                         if let Err(e) = self
-                            .handle_message(msg.chat_id, msg.sender, msg.text, msg.file)
+                            .handle_message(msg.chat_id, msg.thread_id, msg.sender, msg.text, msg.file)
                             .await
                         {
                             error!("Error handling Telegram message: {}", e);
@@ -246,6 +247,7 @@ impl TelegramBot {
     async fn handle_message(
         &mut self,
         chat_id: i64,
+        thread_id: Option<i64>,
         sender: String,
         text: String,
         file: Option<crate::telegram::AttachedFile>,
@@ -265,6 +267,7 @@ impl TelegramBot {
                 .telegram
                 .send_message(
                     chat_id,
+                    thread_id,
                     &format!(
                         "⚠️ Bot not configured yet.\n\
                          Add the following line to ~/.clide/config.yaml:\n\n\
@@ -282,6 +285,7 @@ impl TelegramBot {
                 .telegram
                 .send_message(
                     chat_id,
+                    thread_id,
                     &format!(
                         "🚫 Access denied.\n\
                          Your Telegram username \"{}\" is not in authorized_users.\n\
@@ -303,7 +307,7 @@ impl TelegramBot {
         }
 
         // Send initial "working" placeholder message
-        let status_id = self.telegram.send_message(chat_id, "⚙️ Working...").await?;
+        let status_id = self.telegram.send_message(chat_id, thread_id, "⚙️ Working...").await?;
         info!("Status message id: {}", status_id);
 
         // Progress channel (agent → updater task)
@@ -351,6 +355,7 @@ impl TelegramBot {
                                 let _ = tg_watcher
                                     .send_message(
                                         update.chat_id,
+                                        update.thread_id,
                                         "🛑 Stopping current task...",
                                     )
                                     .await;
@@ -414,7 +419,7 @@ impl TelegramBot {
                     .await;
             }
             for chunk in answer_chunks.iter().skip(1) {
-                let _ = self.telegram.send_message(chat_id, chunk).await;
+                let _ = self.telegram.send_message(chat_id, thread_id, chunk).await;
             }
         }
 
@@ -427,7 +432,7 @@ impl TelegramBot {
             if full_log_msg.len() <= TG_MAX_CHARS {
                 let _ = self
                     .telegram
-                    .send_message(chat_id, &full_log_msg)
+                    .send_message(chat_id, thread_id, &full_log_msg)
                     .await;
             } else {
                 // Chunk the log body; reserve room for the header line
@@ -442,7 +447,7 @@ impl TelegramBot {
                         total,
                         chunk
                     );
-                    let _ = self.telegram.send_message(chat_id, &msg).await;
+                    let _ = self.telegram.send_message(chat_id, thread_id, &msg).await;
                 }
             }
         }
@@ -450,7 +455,7 @@ impl TelegramBot {
         // ── Send export files ─────────────────────────────────────────────────
         // Any files the agent saved to EXPORT_DIR are forwarded to the user as
         // downloadable document attachments.
-        self.send_export_files(chat_id).await;
+        self.send_export_files(chat_id, thread_id).await;
 
         info!("Agent task complete for @{}", sender);
         Ok(())
@@ -464,7 +469,7 @@ impl TelegramBot {
     /// and forwards them to the chat so the user can download them directly.
     /// Subdirectories are traversed so files placed in nested paths (e.g. by
     /// AIWB or the agent) are not missed.
-    async fn send_export_files(&self, chat_id: i64) {
+    async fn send_export_files(&self, chat_id: i64, thread_id: Option<i64>) {
         let exp_dir = export_dir();
         info!("Scanning export dir (recursive) for files to deliver: {}", exp_dir);
 
@@ -489,7 +494,7 @@ impl TelegramBot {
             info!("Sending export file to chat {}: {}", chat_id, path_str);
             match self
                 .telegram
-                .send_document(chat_id, &path_str, Some(&format!("📎 {}", filename)))
+                .send_document(chat_id, thread_id, &path_str, Some(&format!("📎 {}", filename)))
                 .await
             {
                 Ok(msg_id) => {
