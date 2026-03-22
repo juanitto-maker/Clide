@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.1-blue)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android-green)](docs/INSTALL.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](docs/CONTRIBUTING.md)
 [![Discussions](https://img.shields.io/badge/GitHub-Discussions-purple?logo=github)](https://github.com/juanitto-maker/Clide/discussions)
@@ -676,10 +676,10 @@ explain error       → AI explains an error message
 |---|---|---|
 | Linux x86_64 | Tested | `clide-x86_64` |
 | Linux ARM64 | Tested | `clide-aarch64` |
-| Android / Termux | Tested (primary) | `clide-aarch64` |
-| macOS Intel | Tested | `clide-x86_64-darwin` |
-| macOS Apple Silicon | Tested | `clide-aarch64-darwin` |
-| Windows | WSL2 recommended | `clide-x86_64-windows.exe` |
+| Android / Termux | Tested (primary) | `clide-aarch64-android` |
+| macOS Intel | Build from source | `cargo build --release` |
+| macOS Apple Silicon | Build from source | `cargo build --release` |
+| Windows | WSL2 recommended | Use Linux binary under WSL2 |
 
 ---
 
@@ -793,19 +793,22 @@ MIT — see [LICENSE](LICENSE).
 - [x] Core bot functionality
 - [x] Gemini AI integration
 - [x] Element/Matrix integration (v0.3.0)
-- [x] Telegram integration
+- [x] Telegram integration (forum topics, file/image interpretation)
 - [x] Android/Termux support
-- [x] YAML skills system
+- [x] YAML skills system (18 shipped skills)
 - [x] Credential manager (`clide secret` CLI)
 - [x] SSH host registry (`clide host` CLI)
 - [x] GNU pass / GPG encryption layer
 - [x] Age-encrypted vault backup & restore
 - [x] Secret scrubber (auto-redact in AI prompts and chat)
+- [x] Linux VPS support with systemd service
+- [x] `/stop` command to abort running tasks
+- [x] Vision / image interpretation via Telegram
+- [ ] Multi-model LLM support (Claude, Ollama)
 - [ ] Web UI dashboard
 - [ ] Docker support
 - [ ] Multi-room support
 - [ ] Scheduled commands
-- [ ] Custom command aliases
 - [ ] Workflow marketplace
 
 ---

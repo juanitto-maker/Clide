@@ -1,542 +1,262 @@
-# 🔒 Clide Security Guide
+# Clide Security Guide
 
 Security best practices and threat model for Clide.
 
 ---
 
-## 🎯 Security Philosophy
+## Security Philosophy
 
 Clide is designed with **security by default** principles:
 
-1. ✅ **End-to-end encryption** - Signal protocol
-2. ✅ **Principle of least privilege** - No root required
-3. ✅ **Safe defaults** - Confirmation mode enabled
-4. ✅ **Audit logging** - All actions logged
-5. ✅ **Secure storage** - Encrypted credentials
-6. ✅ **Input validation** - All commands sanitized
-7. ✅ **Sandboxed execution** - Limited permissions
+1. **Principle of least privilege** — no root required
+2. **Fail-closed auth** — unauthorized messages are rejected, not silently dropped
+3. **Safe defaults** — confirmation mode available, dangerous commands blocklisted
+4. **Audit logging** — all commands logged with timestamps
+5. **Secret separation** — credentials stored separately from config, auto-redacted before AI
+6. **Input validation** — all commands sanitized before execution
 
 ---
 
-## 🛡️ Threat Model
+## Threat Model
 
 ### What Clide Protects Against
 
-✅ **Unauthorized access** - Signal authentication required
-✅ **Command injection** - Input sanitization
-✅ **Privilege escalation** - Runs as user, not root
-✅ **Data exfiltration** - Logs all file access
-✅ **Man-in-the-middle** - TLS for all API calls
-✅ **Replay attacks** - Message timestamps validated
+- **Unauthorized access** — Matrix user ID / Telegram username allowlist
+- **Command injection** — input sanitization, parameterized execution
+- **Privilege escalation** — runs as user, not root
+- **Credential leakage** — secret scrubber redacts values before AI prompts and chat
+- **Man-in-the-middle** — TLS for all API calls (Matrix, Telegram, Gemini)
+- **Accidental destruction** — command blocklist, confirmation mode, rollback support
 
 ### What Clide Does NOT Protect Against
 
-⚠️ **Compromised Signal account** - If attacker has your phone
-⚠️ **Physical access** - If attacker has your device
-⚠️ **Keyloggers** - If your system is compromised
-⚠️ **Social engineering** - If you approve malicious commands
-⚠️ **Zero-day exploits** - Unknown vulnerabilities
+- **Compromised device** — if attacker has root access to your device
+- **Physical access** — if attacker has your unlocked device
+- **Social engineering** — if you approve malicious commands
+- **Lost vault passphrase** — no recovery mechanism
+- **AI prompt injection** — while mitigated, adversarial inputs could influence AI behavior
 
 ---
 
-## 🔐 Configuration Security
+## Configuration Security
 
-### 1. Protect config.yaml
-
-**File contains sensitive data:**
-- Gemini API key
-- Signal credentials
-- SSH keys (if configured)
-
-**Best practices:**
+### 1. Protect Your Files
 
 ```bash
-# Set restrictive permissions (owner read/write only)
+# Set restrictive permissions
+chmod 700 ~/.clide
 chmod 600 ~/.clide/config.yaml
+chmod 600 ~/.clide/secrets.yaml
+chmod 600 ~/.clide/hosts.yaml
 
-# Verify permissions
-ls -l ~/.clide/config.yaml
-# Should show: -rw------- (600)
-
-# Never commit to git
-echo "config.yaml" >> .gitignore
+# Verify
+ls -la ~/.clide/
+# All files should show -rw------- (600)
 ```
 
-### 2. Environment Variables (Recommended)
+### 2. Secrets Management
 
-Instead of storing secrets in config.yaml, use environment variables:
+Clide separates secrets from config. API keys and tokens live in `~/.clide/secrets.yaml`, not in `config.yaml`.
+
+**Priority (highest wins):**
+```
+env var  >  secrets.yaml  >  config.yaml  >  built-in default
+```
+
+**Storage options:**
+
+| Option | At-rest protection | Best for |
+|---|---|---|
+| `secrets.yaml` | File permissions (`chmod 600`) | Most users |
+| GNU pass layer | GPG encryption | Shared machines, high-security |
+| Environment variables | Process memory only | CI/CD, Docker |
+
+**Managing secrets:**
+```bash
+clide secret set MY_API_KEY       # hidden input
+clide secret list                  # key names only, no values
+clide secret pass-init             # set up GPG encryption
+clide secret pass-set MY_API_KEY   # migrate to GPG store
+```
+
+### 3. Vault Backup
+
+Back up secrets and SSH hosts to an encrypted GitHub Gist:
 
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
-export CLIDE_GEMINI_API_KEY="your-api-key"
-export CLIDE_SIGNAL_NUMBER="+1234567890"
-
-# In config.yaml, reference them:
-gemini_api_key: "${CLIDE_GEMINI_API_KEY}"
-signal_number: "${CLIDE_SIGNAL_NUMBER}"
+clide vault backup    # encrypts with age, uploads to Gist
+clide vault restore   # restores on a new machine
 ```
 
-### 3. Encrypted Storage (Advanced)
-
-Use system keyring for sensitive data:
-
-```bash
-# Store API key in system keyring
-secret-tool store --label="Clide Gemini Key" service clide key gemini_api
-
-# Configure clide to use keyring
-clide config set-keyring true
-```
+The vault is encrypted with [age](https://age-encryption.org/) (ChaCha20-Poly1305 + Argon2). The passphrase is never stored anywhere.
 
 ---
 
-## 🔑 Signal Security
+## Messaging Security
 
-### 1. Device Linking (Recommended)
+### Matrix / Element
 
-**Why linking is more secure:**
-- ✅ No SMS interception possible
-- ✅ Requires physical access to primary device
-- ✅ Can be revoked remotely
-- ✅ Session-based authentication
+- Access token auth — your password is never stored
+- Rotate tokens periodically: re-login via API or Element settings
+- Use a dedicated bot account, not your personal one
 
-**Setup:**
-```bash
-signal-cli link -n "clide-bot"
-# Scan QR code from Signal app
-```
+### Telegram
 
-**Revoke if compromised:**
-1. Open Signal on phone
-2. Settings → Linked Devices
-3. Find "clide-bot"
-4. Tap → Unlink
+- Bot token from @BotFather stored in `secrets.yaml`
+- Regenerate via @BotFather > `/mybots` > API Token if compromised
 
-### 2. Number Registration (Less Secure)
+### Access Control
 
-**Risks:**
-- ⚠️ SMS interception possible
-- ⚠️ SIM swapping attacks
-- ⚠️ Number recycling concerns
-
-**Mitigation:**
-- Use dedicated number for clide
-- Enable 2FA on carrier account
-- Monitor for unusual activity
-
-### 3. Message Verification
-
-Clide validates:
-- ✅ Message sender (must be from authorized number)
-- ✅ Message timestamp (must be recent, not replayed)
-- ✅ Message format (must match expected schema)
-
-**Configure authorized senders:**
 ```yaml
-# In config.yaml
-authorized_numbers:
-  - "+1234567890"  # Your primary number
-  - "+0987654321"  # Your backup number
+# config.yaml — restrict to your accounts only
+authorized_users:
+  - "@youraccount:matrix.org"     # Matrix user ID
+  - "your_telegram_username"       # Telegram username
 ```
+
+An empty list blocks everyone. Unauthorized messages are rejected with feedback.
 
 ---
 
-## 🚨 Command Execution Security
+## Command Execution Security
 
-### 1. Confirmation Mode (Recommended for Production)
-
-**Enable confirmation before executing commands:**
+### 1. Confirmation Mode
 
 ```yaml
-# In config.yaml
+# config.yaml
 require_confirmation: true
-confirmation_timeout: 60  # seconds
 ```
 
-**How it works:**
-1. User sends command via Signal
-2. Clide sends confirmation request
-3. User replies "yes" or "no"
-4. Command executes only after "yes"
-5. Times out after 60 seconds
+Every command requires explicit `YES` before execution.
 
-**Example:**
+### 2. Command Blocklist
+
+Built-in blocklist prevents dangerous patterns:
 ```
-You: restart nginx
-Clide: ⚠️  Confirm: restart nginx? (yes/no)
-You: yes
-Clide: ✅ Executed: nginx restarted
+rm -rf /    mkfs    dd if=    :(){ :|:& };:    chmod -R 777 /
 ```
 
-### 2. Command Whitelist
+### 3. Secret Scrubber
 
-**Restrict to specific commands:**
-
-```yaml
-# In config.yaml
-allowed_commands:
-  - "systemctl status *"
-  - "docker ps"
-  - "ls /var/www"
-  - "tail -f /var/log/*.log"
-  
-# Deny everything else
-deny_by_default: true
-```
-
-**Wildcard patterns:**
-- `*` matches any characters
-- `?` matches single character
-- `[abc]` matches a, b, or c
-
-### 3. Command Blacklist
-
-**Block dangerous commands:**
-
-```yaml
-# In config.yaml (built-in defaults)
-blocked_commands:
-  - "rm -rf /*"
-  - "dd if=*"
-  - "mkfs.*"
-  - "chmod 777 *"
-  - "passwd*"
-  - "userdel*"
-  - "shutdown*"
-  - "reboot"
-```
-
-### 4. Dry-Run Mode
-
-**Test commands without executing:**
-
-```yaml
-# In config.yaml
-dry_run: true
-```
-
-All commands will be logged but not executed. Useful for testing.
+All outbound text is auto-redacted before reaching the AI or chat. The AI only sees `${KEY_NAME}` placeholders — real values are substituted by the Executor after the AI returns the command.
 
 ---
 
-## 🌐 SSH Security
+## SSH Security
 
-### 1. Host Restrictions
+### Host Registry
 
-**Limit SSH to known servers:**
-
-```yaml
-# In config.yaml
-allowed_ssh_hosts:
-  - "production.example.com"
-  - "staging.example.com"
-  - "192.168.1.100"
-```
-
-### 2. Key-Based Authentication (Required)
-
-**Never use password authentication:**
+Register servers by nickname — IPs and keys never appear in chat or AI prompts:
 
 ```bash
-# Generate SSH key for clide
-ssh-keygen -t ed25519 -f ~/.clide/ssh_key -N ""
-
-# Copy to server
-ssh-copy-id -i ~/.clide/ssh_key user@server
-
-# Configure clide
-clide config set-ssh-key ~/.clide/ssh_key
+clide host add prod --ip 1.2.3.4 --user root --key ~/.ssh/id_ed25519_prod
 ```
 
-**In config.yaml:**
-```yaml
-ssh_key_path: "~/.clide/ssh_key"
-ssh_verify_host_keys: true
+Skills reference hosts as `${HOST_PROD_IP}`, `${HOST_PROD_USER}`, etc.
+
+### Key-Based Auth
+
+```bash
+# Generate a dedicated key for Clide
+ssh-keygen -t ed25519 -f ~/.ssh/clide_key -C "clide-bot"
+chmod 600 ~/.ssh/clide_key
 ```
 
-### 3. Command Restrictions on Remote Hosts
-
-**Use ForceCommand in SSH authorized_keys:**
+### Restrict Remote Key Permissions
 
 ```bash
 # On remote server: ~/.ssh/authorized_keys
-command="/usr/local/bin/clide-remote-wrapper" ssh-ed25519 AAAA...
-```
-
-**Example wrapper script:**
-```bash
-#!/bin/bash
-# /usr/local/bin/clide-remote-wrapper
-
-case "$SSH_ORIGINAL_COMMAND" in
-  "systemctl status "*) $SSH_ORIGINAL_COMMAND ;;
-  "docker ps"*) $SSH_ORIGINAL_COMMAND ;;
-  "ls "*) $SSH_ORIGINAL_COMMAND ;;
-  *) echo "Command not allowed"; exit 1 ;;
-esac
+command="~/clide-allowed-commands.sh",no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA...
 ```
 
 ---
 
-## 🔍 Audit Logging
+## Audit Logging
 
-### 1. Enable Comprehensive Logging
-
-```yaml
-# In config.yaml
-logging:
-  level: "info"  # debug, info, warn, error
-  file: "~/.clide/logs/clide.log"
-  max_size: "100MB"
-  max_backups: 10
-  
-  # Log all commands
-  log_commands: true
-  
-  # Log command output
-  log_output: true
-  
-  # Log API calls
-  log_api_calls: true
-```
-
-### 2. Log Format
-
-**Structured JSON logs for easy parsing:**
-
-```json
-{
-  "timestamp": "2026-02-15T10:30:00Z",
-  "level": "INFO",
-  "event": "command_executed",
-  "user": "+1234567890",
-  "command": "systemctl status nginx",
-  "exit_code": 0,
-  "duration_ms": 234,
-  "host": "localhost"
-}
-```
-
-### 3. Monitor Logs
-
-**Watch for suspicious activity:**
+Clide logs every command with timestamps via `tracing`:
 
 ```bash
-# Real-time monitoring
-tail -f ~/.clide/logs/clide.log | jq .
+# Debug mode for verbose output
+RUST_LOG=debug clide bot
 
-# Filter for errors
-grep ERROR ~/.clide/logs/clide.log
-
-# Check for failed commands
-jq 'select(.exit_code != 0)' ~/.clide/logs/clide.log
-
-# List all users
-jq -r '.user' ~/.clide/logs/clide.log | sort -u
+# Review logs
+tail -f ~/.clide/logs/clide.log
 ```
 
-### 4. Log Rotation
-
-**Automatic log rotation configured by default:**
-
-```yaml
-# In config.yaml
-logging:
-  rotate_on_size: "100MB"
-  max_files: 10
-  compress_old: true
-```
-
-**Manual rotation:**
-```bash
-clide logs rotate
-```
+Command output is capped to prevent OOM on resource-constrained devices (Termux).
 
 ---
 
-## 🔐 API Key Security
-
-### 1. Gemini API Key Protection
-
-**Best practices:**
-
-✅ **Never commit to git**
-```bash
-echo "config.yaml" >> .gitignore
-echo ".env" >> .gitignore
-```
-
-✅ **Use environment variables**
-```bash
-export CLIDE_GEMINI_API_KEY="your-key"
-```
-
-✅ **Rotate regularly**
-```bash
-# Generate new key at: https://makersuite.google.com/app/apikey
-clide config set-gemini-key "new-key"
-# Old key automatically revoked after 24 hours
-```
-
-✅ **Monitor usage**
-```bash
-# Check API usage at Google AI Studio
-# Set up alerts for unusual activity
-```
-
-### 2. API Key Compromise Response
-
-**If API key is compromised:**
-
-1. **Immediately revoke:** Visit Google AI Studio → API Keys → Revoke
-2. **Generate new key:** Create new key
-3. **Update config:** `clide config set-gemini-key "new-key"`
-4. **Review logs:** Check for unauthorized API calls
-5. **Notify team:** If shared project
-
----
-
-## 🛡️ Network Security
-
-### 1. TLS/HTTPS
-
-**All external communication uses TLS:**
-- ✅ Signal protocol (end-to-end encrypted)
-- ✅ Gemini API (HTTPS)
-- ✅ SSH (encrypted by default)
-
-**Verify certificates:**
-```yaml
-# In config.yaml
-verify_ssl: true  # Never disable in production!
-```
-
-### 2. Firewall Rules
-
-**Recommended firewall configuration:**
-
-```bash
-# Allow only necessary outbound connections
-sudo ufw default deny outgoing
-sudo ufw allow out to api.gemini.google.com port 443
-sudo ufw allow out to signal.org port 443
-sudo ufw allow out 22/tcp  # SSH
-
-# Block all inbound (clide doesn't need inbound)
-sudo ufw default deny incoming
-```
-
-### 3. Proxy Support
-
-**Route through proxy if required:**
-
-```yaml
-# In config.yaml
-proxy:
-  http: "http://proxy.example.com:8080"
-  https: "https://proxy.example.com:8443"
-  no_proxy: "localhost,127.0.0.1"
-```
-
----
-
-## 🚨 Incident Response
+## Incident Response
 
 ### If You Suspect Compromise
 
-**Immediate actions:**
+1. **Stop Clide immediately:**
+   ```bash
+   pkill -f clide
+   ```
 
-1. **Stop clide:**
-```bash
-clide stop
-```
+2. **Revoke tokens:**
+   - Gemini: revoke at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+   - Matrix: log out all sessions in Element settings
+   - Telegram: regenerate token via @BotFather
 
-2. **Revoke Signal device:**
-- Open Signal → Settings → Linked Devices
-- Unlink "clide-bot"
+3. **Review logs:**
+   ```bash
+   grep "ERROR\|WARN\|DENIED" ~/.clide/logs/clide.log
+   ```
 
-3. **Rotate API keys:**
-- Gemini API key
-- SSH keys
+4. **Rotate credentials:**
+   ```bash
+   clide secret set GEMINI_API_KEY
+   clide secret set MATRIX_ACCESS_TOKEN
+   clide secret set TELEGRAM_BOT_TOKEN
+   ```
 
-4. **Review logs:**
-```bash
-grep -i "error\|fail\|denied" ~/.clide/logs/clide.log
-```
-
-5. **Check system:**
-```bash
-# Check for unauthorized changes
-sudo auditctl -l
-last -f /var/log/wtmp
-```
-
-6. **Secure system:**
-```bash
-# Change passwords
-passwd
-
-# Update all packages
-sudo apt update && sudo apt upgrade -y
-
-# Check for rootkits
-sudo rkhunter --check
-```
+5. **Check system integrity:**
+   ```bash
+   last -f /var/log/wtmp
+   sudo auditctl -l
+   ```
 
 ---
 
-## ✅ Security Checklist
+## Security Checklist
 
-**Before deploying Clide to production:**
+### Initial Setup
+- [ ] Dedicated bot account (Matrix and/or Telegram)
+- [ ] `authorized_users` set to your accounts only
+- [ ] File permissions: `chmod 600` on all files in `~/.clide/`
+- [ ] SSH keys: dedicated key for Clide, `chmod 600`
+- [ ] `require_confirmation: true` on production machines
+- [ ] Vault backup created and passphrase stored safely
 
-- [ ] Config file has 600 permissions
-- [ ] API keys in environment variables (not config file)
-- [ ] Confirmation mode enabled
-- [ ] Command whitelist configured
-- [ ] Dangerous commands blacklisted
-- [ ] SSH key-based auth only (no passwords)
-- [ ] SSH host keys verified
-- [ ] Authorized Signal numbers configured
-- [ ] Comprehensive logging enabled
-- [ ] Log monitoring set up
-- [ ] Regular security updates scheduled
-- [ ] Backup and recovery plan documented
-- [ ] Incident response plan in place
+### Regular Maintenance
+- [ ] Update Clide weekly
+- [ ] Review logs monthly
+- [ ] Rotate API keys quarterly
+- [ ] Rotate Matrix/Telegram tokens after any incident
+- [ ] Run `cargo audit` on dependencies quarterly
 
 ---
 
-## 📚 Additional Resources
+## Report Security Issues
 
-- [Signal Security Whitepaper](https://signal.org/docs/)
+**DO NOT** open a public GitHub issue for security vulnerabilities.
+
+Instead, create a [private security advisory](https://github.com/juanitto-maker/Clide/security/advisories/new).
+
+**Response SLA:**
+- Initial response: within 48 hours
+- Fix timeline: based on severity
+- Public disclosure: after fix is released
+
+---
+
+## Additional Resources
+
+- [Matrix Security](https://matrix.org/docs/guides/end-to-end-encryption-implementation-guide)
 - [OWASP Security Guidelines](https://owasp.org/)
 - [Rust Security Best Practices](https://anssi-fr.github.io/rust-guide/)
 - [SSH Hardening Guide](https://stribika.github.io/2015/01/04/secure-secure-shell.html)
-
----
-
-## 🐛 Report Security Issues
-
-**Found a security vulnerability?**
-
-**DO NOT** open a public GitHub issue!
-
-Instead:
-1. Email: security@yourproject.com
-2. Use PGP key: [link to public key]
-3. We'll respond within 24 hours
-4. Coordinated disclosure after fix
-
-**Bug bounty:** Security researchers welcome!
-
----
-
-## 📋 Security Updates
-
-Subscribe to security advisories:
-- GitHub: Watch → Custom → Security alerts
-- RSS: https://github.com/yourusername/clide/security/advisories.atom
-- Email: security-announce@yourproject.com
-
----
-
-**Security is a shared responsibility. Stay vigilant!** 🛡️
+- [age encryption](https://age-encryption.org/)

@@ -360,7 +360,7 @@ clide: 🛫 Setting up monitoring...
        - SSL expiry <30 days
        
        Notification channels:
-       - Signal (high priority)
+       - Telegram / Matrix (high priority)
        - Email (daily digest)
        
        Dashboard: http://yourip:19999
@@ -561,7 +561,7 @@ clide: 🛫 Setting up CI/CD...
        4. Run tests
        5. Build application
        6. Zero-downtime restart
-       7. Notify on Signal
+       7. Notify on Telegram / Matrix
        
        Test workflow? (yes/no)
 ```
@@ -643,9 +643,9 @@ clide: This will take multiple steps:
 
 ## 📞 Need Help?
 
-- 💬 [Discussions](https://github.com/yourusername/clide/discussions)
+- 💬 [Discussions](https://github.com/juanitto-maker/Clide/discussions)
 - 📖 [Full Documentation](../README.md)
-- 🐛 [Report Issues](https://github.com/yourusername/clide/issues)
+- 🐛 [Report Issues](https://github.com/juanitto-maker/Clide/issues)
 
 ---
 

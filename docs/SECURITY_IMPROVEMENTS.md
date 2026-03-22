@@ -1,248 +1,112 @@
-# 🔐 Security Improvements for Clide
+# Security Improvements for Clide
 
-## Current Vulnerabilities
+Status of security hardening efforts and future improvements.
 
-1. ❌ API keys stored in plaintext in config.yaml
-2. ❌ Keys visible in shell history during setup
-3. ❌ No encryption at rest
-4. ❌ Config file has weak permissions (644)
+Last updated: 2026-03-22
 
 ---
 
-## ✅ Recommended Solutions
+## Implemented
 
-### **Option 1: Environment Variables (Best for Termux)**
+These security measures are shipped and available in the current release.
 
-**Pros:**
-- ✅ Not stored in shell history
-- ✅ Not in config files
-- ✅ Easy to revoke/change
-- ✅ Works with Termux boot scripts
+### Credential Management (v0.3.0+)
 
-**How to implement:**
+| Feature | Status | Details |
+|---------|--------|---------|
+| Centralized secrets file | Shipped | `~/.clide/secrets.yaml` — separate from config |
+| File permissions | Shipped | Installer sets `chmod 600` on secrets and config |
+| Hidden input | Shipped | `clide secret set` uses hidden terminal input |
+| GNU pass / GPG encryption | Shipped | Optional encrypted-at-rest layer via `clide secret pass-init` |
+| Age-encrypted vault backup | Shipped | `clide vault backup/restore` to GitHub Gist |
+| SSH keys in vault | Shipped | `~/.ssh/` keys included in vault archive |
+| Secret scrubber | Shipped | Auto-redacts all secret values before AI prompts and chat |
+| Env var priority | Shipped | `env var > secrets.yaml > config.yaml > default` |
+| Secrets as env vars in skills | Shipped | `config.secrets` exported to child shell processes |
 
+### Access Control (v0.3.0+)
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| User allowlist | Shipped | `authorized_users` — Matrix IDs and Telegram usernames |
+| Fail-closed auth | Shipped | Unauthorized messages rejected with feedback (not silently dropped) |
+| Command blocklist | Shipped | Dangerous patterns blocked before execution |
+| Confirmation mode | Shipped | `require_confirmation: true` for production machines |
+| AI prompt rules | Shipped | System prompt instructs AI to never leak secrets |
+| Bot self-response prevention | Shipped | Bot resolves own user ID via `/whoami` to avoid loops |
+
+### Audit & Logging (v0.3.0+)
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| Structured logging | Shipped | `tracing` with timestamps, log levels, file appender |
+| Command output capping | Shipped | Prevents OOM on Termux from large outputs |
+| YAML control-char stripping | Shipped | Invalid chars removed on config load |
+
+---
+
+## Future Improvements
+
+### High Priority
+
+| Improvement | Description | Complexity |
+|-------------|-------------|------------|
+| Token rotation CLI | `clide secret rotate` — auto-regenerate Matrix/Telegram tokens | Medium |
+| Audit log export | Export command history as structured JSON for SIEM ingestion | Low |
+| Rate limiting | Throttle commands per user per minute to prevent abuse | Low |
+
+### Medium Priority
+
+| Improvement | Description | Complexity |
+|-------------|-------------|------------|
+| Android Keystore | Use Termux API + Android hardware-backed key storage | Medium |
+| Encrypted config at rest | AES-256-GCM encryption of `config.yaml` with master passphrase | Medium |
+| Per-host command allowlists | Restrict which commands can run on each SSH host | Medium |
+| MFA for destructive commands | Require a second-factor confirmation for `rm`, `mkfs`, etc. | High |
+
+### Low Priority
+
+| Improvement | Description | Complexity |
+|-------------|-------------|------------|
+| SELinux/AppArmor profiles | Confine Clide process with mandatory access control | High |
+| Network policy | Restrict outbound connections to known endpoints only | Medium |
+| Signed skill bundles | Verify skill YAML integrity before execution | Medium |
+
+---
+
+## Current Risk Assessment
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Secrets in `secrets.yaml` are plaintext at rest | Low | `chmod 600` + optional GPG via pass |
+| Compromised device can read secrets from RAM | Low | Use GPG + short `gpg-agent` cache timeout |
+| Stolen GitHub token could access vault Gist | Low | Vault is age-encrypted; passphrase required |
+| AI could be prompt-injected to leak secrets | Low | Scrubber redacts before AI sees values; AI rules forbid leaking |
+| Lost vault passphrase = lost backup | Medium | No recovery possible — store passphrase in a separate password manager |
+
+---
+
+## Best Practices
+
+**Secrets storage:**
+- Use `clide secret set` (hidden input) instead of editing YAML directly
+- Enable GNU pass for GPG encryption on shared machines
+- Back up vault before wiping devices
+
+**Access control:**
+- Keep `authorized_users` as tight as possible
+- Use `require_confirmation: true` on production
+- Use a dedicated bot account, not your personal one
+
+**Rotation:**
+- Rotate Gemini API keys quarterly
+- Rotate Matrix access tokens after any suspected compromise
+- Regenerate Telegram bot tokens via @BotFather if leaked
+
+**File permissions:**
 ```bash
-# In install.sh, instead of writing to config:
-echo "export GEMINI_API_KEY='$API_KEY'" >> ~/.bashrc
-echo "export SIGNAL_NUMBER='$SIGNAL_NUMBER'" >> ~/.bashrc
-source ~/.bashrc
+chmod 700 ~/.clide
+chmod 600 ~/.clide/config.yaml
+chmod 600 ~/.clide/secrets.yaml
+chmod 600 ~/.clide/hosts.yaml
 ```
-
-**In Clide code (config.rs):**
-```rust
-use std::env;
-
-pub fn load_config() -> Result<Config> {
-    let api_key = env::var("GEMINI_API_KEY")
-        .or_else(|_| config.gemini_api_key)?;
-    
-    // ... rest of config
-}
-```
-
-**Permissions:**
-```bash
-chmod 600 ~/.bashrc  # Only you can read it
-```
-
----
-
-### **Option 2: Encrypted Config File (Most Secure)**
-
-**Pros:**
-- ✅ Keys encrypted at rest
-- ✅ Password-protected
-- ✅ Can't be read if device stolen
-
-**How to implement:**
-
-Use `ring` crate (already in dependencies!) to encrypt:
-
-```rust
-use ring::aead;
-use ring::pbkdf2;
-
-fn encrypt_config(password: &str, config: &Config) -> Vec<u8> {
-    // Derive key from password
-    let salt = b"clide_config_salt";
-    let mut key = [0u8; 32];
-    pbkdf2::derive(
-        pbkdf2::PBKDF2_HMAC_SHA256,
-        std::num::NonZeroU32::new(100_000).unwrap(),
-        salt,
-        password.as_bytes(),
-        &mut key
-    );
-    
-    // Encrypt config
-    // ... AES-256-GCM encryption
-}
-```
-
-**User flow:**
-```bash
-# During install:
-Enter API key: ****
-Create password to encrypt config: ****
-✅ Config encrypted!
-
-# When running:
-clide start
-Enter config password: ****
-```
-
----
-
-### **Option 3: Android Keystore (Best for Android)**
-
-**Pros:**
-- ✅ Uses Android's hardware security
-- ✅ Keys never in plaintext
-- ✅ Biometric unlock support
-
-**How to implement:**
-
-Use Termux API + Android Keystore:
-
-```bash
-# Install termux-api
-pkg install termux-api
-
-# Store key securely
-termux-keystore put gemini_api_key "$API_KEY"
-
-# Retrieve with fingerprint
-API_KEY=$(termux-keystore get gemini_api_key)
-```
-
-**In Clide:**
-```rust
-use std::process::Command;
-
-fn get_api_key() -> Result<String> {
-    let output = Command::new("termux-keystore")
-        .args(&["get", "gemini_api_key"])
-        .output()?;
-    
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
-}
-```
-
----
-
-## 🎯 Recommended Hybrid Approach
-
-**For Clide, I recommend:**
-
-### **During Install:**
-1. ✅ Use environment variables (Option 1)
-2. ✅ Strict file permissions
-3. ✅ Clear sensitive input from terminal
-
-### **In Config File:**
-```yaml
-# config.yaml - NO SECRETS HERE!
-signal_number: "+1234567890"  # OK, not super sensitive
-allow_commands: true
-log_level: "info"
-
-# Secrets from environment:
-# GEMINI_API_KEY - set in ~/.bashrc
-# SIGNAL_PASSWORD - set in ~/.bashrc (if needed)
-```
-
-### **File Permissions:**
-```bash
-chmod 600 ~/.clide/config.yaml  # Only you can read
-chmod 700 ~/.clide              # Only you can access directory
-chmod 600 ~/.bashrc             # Only you can read env vars
-```
-
----
-
-## 🔧 Improved Install Script
-
-```bash
-# Secure API key input (no echo to screen)
-echo "═══════════════════════════════════════"
-echo "🔑 Gemini API Key Setup"
-echo "═══════════════════════════════════════"
-echo ""
-echo "To use Clide, you need a Gemini API key."
-echo "Get one free at: https://makersuite.google.com/app/apikey"
-echo ""
-read -sp "Enter your Gemini API key (hidden): " API_KEY
-echo ""
-
-if [ ! -z "$API_KEY" ]; then
-    # Store in environment, NOT in config file
-    echo "" >> ~/.bashrc
-    echo "# Clide API Keys (added by installer)" >> ~/.bashrc
-    echo "export GEMINI_API_KEY='$API_KEY'" >> ~/.bashrc
-    
-    # Secure permissions
-    chmod 600 ~/.bashrc
-    
-    # Clear from current shell history
-    history -d $((HISTCMD-1))
-    
-    echo "✅ API key securely stored in environment"
-    CONFIG_READY=true
-else
-    echo "⚠️  Skipped API key setup"
-    CONFIG_READY=false
-fi
-```
-
----
-
-## 📋 Security Checklist for Clide
-
-- [ ] Move API keys to environment variables
-- [ ] Set `chmod 600` on all config files
-- [ ] Clear sensitive input from shell history
-- [ ] Use `read -s` for password input (silent)
-- [ ] Add security warning in README
-- [ ] Consider encryption for config (Option 2)
-- [ ] Support Android Keystore (Option 3 - future)
-
----
-
-## ⚠️ Current Risk Assessment
-
-| Risk | Severity | Impact |
-|------|----------|--------|
-| Plaintext API key in config | 🔴 HIGH | Key theft if device compromised |
-| Shell history exposure | 🟡 MEDIUM | Keys visible to local attackers |
-| Weak file permissions | 🟡 MEDIUM | Other apps can read config |
-| No encryption at rest | 🟠 LOW-MEDIUM | Depends on device security |
-
----
-
-## 🚀 Quick Win Implementation
-
-**Minimal changes for immediate improvement:**
-
-1. Use environment variables instead of config file
-2. Add `-s` flag to `read` command (silent input)
-3. Set proper file permissions
-4. Clear from history
-
-**Time to implement:** 30 minutes
-**Security improvement:** 70%+ better
-
----
-
-## 💡 Best Practice
-
-**Never store secrets in:**
-- ❌ Config files (plaintext)
-- ❌ Git repositories
-- ❌ Shell history
-- ❌ Application logs
-
-**Always store secrets in:**
-- ✅ Environment variables (with proper permissions)
-- ✅ Encrypted keychains
-- ✅ Hardware security modules (Android Keystore)
-- ✅ Secret management services (for production)
