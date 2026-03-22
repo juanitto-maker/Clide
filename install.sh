@@ -631,6 +631,8 @@ echo "" >/dev/tty
 echo "🖥️  VPS / Server Setup (optional)" >/dev/tty
 echo "───────────────────────────────────────" >/dev/tty
 echo "   Add SSH hosts so Clide can manage your servers." >/dev/tty
+echo "   The installer will set up key-based SSH so Clide" >/dev/tty
+echo "   can connect without a password (you enter it once)." >/dev/tty
 echo "   You can also do this later with: clide host add" >/dev/tty
 echo "   (Press Enter to skip.)" >/dev/tty
 echo "" >/dev/tty
@@ -652,21 +654,74 @@ if [[ "$ADD_HOST" =~ ^[Yy] ]]; then
         ask "  SSH user [root]: " HOST_USER
         HOST_USER="${HOST_USER:-root}"
 
-        ask "  SSH key path [$HOME/.ssh/id_ed25519]: " HOST_KEY
-        HOST_KEY="${HOST_KEY:-$HOME/.ssh/id_ed25519}"
-
         ask "  SSH port [22]: " HOST_PORT
         HOST_PORT="${HOST_PORT:-22}"
 
         ask "  Notes (optional): " HOST_NOTES
 
-        # Write to hosts.yaml
+        # ── SSH key generation & deployment ──────────────────────────────
+        # Use a per-host key so revoking one server doesn't affect others.
+        HOST_KEY="$HOME/.ssh/id_ed25519_${HOST_NICK}"
+
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+
+        if [ -f "$HOST_KEY" ]; then
+            echo "  🔑 SSH key already exists: $HOST_KEY" >/dev/tty
+        else
+            echo "" >/dev/tty
+            echo "  🔑 Generating SSH key for '$HOST_NICK'..." >/dev/tty
+            ssh-keygen -t ed25519 -f "$HOST_KEY" -N "" -C "clide@${HOST_NICK}" </dev/null >/dev/tty 2>&1
+            if [ -f "$HOST_KEY" ]; then
+                chmod 600 "$HOST_KEY"
+                chmod 644 "${HOST_KEY}.pub"
+                echo "  ✅ Key generated: $HOST_KEY" >/dev/tty
+            else
+                echo "  ❌ Key generation failed. You can create it later with:" >/dev/tty
+                echo "     ssh-keygen -t ed25519 -f $HOST_KEY -N \"\"" >/dev/tty
+            fi
+        fi
+
+        # ── Copy key to server (password required once) ──────────────────
+        if [ -f "${HOST_KEY}.pub" ]; then
+            echo "" >/dev/tty
+            echo "  📤 Copying key to ${HOST_USER}@${HOST_IP}..." >/dev/tty
+            echo "     You'll need to enter the server password ONE LAST TIME." >/dev/tty
+            echo "     After this, Clide connects without a password." >/dev/tty
+            echo "" >/dev/tty
+
+            # ssh-copy-id reads password from /dev/tty automatically
+            if ssh-copy-id -i "${HOST_KEY}.pub" -p "$HOST_PORT" \
+                    -o StrictHostKeyChecking=accept-new \
+                    "${HOST_USER}@${HOST_IP}" </dev/tty >/dev/tty 2>&1; then
+
+                echo "" >/dev/tty
+                echo "  ✅ Key copied! Testing passwordless login..." >/dev/tty
+
+                # Verify it works without a password
+                if ssh -i "$HOST_KEY" -p "$HOST_PORT" \
+                        -o BatchMode=yes -o ConnectTimeout=10 \
+                        "${HOST_USER}@${HOST_IP}" "echo OK" >/dev/null 2>&1; then
+                    echo "  ✅ Passwordless SSH works! Clide can now manage '$HOST_NICK'." >/dev/tty
+                else
+                    echo "  ⚠️  Key was copied but passwordless test failed." >/dev/tty
+                    echo "     Check that the server allows key-based auth (PubkeyAuthentication yes)." >/dev/tty
+                    echo "     You can test manually: ssh -i $HOST_KEY -p $HOST_PORT ${HOST_USER}@${HOST_IP}" >/dev/tty
+                fi
+            else
+                echo "" >/dev/tty
+                echo "  ⚠️  Could not copy key (wrong password or server unreachable)." >/dev/tty
+                echo "     You can do it manually later:" >/dev/tty
+                echo "     ssh-copy-id -i ${HOST_KEY}.pub -p $HOST_PORT ${HOST_USER}@${HOST_IP}" >/dev/tty
+            fi
+        fi
+
+        # ── Save to hosts.yaml ───────────────────────────────────────────
         mkdir -p ~/.clide
         if [ ! -f ~/.clide/hosts.yaml ]; then
             : >~/.clide/hosts.yaml
         fi
 
-        # Append host entry
         cat >>~/.clide/hosts.yaml <<HOSTEOF
 
 $HOST_NICK:
@@ -679,36 +734,14 @@ HOSTEOF
         chmod 600 ~/.clide/hosts.yaml
 
         HOST_COUNT=$((HOST_COUNT + 1))
-        echo "  ✅ Host '$HOST_NICK' saved" >/dev/tty
+        echo "  ✅ Host '$HOST_NICK' saved to ~/.clide/hosts.yaml" >/dev/tty
         echo "" >/dev/tty
         ask "  Add another server? [y/N]: " ADD_MORE
         [[ ! "$ADD_MORE" =~ ^[Yy] ]] && break
     done
 
     if [ "$HOST_COUNT" -gt 0 ]; then
-        echo "✅ $HOST_COUNT server(s) saved to ~/.clide/hosts.yaml" >/dev/tty
-    fi
-
-    # Ask if they want to store a VPS password in secrets
-    echo "" >/dev/tty
-    ask "  Store a VPS root/sudo password? [y/N]: " STORE_VPS_PASS
-    if [[ "$STORE_VPS_PASS" =~ ^[Yy] ]]; then
-        ask "  Secret name (e.g. VPS_ROOT_PASSWORD): " VPS_SECRET_NAME
-        VPS_SECRET_NAME="${VPS_SECRET_NAME:-VPS_ROOT_PASSWORD}"
-        ask "  Password (hidden): " VPS_SECRET_VAL secret
-        if [ -n "$VPS_SECRET_VAL" ]; then
-            if [ -f ~/.clide/secrets.yaml ]; then
-                if grep -q "^${VPS_SECRET_NAME}:" ~/.clide/secrets.yaml 2>/dev/null; then
-                    sed -i "s|^${VPS_SECRET_NAME}:.*|${VPS_SECRET_NAME}: \"$VPS_SECRET_VAL\"|" ~/.clide/secrets.yaml
-                else
-                    echo "${VPS_SECRET_NAME}: \"$VPS_SECRET_VAL\"" >>~/.clide/secrets.yaml
-                fi
-            else
-                echo "${VPS_SECRET_NAME}: \"$VPS_SECRET_VAL\"" >~/.clide/secrets.yaml
-            fi
-            chmod 600 ~/.clide/secrets.yaml
-            echo "  ✅ ${VPS_SECRET_NAME} saved to secrets.yaml" >/dev/tty
-        fi
+        echo "✅ $HOST_COUNT server(s) configured with key-based SSH" >/dev/tty
     fi
 else
     echo "⏭  Skipped. Add servers later with: clide host add" >/dev/tty
