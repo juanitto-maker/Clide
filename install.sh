@@ -1,6 +1,6 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ============================================
-# Clide Installer for Termux
+# Clide Installer for Termux & Linux
 # One-liner: curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
 # ============================================
 
@@ -22,13 +22,27 @@ for arg in "$@"; do
     esac
 done
 
-# ─── Guards ───────────────────────────────────────────────────────────────────
+# ─── Platform detection ──────────────────────────────────────────────────────
+# Priority: 1) Termux (Android) — PRIMARY
+#           2) Linux x86_64 (Ubuntu VPS)
+#           3) Linux ARM64 (Raspberry Pi etc.)
+#           4) Other → unsupported
 
-if [[ ! "$PREFIX" =~ "com.termux" ]]; then
-    echo "❌ This installer is for Termux on Android only."
+if [[ "$PREFIX" =~ "com.termux" ]]; then
+    PLATFORM="termux"
+    BIN_DIR="$PREFIX/bin"
+    PKG_MANAGER="pkg"
+    echo "✅ Termux detected"
+elif [[ "$(uname -s)" == "Linux" ]]; then
+    PLATFORM="linux"
+    BIN_DIR="/usr/local/bin"
+    PKG_MANAGER="apt-get"
+    echo "✅ Linux detected ($(uname -m))"
+else
+    echo "❌ Unsupported platform: $(uname -s)"
+    echo "   Supported: Termux (Android), Linux (x86_64, aarch64)"
     exit 1
 fi
-echo "✅ Termux detected"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,11 +120,19 @@ spinner() {
 # ─── 1. System packages ───────────────────────────────────────────────────────
 
 step "Updating packages"
-pkg update -y 2>&1 | grep -E "^(Get:|Fetched|Reading)" | tail -5 || true
+if [ "$PLATFORM" = "termux" ]; then
+    pkg update -y 2>&1 | grep -E "^(Get:|Fetched|Reading)" | tail -5 || true
+else
+    sudo apt-get update -y 2>&1 | grep -E "^(Get:|Fetched|Reading)" | tail -5 || true
+fi
 echo "✅ Done"
 
 step "Installing dependencies"
-pkg install -y git wget curl age 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
+if [ "$PLATFORM" = "termux" ]; then
+    pkg install -y git wget curl age 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
+else
+    sudo apt-get install -y git wget curl age 2>&1 | grep -E "^(Unpacking|Setting up)" | sed 's/^/   /' || true
+fi
 echo "✅ Done"
 
 # ─── Restore mode: decrypt vault and exit ─────────────────────────────────────
@@ -204,25 +226,67 @@ fi
 # ─── 2. Install Clide binary ──────────────────────────────────────────────────
 
 step "Installing Clide binary"
-mkdir -p "$PREFIX/bin"
+mkdir -p "$BIN_DIR" 2>/dev/null || sudo mkdir -p "$BIN_DIR"
 
 CLIDE_INSTALLED=false
+
+# Determine which binary artifact to download based on platform + arch
+if [ "$PLATFORM" = "termux" ]; then
+    BIN_NAME="clide-aarch64-android"
+    # Fallback: also try the legacy name for older releases
+    BIN_NAME_FALLBACK="clide-aarch64"
+elif [ "$(uname -m)" = "x86_64" ]; then
+    BIN_NAME="clide-x86_64"
+    BIN_NAME_FALLBACK=""
+elif [ "$(uname -m)" = "aarch64" ]; then
+    BIN_NAME="clide-aarch64"
+    BIN_NAME_FALLBACK=""
+else
+    echo "   ⚠️  Unknown architecture: $(uname -m) — will try building from source."
+    BIN_NAME=""
+    BIN_NAME_FALLBACK=""
+fi
 
 # 2a. Try pre-built binary from GitHub Releases (fast path, skips Rust build)
 echo "   Checking for pre-built binary..."
 LATEST_TAG=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/' | head -1 || true)
 
-if [ -n "$LATEST_TAG" ]; then
-    BIN_URL="https://github.com/${REPO}/releases/download/v${LATEST_TAG}/clide-aarch64"
-    echo "   Trying pre-built binary for v${LATEST_TAG}..."
-    if wget -q "$BIN_URL" -O "$PREFIX/bin/clide" 2>/dev/null; then
-        chmod +x "$PREFIX/bin/clide"
+if [ -n "$LATEST_TAG" ] && [ -n "$BIN_NAME" ]; then
+    BIN_URL="https://github.com/${REPO}/releases/download/v${LATEST_TAG}/${BIN_NAME}"
+    echo "   Trying pre-built binary ${BIN_NAME} for v${LATEST_TAG}..."
+    TMP_BIN=$(mktemp)
+    if wget -q "$BIN_URL" -O "$TMP_BIN" 2>/dev/null && [ -s "$TMP_BIN" ]; then
+        if [ "$PLATFORM" = "termux" ]; then
+            mv "$TMP_BIN" "$BIN_DIR/clide"
+        else
+            sudo mv "$TMP_BIN" "$BIN_DIR/clide"
+        fi
+        chmod +x "$BIN_DIR/clide" 2>/dev/null || sudo chmod +x "$BIN_DIR/clide"
         echo "✅ Pre-built binary installed (v${LATEST_TAG})"
         CLIDE_INSTALLED=true
+    elif [ -n "$BIN_NAME_FALLBACK" ]; then
+        # Try fallback name (e.g. clide-aarch64 for Termux on older releases)
+        rm -f "$TMP_BIN"
+        BIN_URL="https://github.com/${REPO}/releases/download/v${LATEST_TAG}/${BIN_NAME_FALLBACK}"
+        echo "   Trying fallback binary ${BIN_NAME_FALLBACK}..."
+        TMP_BIN=$(mktemp)
+        if wget -q "$BIN_URL" -O "$TMP_BIN" 2>/dev/null && [ -s "$TMP_BIN" ]; then
+            if [ "$PLATFORM" = "termux" ]; then
+                mv "$TMP_BIN" "$BIN_DIR/clide"
+            else
+                sudo mv "$TMP_BIN" "$BIN_DIR/clide"
+            fi
+            chmod +x "$BIN_DIR/clide" 2>/dev/null || sudo chmod +x "$BIN_DIR/clide"
+            echo "✅ Pre-built binary installed (v${LATEST_TAG}, fallback)"
+            CLIDE_INSTALLED=true
+        else
+            echo "   No binary in release v${LATEST_TAG} — will build from source."
+            rm -f "$TMP_BIN"
+        fi
     else
-        echo "   No aarch64 binary in release v${LATEST_TAG} — will build from source."
-        rm -f "$PREFIX/bin/clide"
+        echo "   No ${BIN_NAME} binary in release v${LATEST_TAG} — will build from source."
+        rm -f "$TMP_BIN"
     fi
 else
     echo "   No release found — will build from source."
@@ -232,15 +296,32 @@ fi
 if [ "$CLIDE_INSTALLED" = false ]; then
     step "Building Clide from source"
     echo "   ⚠️  No pre-built binary — compiling from source."
-    echo "   This takes 10-15 min on most devices. Keep Termux open."
-    echo ""
 
-    pkg install -y rust binutils pkg-config openssl \
-        >"$TMPDIR/pkg_rust.log" 2>&1 &
-    spinner $! "Installing Rust toolchain"
-    wait $! || { echo "❌ Rust install failed"; cat "$TMPDIR/pkg_rust.log"; exit 1; }
-    grep -E "^(Unpacking|Setting up)" "$TMPDIR/pkg_rust.log" | \
-        sed 's/^/   /' | tail -3 || true
+    if [ "$PLATFORM" = "termux" ]; then
+        echo "   This takes 10-15 min on most devices. Keep Termux open."
+        echo ""
+
+        pkg install -y rust binutils pkg-config openssl \
+            >"$TMPDIR/pkg_rust.log" 2>&1 &
+        spinner $! "Installing Rust toolchain"
+        wait $! || { echo "❌ Rust install failed"; cat "$TMPDIR/pkg_rust.log"; exit 1; }
+        grep -E "^(Unpacking|Setting up)" "$TMPDIR/pkg_rust.log" | \
+            sed 's/^/   /' | tail -3 || true
+    else
+        echo "   Installing Rust toolchain..."
+        echo ""
+        BUILD_TMPDIR="${TMPDIR:-/tmp}"
+
+        sudo apt-get install -y build-essential pkg-config libssl-dev \
+            >"$BUILD_TMPDIR/pkg_rust.log" 2>&1 &
+        spinner $! "Installing build dependencies"
+        wait $! || { echo "❌ Build deps install failed"; cat "$BUILD_TMPDIR/pkg_rust.log"; exit 1; }
+
+        if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y 2>&1 | tail -3
+            . "$HOME/.cargo/env"
+        fi
+    fi
 
     if ! command -v cargo >/dev/null 2>&1; then
         echo "❌ Rust installation failed"
@@ -258,14 +339,16 @@ if [ "$CLIDE_INSTALLED" = false ]; then
     fi
     cd "$INSTALL_DIR"
 
-    # Termux build environment
-    export CC="$PREFIX/bin/clang"
-    export AR="$PREFIX/bin/llvm-ar"
-    export OPENSSL_INCLUDE_DIR="$PREFIX/include"
-    export OPENSSL_LIB_DIR="$PREFIX/lib"
+    if [ "$PLATFORM" = "termux" ]; then
+        # Termux build environment
+        export CC="$PREFIX/bin/clang"
+        export AR="$PREFIX/bin/llvm-ar"
+        export OPENSSL_INCLUDE_DIR="$PREFIX/include"
+        export OPENSSL_LIB_DIR="$PREFIX/lib"
+    fi
 
     echo "   Compiling Clide... (started $(date '+%H:%M:%S'), this will take a while)"
-    BUILD_LOG="$TMPDIR/clide_build.log"
+    BUILD_LOG="${TMPDIR:-/tmp}/clide_build.log"
 
     cargo build --release 2>&1 | tee "$BUILD_LOG" | \
         grep -E "^(   Compiling|   Finished|  Downloaded|  Downloading|error\[)" || true
@@ -275,8 +358,12 @@ if [ "$CLIDE_INSTALLED" = false ]; then
         exit 1
     fi
 
-    cp target/release/clide "$PREFIX/bin/clide"
-    chmod +x "$PREFIX/bin/clide"
+    if [ "$PLATFORM" = "termux" ]; then
+        cp target/release/clide "$BIN_DIR/clide"
+    else
+        sudo cp target/release/clide "$BIN_DIR/clide"
+    fi
+    chmod +x "$BIN_DIR/clide" 2>/dev/null || sudo chmod +x "$BIN_DIR/clide"
     echo "✅ Built and installed. Finished: $(date '+%H:%M:%S')"
     CLIDE_INSTALLED=true
 fi
@@ -856,3 +943,21 @@ echo ""
 echo "  Vault is age-encrypted → GitHub Gist."
 echo "  Recovery needs: GitHub token + Gist ID + your passphrase."
 echo ""
+
+# ─── Platform-specific tips ──────────────────────────────────────────────────
+if [ "$PLATFORM" = "termux" ]; then
+    echo "─── Termux Tips ────────────────────────────────────────────────"
+    echo ""
+    echo "  💡 Run 'termux-wake-lock' to prevent Android from killing Clide"
+    echo "     while it runs in the background."
+    echo ""
+    echo "  💡 If packages fail to download, try: termux-change-repo"
+    echo "     to switch to a faster mirror."
+    echo ""
+elif [ "$PLATFORM" = "linux" ]; then
+    echo "─── Linux VPS Tips ─────────────────────────────────────────────"
+    echo ""
+    echo "  💡 Run Clide in the background with: nohup clide bot &"
+    echo "     or use a process manager like systemd or tmux."
+    echo ""
+fi
