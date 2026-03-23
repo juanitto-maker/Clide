@@ -44,6 +44,23 @@ pub struct TelegramMessage {
     pub file: Option<AttachedFile>,
 }
 
+/// A callback query triggered by an inline keyboard button press.
+#[derive(Debug, Clone)]
+pub struct TelegramCallbackQuery {
+    pub id: String,
+    pub chat_id: i64,
+    pub thread_id: Option<i64>,
+    pub sender: String,
+    pub data: String,
+}
+
+/// A single update from Telegram — either a message or a callback query.
+#[derive(Debug, Clone)]
+pub enum TelegramUpdate {
+    Message(TelegramMessage),
+    Callback(TelegramCallbackQuery),
+}
+
 // ── Telegram API response types ────────────────────────────────────────────────
 
 /// BUG FIX: `result` must be `#[serde(default)]` so that error responses like
@@ -63,6 +80,22 @@ struct GetUpdatesResponse {
 struct Update {
     update_id: i64,
     message: Option<Message>,
+    callback_query: Option<CallbackQuery>,
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    id: String,
+    from: Option<User>,
+    message: Option<CallbackMessage>,
+    data: Option<String>,
+}
+
+/// Minimal message info embedded in a callback_query (different shape from Message).
+#[derive(Deserialize)]
+struct CallbackMessage {
+    chat: Chat,
+    message_thread_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -218,33 +251,32 @@ impl TelegramClient {
         Ok(())
     }
 
-    /// Long-poll Telegram for new messages (timeout=30s).
-    /// Updates the shared offset so each message is delivered exactly once.
+    /// Long-poll Telegram for new updates (timeout=30s).
+    /// Updates the shared offset so each update is delivered exactly once.
     /// Takes `&self` because the offset is behind an Arc — clones share it.
-    pub async fn get_updates(&self) -> Result<Vec<TelegramMessage>> {
+    pub async fn get_updates(&self) -> Result<Vec<TelegramUpdate>> {
         self.fetch_updates(30).await
     }
 
-    /// Short-poll Telegram for new messages (timeout=5s).
+    /// Short-poll Telegram for new updates (timeout=5s).
     /// Used by the stop-watcher task so it can react quickly without blocking
     /// the 30-second long-poll window.
-    pub async fn get_updates_short(&self) -> Result<Vec<TelegramMessage>> {
+    pub async fn get_updates_short(&self) -> Result<Vec<TelegramUpdate>> {
         self.fetch_updates(5).await
     }
 
     /// Inner helper: call getUpdates with a configurable timeout.
-    async fn fetch_updates(&self, timeout_secs: u32) -> Result<Vec<TelegramMessage>> {
+    async fn fetch_updates(&self, timeout_secs: u32) -> Result<Vec<TelegramUpdate>> {
         let offset = self.offset.load(Ordering::SeqCst);
         let url = format!(
-            "https://api.telegram.org/bot{}/getUpdates?offset={}&timeout={}",
-            self.token, offset, timeout_secs
+            "https://api.telegram.org/bot{}/getUpdates?offset={}&timeout={}&allowed_updates={}",
+            self.token, offset, timeout_secs,
+            "[\"message\",\"callback_query\"]"
         );
 
         let resp: GetUpdatesResponse = self.client.get(&url).send().await?.json().await?;
 
         if !resp.ok {
-            // Log the specific Telegram error so we can diagnose it at runtime.
-            // Common codes: 401 = bad token, 409 = webhook conflict, 429 = rate limit.
             error!(
                 "Telegram getUpdates returned ok=false (code={:?}): {:?}",
                 resp.error_code,
@@ -253,14 +285,30 @@ impl TelegramClient {
             return Ok(vec![]);
         }
 
-        let mut messages = Vec::new();
+        let mut updates = Vec::new();
         for update in resp.result {
             // Advance the shared offset past this update so it isn't re-delivered.
-            // fetch_and_update is not strictly atomic but this function is never
-            // called concurrently from two tasks on the same client.
             self.offset.store(update.update_id + 1, Ordering::SeqCst);
 
-            if let Some(msg) = update.message {
+            if let Some(cb) = update.callback_query {
+                let sender = cb
+                    .from
+                    .map(|u| u.username.unwrap_or(u.first_name))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let (chat_id, thread_id) = cb
+                    .message
+                    .map(|m| (m.chat.id, m.message_thread_id))
+                    .unwrap_or((0, None));
+                if let Some(data) = cb.data {
+                    updates.push(TelegramUpdate::Callback(TelegramCallbackQuery {
+                        id: cb.id,
+                        chat_id,
+                        thread_id,
+                        sender,
+                        data,
+                    }));
+                }
+            } else if let Some(msg) = update.message {
                 // Use text for plain messages, caption for media messages.
                 let text = msg.text.or(msg.caption).unwrap_or_default();
 
@@ -274,17 +322,17 @@ impl TelegramClient {
 
                 // Only deliver the message if it has text, a caption, or a file.
                 if !text.is_empty() || file.is_some() {
-                    messages.push(TelegramMessage {
+                    updates.push(TelegramUpdate::Message(TelegramMessage {
                         chat_id: msg.chat.id,
                         thread_id: msg.message_thread_id,
                         sender,
                         text,
                         file,
-                    });
+                    }));
                 }
             }
         }
-        Ok(messages)
+        Ok(updates)
     }
 
     /// Inspect the message's media fields and download the first attachment found.
@@ -552,5 +600,68 @@ impl TelegramClient {
             return Err(anyhow::anyhow!("sendDocument failed: {}", desc));
         }
         Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
+    }
+
+    /// Send a text message with an inline keyboard. Returns the message_id.
+    /// `inline_keyboard` is a 2D array of buttons: Vec<row>, each row is Vec<(text, callback_data)>.
+    pub async fn send_message_with_keyboard(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        html: &str,
+        inline_keyboard: Vec<Vec<(String, String)>>,
+    ) -> Result<i64> {
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let keyboard_json: Vec<Vec<serde_json::Value>> = inline_keyboard
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|(text, data)| {
+                        serde_json::json!({ "text": text, "callback_data": data })
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": html,
+            "parse_mode": "HTML",
+            "reply_markup": { "inline_keyboard": keyboard_json },
+        });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
+        let resp: SendResponse = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if !resp.ok {
+            let desc = resp.description.as_deref().unwrap_or("unknown error");
+            return Err(anyhow::anyhow!("send_message_with_keyboard failed: {}", desc));
+        }
+        Ok(resp.result.map(|m| m.message_id).unwrap_or(0))
+    }
+
+    /// Answer a callback query to dismiss the "loading" spinner on the button.
+    pub async fn answer_callback_query(&self, callback_query_id: &str) -> Result<()> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/answerCallbackQuery",
+            self.token
+        );
+        let _: serde_json::Value = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({
+                "callback_query_id": callback_query_id,
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(())
     }
 }
