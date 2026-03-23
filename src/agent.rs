@@ -132,12 +132,18 @@ pub struct Agent {
     /// Injected as ${KEY_NAME} placeholders in skill commands at execution time.
     /// Never sent to the AI model.
     secrets: HashMap<String, String>,
+    /// Optional permanent context loaded from a markdown file at startup.
+    context_file_content: Option<String>,
 }
 
 impl Agent {
     pub fn new(config: &Config) -> Self {
         let memory = Self::init_memory();
         let skill_manager = Self::init_skills();
+        let context_file_content = config.load_context_file();
+        if context_file_content.is_some() {
+            info!("Loaded context file into permanent agent context");
+        }
         Self {
             client: Client::new(),
             api_key: config.gemini_api_key.clone(),
@@ -149,6 +155,7 @@ impl Agent {
             skill_manager,
             cancelled: Arc::new(AtomicBool::new(false)),
             secrets: config.secrets.clone(),
+            context_file_content,
         }
     }
 
@@ -230,7 +237,13 @@ impl Agent {
             _ => String::new(),
         };
 
-        let base = format!("{}{}{}", SYSTEM_PROMPT, skill_section, hosts_section);
+        let context_file_section = self
+            .context_file_content
+            .as_ref()
+            .map(|c| format!("\n\n--- User-provided context ---\n{}", c))
+            .unwrap_or_default();
+
+        let base = format!("{}{}{}{}", SYSTEM_PROMPT, skill_section, hosts_section, context_file_section);
 
         if context.trim().is_empty() {
             base

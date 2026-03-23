@@ -91,6 +91,13 @@ blocked_commands:
   - "mkfs"
   - "dd if="
 
+# --- Context file ---
+# Optional path to a markdown file whose contents are loaded into the agent's
+# permanent system prompt on every startup.  Use this to inject project notes,
+# coding guidelines, or any persistent instructions.
+# Supports ~ for the home directory.
+# context_file: "~/.clide/context.md"
+
 # --- Logging ---
 logging:
   level: "info"   # trace | debug | info | warn | error
