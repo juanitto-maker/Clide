@@ -22,6 +22,7 @@ use crate::database::Database;
 use crate::executor::Executor;
 use crate::hosts;
 use crate::memory::Memory;
+use crate::search;
 use crate::skills::SkillManager;
 
 /// Maximum output bytes fed back to Gemini per tool call (avoids context overflow).
@@ -49,6 +50,9 @@ appropriate shell commands without asking for clarification.\n\
 - Set up cron jobs with crontab\n\
 - Run background processes with nohup / screen / tmux\n\
 - Access the internet with curl / wget\n\
+- Search the web via `web_search` for documentation, error messages, how-tos, \
+or any information you need to complete a task. Use this BEFORE guessing when \
+you encounter unfamiliar tools, libraries, or error messages.\n\
 - Execute predefined skill workflows via `run_skill`\n\
 - Export files to the user: save any output file, report, or log to \
 ~/clide_exports/ ($HOME/clide_exports/) and it will be automatically sent to the \
@@ -259,6 +263,23 @@ impl Agent {
             }
         });
 
+        let web_search = json!({
+            "name": "web_search",
+            "description": "Search the web using DuckDuckGo. Use this to look up documentation, \
+                error messages, library usage, CLI tool flags, or any information needed to \
+                complete a task. Returns titles, URLs, and snippets for top results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query (e.g. 'rust reqwest set timeout', 'ffmpeg convert mp4 to gif')"
+                    }
+                },
+                "required": ["query"]
+            }
+        });
+
         let skill_names: Vec<String> = self
             .skill_manager
             .as_ref()
@@ -266,7 +287,7 @@ impl Agent {
             .unwrap_or_default();
 
         if skill_names.is_empty() {
-            return json!([{"function_declarations": [run_command]}]);
+            return json!([{"function_declarations": [run_command, web_search]}]);
         }
 
         let run_skill = json!({
@@ -293,7 +314,7 @@ impl Agent {
             }
         });
 
-        json!([{"function_declarations": [run_command, run_skill]}])
+        json!([{"function_declarations": [run_command, web_search, run_skill]}])
     }
 
     /// Run the agentic task loop.
@@ -405,6 +426,52 @@ impl Agent {
                         };
 
                         conversation.push(Self::fn_response("run_skill", &truncated, exit_code));
+                    }
+
+                    "web_search" => {
+                        let query = fc["args"]["query"].as_str().unwrap_or("").to_string();
+
+                        info!("Agent searching web: {}", query);
+                        Self::send_progress(
+                            &progress,
+                            format!("[search] {}", query),
+                        )
+                        .await;
+
+                        let search_timeout = Duration::from_secs(30);
+                        let output = match timeout(
+                            search_timeout,
+                            search::search(&self.client, &query),
+                        )
+                        .await
+                        {
+                            Ok(Ok(results)) => {
+                                let formatted = search::format_results(&results);
+                                Self::send_progress(
+                                    &progress,
+                                    format!("  {} result(s)", results.len()),
+                                )
+                                .await;
+                                formatted
+                            }
+                            Ok(Err(e)) => {
+                                let err = format!("Search error: {}", e);
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
+                                err
+                            }
+                            Err(_) => {
+                                let err = "Search timed out after 30s".to_string();
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
+                                err
+                            }
+                        };
+
+                        let truncated = if output.len() > MAX_OUTPUT_BYTES {
+                            output[..MAX_OUTPUT_BYTES].to_string()
+                        } else {
+                            output
+                        };
+                        conversation.push(Self::fn_response("web_search", &truncated, 0));
                     }
 
                     _ => {
