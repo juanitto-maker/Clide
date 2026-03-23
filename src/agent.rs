@@ -100,6 +100,14 @@ via ${KEY_NAME} substitution at execution time — the values never appear in th
 conversation or reach the AI model. When asked to configure an external tool \
 (e.g. aiwb) with API keys from secrets, use run_skill — it handles key \
 propagation securely without you needing to read or echo any secret.\n\n\
+IMPORTANT: Always use run_command or run_skill to get information or take action. \
+Never respond with 'I would do X' — just do it.";
+
+const LOCAL_AGENT_PREAMBLE: &str = "\
+You are running as a local agent on this machine. Run all commands directly using \
+bash without SSH. Do not attempt SSH connections.\n\n";
+
+const SSH_HOST_RULES: &str = "\n\n\
 SSH HOST RULES:\n\
 - When the user asks to do anything on their VPS, server, or remote host: use the \
 registered hosts listed below (injected at runtime). Use those details directly — \
@@ -109,9 +117,7 @@ NEVER ask the user for IP addresses, usernames, or key paths.\n\
 nicknames and ask the user to pick one — never ask for raw IPs or usernames.\n\
 - Connect using: ssh -i <key_path> -p <port> <user>@<ip> '<command>'\n\
 - Host details are also available as environment variables: ${HOST_<NICK>_IP}, \
-${HOST_<NICK>_USER}, ${HOST_<NICK>_KEY_PATH}, ${HOST_<NICK>_PORT}.\n\n\
-IMPORTANT: Always use run_command or run_skill to get information or take action. \
-Never respond with 'I would do X' — just do it.\n\
+${HOST_<NICK>_USER}, ${HOST_<NICK>_KEY_PATH}, ${HOST_<NICK>_PORT}.\n\
 When running skills that require SSH connection params, always look up the \
 registered hosts from ~/.clide/hosts.yaml first, then pass the correct \
 ${HOST_<NICK>_*} variables as skill parameters.";
@@ -209,9 +215,10 @@ impl Agent {
             .map(|s| format!("\n\nAvailable skills (use run_skill to execute):\n{}", s))
             .unwrap_or_default();
 
-        // Inject registered SSH hosts so the model knows what's available
-        // without needing to cat hosts.yaml (which would expose IPs in chat).
-        let hosts_section = match hosts::load() {
+        // Detect whether hosts are configured to determine local-only vs SSH mode.
+        // If no hosts are registered, prepend a local-agent preamble so the model
+        // knows to run everything locally without attempting SSH connections.
+        let (mode_prefix, hosts_section) = match hosts::load() {
             Ok(map) if !map.is_empty() => {
                 let mut lines = vec![
                     "\n\nRegistered SSH hosts (use these automatically, never ask user for IP/user):".to_string(),
@@ -225,12 +232,21 @@ impl Agent {
                         name, h.user, h.ip, h.port, h.key_path
                     ));
                 }
-                lines.join("\n")
+                (SSH_HOST_RULES.to_string(), lines.join("\n"))
             }
-            _ => String::new(),
+            _ => {
+                info!("No hosts configured — running in local-only agent mode");
+                (String::new(), String::new())
+            }
         };
 
-        let base = format!("{}{}{}", SYSTEM_PROMPT, skill_section, hosts_section);
+        let base = if mode_prefix.is_empty() {
+            // Local-only mode: prepend local agent preamble, no SSH rules
+            format!("{}{}{}", LOCAL_AGENT_PREAMBLE, SYSTEM_PROMPT, skill_section)
+        } else {
+            // SSH mode: append SSH rules and host details
+            format!("{}{}{}{}", SYSTEM_PROMPT, mode_prefix, skill_section, hosts_section)
+        };
 
         if context.trim().is_empty() {
             base
