@@ -32,8 +32,11 @@ Before installing clide, ensure you have:
 
 #### For Termux (Android)
 ```bash
-# Update packages
-pkg update && pkg upgrade
+# Choose a mirror (avoid Chinese mirrors if you are outside China)
+termux-change-repo
+
+# Update and upgrade packages
+pkg update && pkg upgrade -y
 
 # Install tools needed for downloading
 pkg install wget curl
