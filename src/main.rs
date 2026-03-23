@@ -23,6 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if args.get(1).map(|s| s.as_str()) == Some("update") {
+        return clide::update::run().await.map_err(|e| e.into());
+    }
+
     if args.iter().any(|a| a == "--bot" || a == "bot") {
         return run_bot().await;
     }
