@@ -14,6 +14,7 @@ pub mod pass_store;
 pub mod matrix;
 pub mod memory;
 pub mod scrubber;
+pub mod search;
 pub mod skills;
 pub mod ssh;
 pub mod telegram;
