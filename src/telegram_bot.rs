@@ -4,17 +4,37 @@
 
 use anyhow::Result;
 use log::{error, info, warn};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::agent::Agent;
 use crate::config::Config;
 use crate::scrubber;
-use crate::telegram::TelegramClient;
+use crate::telegram::{TelegramClient, TelegramUpdate};
 
 /// Telegram messages are capped at 4096 chars; leave some headroom.
 const TG_MAX_CHARS: usize = 3900;
+
+/// Maximum length for the smart summary shown inline.
+const SUMMARY_MAX_CHARS: usize = 800;
+
+/// TTL for cached full outputs (1 hour).
+const FULL_OUTPUT_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// An entry in the full-output cache, with an expiration timestamp.
+#[derive(Clone)]
+struct CachedOutput {
+    text: String,
+    chat_id: i64,
+    thread_id: Option<i64>,
+    expires_at: std::time::Instant,
+}
+
+/// Shared cache for full outputs keyed by callback data token.
+type FullOutputCache = Arc<Mutex<HashMap<String, CachedOutput>>>;
 
 /// Resolve a path under $HOME, falling back to /tmp if HOME is unset.
 fn home_path(subdir: &str) -> String {
@@ -36,6 +56,8 @@ pub struct TelegramBot {
     config: Config,
     agent: Agent,
     telegram: TelegramClient,
+    /// In-memory cache of full outputs for "Show full output" button callbacks.
+    full_output_cache: FullOutputCache,
 }
 
 impl TelegramBot {
@@ -46,6 +68,7 @@ impl TelegramBot {
             config,
             agent,
             telegram,
+            full_output_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -148,12 +171,17 @@ impl TelegramBot {
             };
 
             match updates {
-                Ok(messages) => {
+                Ok(tg_updates) => {
                     // Persist the offset after every successful poll so a restart
                     // doesn't cause previously-seen messages to be re-delivered.
                     self.telegram.save_offset(&offset_file());
 
-                    for msg in messages {
+                    for upd in tg_updates {
+                        match upd {
+                            TelegramUpdate::Callback(cb) => {
+                                self.handle_callback_query(cb).await;
+                            }
+                            TelegramUpdate::Message(msg) => {
                         // ── Built-in commands ────────────────────────────────
 
                         // /ping or /start — health-check, useful to confirm the
@@ -175,10 +203,6 @@ impl TelegramBot {
                         }
 
                         // /stop command ─────────────────────────────────────
-                        // When the bot is idle (here in the poll loop) there is
-                        // no task running, so just inform the user.
-                        // While a task IS running the stop-watcher spawned inside
-                        // handle_message intercepts /stop and cancels the agent.
                         if msg.text.trim().eq_ignore_ascii_case("/stop") {
                             info!("Received /stop while idle — no task running.");
                             let _ = self
@@ -188,9 +212,7 @@ impl TelegramBot {
                             continue;
                         }
 
-                        // /debug — show live config and bot status without
-                        // running a full agent task.  Useful for diagnosing
-                        // authorization or config problems quickly.
+                        // /debug — show live config and bot status
                         if msg.text.trim().eq_ignore_ascii_case("/debug") {
                             let auth_status = if self.config.authorized_users.is_empty() {
                                 "⚠️ authorized_users is EMPTY — add your username to config.yaml".to_string()
@@ -233,6 +255,8 @@ impl TelegramBot {
                             .await
                         {
                             error!("Error handling Telegram message: {}", e);
+                        }
+                            }
                         }
                     }
                 }
@@ -348,7 +372,9 @@ impl TelegramBot {
             loop {
                 match tg_watcher.get_updates_short().await {
                     Ok(updates) => {
-                        for update in updates {
+                        for upd in updates {
+                            match upd {
+                                crate::telegram::TelegramUpdate::Message(update) => {
                             if update.text.trim().eq_ignore_ascii_case("/stop") {
                                 info!("Stop-watcher received /stop — cancelling agent.");
                                 cancel_watcher.store(true, Ordering::SeqCst);
@@ -359,15 +385,17 @@ impl TelegramBot {
                                         "🛑 Stopping current task...",
                                     )
                                     .await;
-                                return; // watcher's job is done
+                                return;
                             }
-                            // Non-stop messages received while the agent runs are
-                            // acknowledged (offset advanced) and silently dropped.
-                            // They will NOT be re-delivered to the main loop.
                             info!(
                                 "Stop-watcher dropped message while agent busy: {}",
                                 update.text
                             );
+                                }
+                                crate::telegram::TelegramUpdate::Callback(_) => {
+                                    // Ignore callback queries during task execution
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -391,7 +419,7 @@ impl TelegramBot {
         // Wait for the updater to flush its last edit and collect the log
         let commands_log = updater.await.unwrap_or_default();
 
-        // Build the final HTML message: answer + optional spoiler with command log
+        // Build the final output
         let raw_text = match result {
             Ok(r) if !r.is_empty() => r,
             Ok(_) => "✅ Done.".to_string(),
@@ -401,64 +429,137 @@ impl TelegramBot {
         let final_text = scrubber::scrub(&raw_text, &self.config.secrets);
         let scrubbed_log = scrubber::scrub(&commands_log, &self.config.secrets);
 
-        // ── Message 1: Answer (edit the status placeholder) ─────────────────
-        // If the answer fits in one message, edit the status placeholder.
-        // If too long, chunk it into multiple plain-text messages.
-        if final_text.len() <= TG_MAX_CHARS {
+        // ── Build the smart summary ─────────────────────────────────────────
+        // The agent's response IS the summary — take the first SUMMARY_MAX_CHARS
+        // chars, breaking at a sentence boundary when possible.
+        let summary = smart_truncate(&final_text, SUMMARY_MAX_CHARS);
+
+        let needs_full_output = final_text.len() > SUMMARY_MAX_CHARS;
+
+        // ── Build the commands spoiler (always shown) ───────────────────────
+        let commands_spoiler = if !scrubbed_log.trim().is_empty() {
+            // Truncate commands log for the spoiler to fit in a single message
+            let log_body = scrubbed_log.trim();
+            let max_spoiler = TG_MAX_CHARS - 200; // headroom for markup
+            let trimmed_log = if log_body.len() > max_spoiler {
+                format!("{}…", &log_body[..max_spoiler])
+            } else {
+                log_body.to_string()
+            };
+            format!(
+                "\n\n🔍 <b>Commands run</b> (tap to expand)\n<tg-spoiler>{}</tg-spoiler>",
+                escape_html(&trimmed_log)
+            )
+        } else {
+            String::new()
+        };
+
+        // ── Message 1: Edit the status placeholder with the summary ─────────
+        let summary_html = format!("{}{}", escape_html(&summary), commands_spoiler);
+
+        // If full output is short enough, show everything inline — no button needed.
+        if !needs_full_output {
             let _ = self
                 .telegram
-                .edit_message(chat_id, status_id, &final_text)
+                .edit_message_html(chat_id, status_id, &summary_html)
                 .await;
         } else {
-            // First chunk replaces the status message
-            let answer_chunks = chunk_text(&final_text, TG_MAX_CHARS);
-            if let Some(first) = answer_chunks.first() {
-                let _ = self
-                    .telegram
-                    .edit_message(chat_id, status_id, first)
-                    .await;
-            }
-            for chunk in answer_chunks.iter().skip(1) {
-                let _ = self.telegram.send_message(chat_id, thread_id, chunk).await;
-            }
-        }
+            // Edit the placeholder with the summary
+            let _ = self
+                .telegram
+                .edit_message_html(chat_id, status_id, &summary_html)
+                .await;
 
-        // ── Message 2+: Commands log (separate messages, chunked) ───────────
-        if !scrubbed_log.trim().is_empty() {
-            let log_body = scrubbed_log.trim();
-            let header = "🔍 Commands run:";
-            // If log + header fits in one message, send it as one
-            let full_log_msg = format!("{}\n{}", header, log_body);
-            if full_log_msg.len() <= TG_MAX_CHARS {
-                let _ = self
-                    .telegram
-                    .send_message(chat_id, thread_id, &full_log_msg)
-                    .await;
-            } else {
-                // Chunk the log body; reserve room for the header line
-                let header_reserve = 30; // "🔍 Commands (xx/xx):\n" max length
-                let chunk_size = TG_MAX_CHARS - header_reserve;
-                let log_chunks = chunk_text(log_body, chunk_size);
-                let total = log_chunks.len();
-                for (i, chunk) in log_chunks.iter().enumerate() {
-                    let msg = format!(
-                        "🔍 Commands ({}/{}):\n{}",
-                        i + 1,
-                        total,
-                        chunk
-                    );
-                    let _ = self.telegram.send_message(chat_id, thread_id, &msg).await;
-                }
+            // Generate a unique key for the callback and cache the full output
+            let cache_key = format!("full_output_{}", status_id);
+            {
+                let mut cache = self.full_output_cache.lock().await;
+                // Evict expired entries opportunistically
+                cache.retain(|_, v| v.expires_at > std::time::Instant::now());
+                cache.insert(
+                    cache_key.clone(),
+                    CachedOutput {
+                        text: final_text.clone(),
+                        chat_id,
+                        thread_id,
+                        expires_at: std::time::Instant::now() + FULL_OUTPUT_TTL,
+                    },
+                );
             }
+
+            // Send a separate message with the inline keyboard button
+            let keyboard = vec![vec![
+                ("📄 Show full output".to_string(), cache_key),
+            ]];
+            let _ = self
+                .telegram
+                .send_message_with_keyboard(
+                    chat_id,
+                    thread_id,
+                    "⬆️ <i>Summary above. Tap below for full output.</i>",
+                    keyboard,
+                )
+                .await;
         }
 
         // ── Send export files ─────────────────────────────────────────────────
-        // Any files the agent saved to EXPORT_DIR are forwarded to the user as
-        // downloadable document attachments.
         self.send_export_files(chat_id, thread_id).await;
 
         info!("Agent task complete for @{}", sender);
         Ok(())
+    }
+
+    /// Handle a callback query (inline keyboard button press).
+    /// Looks up the full output in the cache and sends it in chunks.
+    async fn handle_callback_query(&self, cb: crate::telegram::TelegramCallbackQuery) {
+        info!("Callback query from @{}: {}", cb.sender, cb.data);
+
+        // Always answer the callback to dismiss the spinner
+        let _ = self.telegram.answer_callback_query(&cb.id).await;
+
+        // Look up the cached full output
+        let cached = {
+            let cache = self.full_output_cache.lock().await;
+            cache.get(&cb.data).cloned()
+        };
+
+        let Some(entry) = cached else {
+            let _ = self
+                .telegram
+                .send_message(cb.chat_id, cb.thread_id, "⏰ Output expired. Please re-run the task.")
+                .await;
+            return;
+        };
+
+        // Check expiry
+        if entry.expires_at < std::time::Instant::now() {
+            let mut cache = self.full_output_cache.lock().await;
+            cache.remove(&cb.data);
+            let _ = self
+                .telegram
+                .send_message(cb.chat_id, cb.thread_id, "⏰ Output expired. Please re-run the task.")
+                .await;
+            return;
+        }
+
+        // Send full output in TG_MAX_CHARS chunks, zero truncation
+        let chunks = chunk_text(&entry.text, TG_MAX_CHARS);
+        let total = chunks.len();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let msg = if total == 1 {
+                chunk.clone()
+            } else {
+                format!("(Part {}/{})\n{}", i + 1, total, chunk)
+            };
+            let _ = self
+                .telegram
+                .send_message(entry.chat_id, entry.thread_id, &msg)
+                .await;
+        }
+
+        // Remove from cache after delivery
+        let mut cache = self.full_output_cache.lock().await;
+        cache.remove(&cb.data);
     }
 
     /// Scan the export directory **recursively** and send every file as a
@@ -689,6 +790,42 @@ async fn collect_files_recursive(
         }
     }
     Ok(())
+}
+
+/// Truncate text to at most `max_len` chars, breaking at the last sentence
+/// boundary (`. `, `.\n`, `!`, `?`) when possible so the summary reads
+/// naturally rather than cutting mid-word.
+fn smart_truncate(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+    let slice = &text[..max_len];
+    // Try to break at the last sentence-ending punctuation
+    let break_at = slice
+        .rfind(". ")
+        .or_else(|| slice.rfind(".\n"))
+        .or_else(|| slice.rfind("! "))
+        .or_else(|| slice.rfind("? "))
+        .map(|pos| pos + 1); // include the punctuation
+    if let Some(pos) = break_at {
+        if pos > max_len / 2 {
+            // Only use sentence break if it's in the second half
+            return text[..pos].trim_end().to_string();
+        }
+    }
+    // Fall back to last whitespace
+    if let Some(pos) = slice.rfind(char::is_whitespace) {
+        text[..pos].trim_end().to_string() + "…"
+    } else {
+        slice.to_string() + "…"
+    }
+}
+
+/// Escape text for Telegram HTML parse_mode.
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Split `text` into chunks of at most `max_len` bytes, breaking on the last
