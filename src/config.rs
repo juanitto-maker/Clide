@@ -69,6 +69,12 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
 
+    /// Optional path to a markdown file whose contents are injected into the
+    /// agent's system prompt on every startup.  Supports `~` for the home
+    /// directory.  Example: `~/.clide/context.md`
+    #[serde(default)]
+    pub context_file: Option<String>,
+
     /// All secrets from ~/.clide/secrets.yaml plus env overrides.
     /// Available as ${KEY_NAME} placeholders in skill commands.
     /// Never serialised back to disk.
@@ -218,6 +224,33 @@ Tokens or IDs containing special characters (like ':') must be quoted.",
 
     pub fn get_model(&self) -> &str {
         &self.gemini_model
+    }
+
+    /// Load the contents of the configured `context_file`, if any.
+    /// Returns `None` when no file is configured or the file cannot be read.
+    /// Tildes in the path are expanded to `$HOME`.
+    pub fn load_context_file(&self) -> Option<String> {
+        let raw_path = self.context_file.as_deref()?;
+        if raw_path.is_empty() {
+            return None;
+        }
+        let expanded = if raw_path.starts_with('~') {
+            let home = std::env::var("HOME").unwrap_or_default();
+            raw_path.replacen('~', &home, 1)
+        } else {
+            raw_path.to_string()
+        };
+        match std::fs::read_to_string(&expanded) {
+            Ok(content) if !content.trim().is_empty() => Some(content),
+            Ok(_) => {
+                eprintln!("Warning: context_file {:?} is empty, skipping", expanded);
+                None
+            }
+            Err(e) => {
+                eprintln!("Warning: could not read context_file {:?}: {}", expanded, e);
+                None
+            }
+        }
     }
 
     /// Check if a Telegram username is in the authorized_users list.
