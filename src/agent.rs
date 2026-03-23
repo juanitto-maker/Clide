@@ -86,6 +86,10 @@ Your approach:\n\
 3. Prefer run_skill for known workflows (hardening, VPS management) — it is faster and safer.\n\
 4. Inspect results and adapt if something fails.\n\
 5. When finished, give a concise summary of what was accomplished.\n\n\
+TOOL INSTALLATION RULES:\n\
+- When installing well-known tools, always verify the official installation method first \
+(official docs/GitHub). Prefer official package managers (npm, cargo, apt official repos) \
+over pip for non-Python tools.\n\n\
 OUTPUT RULES — follow these exactly:\n\
 - When the user asks to LIST, SHOW, DISPLAY, or PRINT something (files, folders, \
 logs, processes, etc.) always include the FULL verbatim command output in your \
