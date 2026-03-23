@@ -19,6 +19,7 @@ pub mod skills;
 pub mod ssh;
 pub mod telegram;
 pub mod telegram_bot;
+pub mod update;
 pub mod workflow;
 
 pub use agent::Agent;
