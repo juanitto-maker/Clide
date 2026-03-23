@@ -704,10 +704,11 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
             chunks.push(remaining.to_string());
             break;
         }
-        // Try to break at the last newline within the limit
-        let boundary = match remaining[..max_len].rfind('\n') {
+        // Find a safe UTF-8 boundary first, then try to break at a newline
+        let safe = crate::truncate_utf8(remaining, max_len);
+        let boundary = match safe.rfind('\n') {
             Some(pos) => pos + 1, // include the newline in this chunk
-            None => max_len,      // no newline found — hard cut
+            None => safe.len(),   // no newline found — hard cut at safe boundary
         };
         chunks.push(remaining[..boundary].to_string());
         remaining = &remaining[boundary..];

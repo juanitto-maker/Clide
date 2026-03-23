@@ -34,6 +34,19 @@ pub use ssh::{SshClient, SshOutput};
 pub use skills::{Skill, SkillManager, SkillResult};
 pub use workflow::{Workflow, WorkflowExecutor, WorkflowResult};
 
+/// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
+/// UTF-8 character. Returns a sub-slice of the original string.
+pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut boundary = max_bytes;
+    while !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
+}
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const NAME: &str = env!("CARGO_PKG_NAME");
 

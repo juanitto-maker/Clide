@@ -23,6 +23,7 @@ use crate::executor::Executor;
 use crate::hosts;
 use crate::memory::Memory;
 use crate::skills::SkillManager;
+use crate::truncate_utf8;
 
 /// Maximum output bytes fed back to Gemini per tool call (avoids context overflow).
 /// Skills (especially dashboards like vps_manager) can produce 15-20 KB of useful
@@ -399,7 +400,7 @@ impl Agent {
                         };
 
                         let truncated = if output_str.len() > MAX_OUTPUT_BYTES {
-                            output_str[..MAX_OUTPUT_BYTES].to_string()
+                            truncate_utf8(&output_str, MAX_OUTPUT_BYTES).to_string()
                         } else {
                             output_str
                         };
@@ -440,7 +441,7 @@ impl Agent {
                         let output = exec_result.output();
 
                         let preview = if output.len() > MAX_PREVIEW_BYTES {
-                            format!("{}…", &output[..MAX_PREVIEW_BYTES])
+                            format!("{}…", truncate_utf8(&output, MAX_PREVIEW_BYTES))
                         } else {
                             output.clone()
                         };
@@ -451,7 +452,7 @@ impl Agent {
                         .await;
 
                         let output_for_gemini = if output.len() > MAX_OUTPUT_BYTES {
-                            output[..MAX_OUTPUT_BYTES].to_string()
+                            truncate_utf8(&output, MAX_OUTPUT_BYTES).to_string()
                         } else {
                             output
                         };
@@ -536,7 +537,7 @@ impl Agent {
                     }
                     let out = r.output();
                     let preview = if out.len() > MAX_PREVIEW_BYTES {
-                        format!("{}…", &out[..MAX_PREVIEW_BYTES])
+                        format!("{}…", truncate_utf8(&out, MAX_PREVIEW_BYTES))
                     } else {
                         out.clone()
                     };
