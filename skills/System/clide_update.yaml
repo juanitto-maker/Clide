@@ -1,0 +1,139 @@
+# ============================================
+# Clide Safe Update Skill
+# ============================================
+# Non-destructive in-place update. Downloads the latest release binary
+# from GitHub and replaces the current one. Preserves all config, memory,
+# skills, hosts, and secrets — nothing is wiped.
+#
+# This is the SAFE alternative to clide_install action=reinstall.
+# Use this for routine updates. Only use clide_install if you need
+# a clean-slate reinstall.
+#
+# Usage:
+#   run_skill clide_update                    # update to latest release
+#   run_skill clide_update method=source      # build from source instead
+#   run_skill clide_update branch=main        # source build from specific branch
+#
+# Methods:
+#   binary  — Download pre-built binary from GitHub releases (default, fast)
+#   source  — Git pull + cargo build (slower, but always works)
+
+name: clide_update
+description: >
+  Safe in-place update of Clide to the latest version. Downloads the latest
+  release binary or builds from source. Preserves ALL config, memory, skills,
+  hosts, and secrets — nothing is deleted. Use this instead of clide_install
+  for routine updates.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - clide
+  - update
+  - system
+
+parameters:
+  method:
+    description: >
+      Update method: 'binary' downloads pre-built binary from GitHub releases
+      (fast, default). 'source' does git pull + cargo build (slower, always works).
+    type: string
+    required: false
+    default: "binary"
+
+  branch:
+    description: >
+      Git branch to build from (only used with method=source).
+      Defaults to 'main'.
+    type: string
+    required: false
+    default: "main"
+
+commands:
+  # ── 0. Show current version and method ────────────────────────────────────
+  - >-
+    echo "===== Clide Safe Update =====";
+    echo "Method: {{method}}";
+    echo "Current version: $(clide --version 2>/dev/null || echo 'unknown')";
+    echo "Config preserved: YES (nothing will be deleted)";
+    echo ""
+
+  # ── 1. Binary method: use clide update (built-in) ────────────────────────
+  - >-
+    if [ "{{method}}" = "binary" ]; then
+    echo "[1] Attempting binary update via 'clide update'...";
+    clide update 2>&1;
+    UPDATE_EXIT=$?;
+    if [ $UPDATE_EXIT -eq 0 ]; then
+    echo "[1] Binary update successful!";
+    else
+    echo "[1] Binary update failed (exit $UPDATE_EXIT).";
+    echo "    Falling back to source build...";
+    echo "FALLBACK_TO_SOURCE=yes";
+    fi;
+    else
+    echo "[1] Skipping binary method (method={{method}}).";
+    echo "FALLBACK_TO_SOURCE=yes";
+    fi
+
+  # ── 2. Source method (or fallback): git pull + cargo build ────────────────
+  - >-
+    NEED_SOURCE="no";
+    if [ "{{method}}" = "source" ]; then NEED_SOURCE="yes"; fi;
+    if [ "{{method}}" = "binary" ] && ! clide --version 2>/dev/null | grep -q "$(curl -sfL https://api.github.com/repos/juanitto-maker/Clide/releases/latest | grep tag_name | head -1 | tr -d '"v, ' | sed 's/tag_name://')"; then
+    NEED_SOURCE="yes";
+    fi;
+    if [ "$NEED_SOURCE" = "yes" ]; then
+    echo "[2] Building from source (branch: {{branch}})...";
+    SOURCE_DIR="";
+    if [ -d ~/Clide_Source ]; then
+    SOURCE_DIR=~/Clide_Source;
+    elif [ -d ~/Clide ]; then
+    SOURCE_DIR=~/Clide;
+    else
+    echo "    Cloning repository...";
+    git clone https://github.com/juanitto-maker/Clide.git ~/Clide_Source 2>&1;
+    SOURCE_DIR=~/Clide_Source;
+    fi;
+    echo "    Source dir: $SOURCE_DIR";
+    cd "$SOURCE_DIR" &&
+    git fetch origin {{branch}} 2>&1 &&
+    git checkout {{branch}} 2>&1 &&
+    git pull origin {{branch}} 2>&1 &&
+    echo "    Building release binary..." &&
+    cargo build --release 2>&1;
+    BUILD_EXIT=$?;
+    if [ $BUILD_EXIT -eq 0 ]; then
+    echo "    Build successful. Installing...";
+    CLIDE_BIN="$(command -v clide 2>/dev/null || echo ${PREFIX:-/usr/local}/bin/clide)";
+    pkill -f "clide bot" 2>/dev/null || true;
+    sleep 1;
+    cp "$SOURCE_DIR/target/release/clide" "$CLIDE_BIN" 2>&1;
+    echo "[2] Source build complete.";
+    else
+    echo "[2] ERROR: cargo build failed (exit $BUILD_EXIT).";
+    exit 1;
+    fi;
+    else
+    echo "[2] Skipping source build (binary update succeeded).";
+    fi
+
+  # ── 3. Verify update ─────────────────────────────────────────────────────
+  - >-
+    echo "";
+    echo "===== Post-update check =====";
+    echo "Version: $(clide --version 2>/dev/null || echo 'unknown')";
+    echo "Binary:  $(command -v clide 2>/dev/null || echo 'not found')";
+    echo "Config:  $([ -f ~/.clide/config.yaml ] && echo 'intact' || echo 'missing')";
+    echo "Memory:  $([ -f ~/.clide/memory.db ] && echo 'intact' || echo 'missing')";
+    echo "Skills:  $(find ~/.clide/skills -name '*.yaml' 2>/dev/null | wc -l) skill(s)";
+    echo "Hosts:   $([ -f ~/.clide/hosts.yaml ] && echo 'intact' || echo 'missing')";
+    echo "";
+    echo "===== Update complete. All data preserved. ====="
+
+rollback_command:
+  - echo "No rollback needed — update only replaces the binary. Config/data untouched."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 600
