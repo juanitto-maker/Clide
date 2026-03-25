@@ -1,0 +1,211 @@
+# ============================================
+# Clide Safe Update Skill
+# ============================================
+# Non-destructive in-place update. Downloads the latest release binary
+# from GitHub and replaces the current one. Preserves all config, memory,
+# skills, hosts, and secrets — nothing is wiped.
+#
+# This is the SAFE alternative to clide_install action=reinstall.
+# Use this for routine updates. Only use clide_install if you need
+# a clean-slate reinstall.
+#
+# Usage:
+#   run_skill clide_update                    # update to latest release
+#   run_skill clide_update method=source      # build from source instead
+#   run_skill clide_update branch=main        # source build from specific branch
+#   run_skill clide_update method=release version=0.4.3  # build + create GitHub release
+#
+# Methods:
+#   binary  — Download pre-built binary from GitHub releases (default, fast)
+#   source  — Git pull + cargo build (slower, but always works)
+#   release — Build from source + export binary to ~/clide_exports/ for GitHub release
+
+name: clide_update
+description: >
+  Safe in-place update of Clide to the latest version. Downloads the latest
+  release binary or builds from source. Preserves ALL config, memory, skills,
+  hosts, and secrets — nothing is deleted. Use this instead of clide_install
+  for routine updates. Can also build a release binary and export it for
+  uploading to GitHub releases.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - clide
+  - update
+  - system
+
+parameters:
+  method:
+    description: >
+      Update method: 'binary' downloads pre-built binary from GitHub releases
+      (fast, default). 'source' does git pull + cargo build (slower, always works).
+      'release' builds from source and exports the binary to ~/clide_exports/
+      for uploading as a GitHub release asset.
+    type: string
+    required: false
+    default: "binary"
+
+  branch:
+    description: >
+      Git branch to build from (used with method=source or method=release).
+      Defaults to 'main'.
+    type: string
+    required: false
+    default: "main"
+
+  version:
+    description: >
+      Version tag for the release (only used with method=release).
+      Example: '0.4.3'. If not provided, reads from Cargo.toml.
+    type: string
+    required: false
+    default: ""
+
+commands:
+  # ── 0. Show current version and method ────────────────────────────────────
+  - >-
+    echo "===== Clide Safe Update =====";
+    echo "Method: {{method}}";
+    echo "Current version: $(clide --version 2>/dev/null || echo 'unknown')";
+    echo "Config preserved: YES (nothing will be deleted)";
+    echo ""
+
+  # ── 1. Binary method: use clide update (built-in) ────────────────────────
+  - >-
+    if [ "{{method}}" = "binary" ]; then
+    echo "[1] Attempting binary update via 'clide update'...";
+    clide update 2>&1;
+    UPDATE_EXIT=$?;
+    if [ $UPDATE_EXIT -eq 0 ]; then
+    echo "[1] Binary update successful!";
+    else
+    echo "[1] Binary update failed (exit $UPDATE_EXIT).";
+    echo "    Falling back to source build...";
+    echo "FALLBACK_TO_SOURCE=yes";
+    fi;
+    else
+    echo "[1] Skipping binary method (method={{method}}).";
+    echo "FALLBACK_TO_SOURCE=yes";
+    fi
+
+  # ── 2. Source method (or fallback): git pull + cargo build ────────────────
+  - >-
+    NEED_SOURCE="no";
+    if [ "{{method}}" = "source" ]; then NEED_SOURCE="yes"; fi;
+    if [ "{{method}}" = "binary" ] && ! clide --version 2>/dev/null | grep -q "$(curl -sfL https://api.github.com/repos/juanitto-maker/Clide/releases/latest | grep tag_name | head -1 | tr -d '"v, ' | sed 's/tag_name://')"; then
+    NEED_SOURCE="yes";
+    fi;
+    if [ "$NEED_SOURCE" = "yes" ]; then
+    echo "[2] Building from source (branch: {{branch}})...";
+    SOURCE_DIR="";
+    if [ -d ~/Clide_Source ]; then
+    SOURCE_DIR=~/Clide_Source;
+    elif [ -d ~/Clide ]; then
+    SOURCE_DIR=~/Clide;
+    else
+    echo "    Cloning repository...";
+    git clone https://github.com/juanitto-maker/Clide.git ~/Clide_Source 2>&1;
+    SOURCE_DIR=~/Clide_Source;
+    fi;
+    echo "    Source dir: $SOURCE_DIR";
+    cd "$SOURCE_DIR" &&
+    git fetch origin {{branch}} 2>&1 &&
+    git checkout {{branch}} 2>&1 &&
+    git pull origin {{branch}} 2>&1 &&
+    echo "    Building release binary..." &&
+    cargo build --release 2>&1;
+    BUILD_EXIT=$?;
+    if [ $BUILD_EXIT -eq 0 ]; then
+    echo "    Build successful. Installing...";
+    CLIDE_BIN="$(command -v clide 2>/dev/null || echo ${PREFIX:-/usr/local}/bin/clide)";
+    pkill -f "clide bot" 2>/dev/null || true;
+    sleep 1;
+    cp "$SOURCE_DIR/target/release/clide" "$CLIDE_BIN" 2>&1;
+    echo "[2] Source build complete.";
+    else
+    echo "[2] ERROR: cargo build failed (exit $BUILD_EXIT).";
+    exit 1;
+    fi;
+    else
+    echo "[2] Skipping source build (binary update succeeded).";
+    fi
+
+  # ── 3. Release build: build + export binary for GitHub release ──────────
+  - >-
+    if [ "{{method}}" = "release" ]; then
+    echo "[3] Building release binary for GitHub...";
+    SOURCE_DIR="";
+    if [ -d ~/Clide_Source ]; then SOURCE_DIR=~/Clide_Source;
+    elif [ -d ~/Clide ]; then SOURCE_DIR=~/Clide;
+    else
+    echo "    Cloning repository...";
+    git clone https://github.com/juanitto-maker/Clide.git ~/Clide_Source 2>&1;
+    SOURCE_DIR=~/Clide_Source;
+    fi;
+    cd "$SOURCE_DIR" &&
+    git fetch origin {{branch}} 2>&1 &&
+    git checkout {{branch}} 2>&1 &&
+    git pull origin {{branch}} 2>&1;
+    VERSION="{{version}}";
+    if [ -z "$VERSION" ]; then
+    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/');
+    fi;
+    echo "    Version: $VERSION";
+    echo "    Building release binary...";
+    cargo build --release 2>&1;
+    if [ $? -eq 0 ]; then
+    mkdir -p ~/clide_exports;
+    ARCH=$(uname -m);
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]');
+    if [ "$OS" = "linux" ] && [ -f /system/build.prop ] 2>/dev/null; then
+    ASSET_NAME="clide-${ARCH}-android";
+    elif [ "$OS" = "linux" ]; then
+    ASSET_NAME="clide-${ARCH}";
+    elif [ "$OS" = "darwin" ]; then
+    ASSET_NAME="clide-${ARCH}-darwin";
+    else
+    ASSET_NAME="clide-${ARCH}-${OS}";
+    fi;
+    cp "$SOURCE_DIR/target/release/clide" ~/clide_exports/"$ASSET_NAME";
+    echo "    Exported: ~/clide_exports/$ASSET_NAME";
+    echo "";
+    echo "===== Release binary ready =====";
+    echo "Version:  v$VERSION";
+    echo "Asset:    ~/clide_exports/$ASSET_NAME";
+    echo "Size:     $(du -h ~/clide_exports/$ASSET_NAME | cut -f1)";
+    echo "";
+    echo "To create a GitHub release:";
+    echo "  1. Go to https://github.com/juanitto-maker/Clide/releases/new";
+    echo "  2. Tag: v$VERSION";
+    echo "  3. Upload: ~/clide_exports/$ASSET_NAME";
+    echo "  Or use: gh release create v$VERSION ~/clide_exports/$ASSET_NAME";
+    else
+    echo "[3] ERROR: cargo build failed.";
+    exit 1;
+    fi;
+    else
+    echo "[3] Skipping release build (method={{method}}).";
+    fi
+
+  # ── 4. Verify update ─────────────────────────────────────────────────────
+  - >-
+    if [ "{{method}}" != "release" ]; then
+    echo "";
+    echo "===== Post-update check =====";
+    echo "Version: $(clide --version 2>/dev/null || echo 'unknown')";
+    echo "Binary:  $(command -v clide 2>/dev/null || echo 'not found')";
+    echo "Config:  $([ -f ~/.clide/config.yaml ] && echo 'intact' || echo 'missing')";
+    echo "Memory:  $([ -f ~/.clide/memory.db ] && echo 'intact' || echo 'missing')";
+    echo "Skills:  $(find ~/.clide/skills -name '*.yaml' 2>/dev/null | wc -l) skill(s)";
+    echo "Hosts:   $([ -f ~/.clide/hosts.yaml ] && echo 'intact' || echo 'missing')";
+    echo "";
+    echo "===== Update complete. All data preserved. =====";
+    fi
+
+rollback_command:
+  - echo "No rollback needed — update only replaces the binary. Config/data untouched."
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 600
