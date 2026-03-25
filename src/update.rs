@@ -91,17 +91,35 @@ pub async fn run() -> Result<()> {
         bail!("Unsupported platform — cannot determine target triple");
     }
 
-    // Assets are named like: clide-x86_64-unknown-linux-gnu or .tar.gz
-    let binary_name = format!("clide-{}", target);
-    let archive_name = format!("{}.tar.gz", binary_name);
+    // Build candidate asset names from most specific to least specific.
+    // Release assets may use full triples (clide-x86_64-unknown-linux-gnu)
+    // or short names (clide-x86_64, clide-aarch64-android).
+    let short_target = short_target_name(target);
+    let candidates: Vec<String> = {
+        let mut v = vec![format!("clide-{}", target)];
+        if short_target != target {
+            v.push(format!("clide-{}", short_target));
+        }
+        v
+    };
 
-    // Prefer the raw binary, fall back to archive
-    let (asset, is_archive) = if let Some(a) = find_asset(&release.assets, &binary_name) {
-        (a, false)
-    } else if let Some(a) = find_asset(&release.assets, &archive_name) {
-        (a, true)
-    } else {
-        bail!(
+    // Try each candidate name, then its .tar.gz variant
+    let mut found: Option<(&ReleaseAsset, bool)> = None;
+    for name in &candidates {
+        if let Some(a) = find_asset(&release.assets, name) {
+            found = Some((a, false));
+            break;
+        }
+        let archive = format!("{}.tar.gz", name);
+        if let Some(a) = find_asset(&release.assets, &archive) {
+            found = Some((a, true));
+            break;
+        }
+    }
+
+    let (asset, is_archive) = match found {
+        Some(pair) => pair,
+        None => bail!(
             "No binary for target '{}' in release v{}\nAvailable assets: {}",
             target,
             latest_version,
@@ -111,7 +129,7 @@ pub async fn run() -> Result<()> {
                 .map(|a| a.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
-        );
+        ),
     };
 
     println!(
@@ -170,6 +188,21 @@ async fn fetch_latest_release(client: &Client) -> Result<GitHubRelease> {
 
 fn find_asset<'a>(assets: &'a [ReleaseAsset], name: &str) -> Option<&'a ReleaseAsset> {
     assets.iter().find(|a| a.name == name)
+}
+
+/// Convert a full Rust target triple to the short name used in release assets.
+/// e.g. "x86_64-unknown-linux-gnu" → "x86_64"
+///      "aarch64-unknown-linux-gnu" → "aarch64"
+///      "aarch64-linux-android"     → "aarch64-android"
+fn short_target_name(target: &str) -> &str {
+    match target {
+        "x86_64-unknown-linux-gnu" => "x86_64",
+        "aarch64-unknown-linux-gnu" => "aarch64",
+        "x86_64-apple-darwin" => "x86_64-darwin",
+        "aarch64-apple-darwin" => "aarch64-darwin",
+        "aarch64-linux-android" => "aarch64-android",
+        other => other,
+    }
 }
 
 async fn download_asset(client: &Client, url: &str, is_archive: bool) -> Result<Vec<u8>> {
