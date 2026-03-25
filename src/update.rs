@@ -261,22 +261,67 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
         .context("Failed to read current binary metadata")?
         .permissions();
 
-    // Write to temp file next to current binary, then atomic rename
+    // Try writing temp file next to the binary first (atomic rename possible).
+    // If that fails (e.g. /usr/local/bin/ owned by root), fall back to writing
+    // in a user-writable temp dir + sudo cp.
     let tmp_path = path.with_extension("tmp");
 
-    let mut file = std::fs::File::create(&tmp_path)
-        .context("Failed to create temp file for update")?;
-    file.write_all(new_binary)
-        .context("Failed to write new binary")?;
-    file.flush()?;
-    drop(file);
+    match std::fs::File::create(&tmp_path) {
+        Ok(mut file) => {
+            file.write_all(new_binary)
+                .context("Failed to write new binary")?;
+            file.flush()?;
+            drop(file);
+            std::fs::set_permissions(&tmp_path, permissions.clone())
+                .context("Failed to set permissions on new binary")?;
+            std::fs::rename(&tmp_path, path)
+                .context("Failed to replace binary (rename)")?;
+        }
+        Err(_) => {
+            // Permission denied writing next to the binary — use home dir + sudo cp
+            let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let home_tmp = std::path::PathBuf::from(&home).join(".clide_update_tmp");
 
-    // Preserve permissions
-    std::fs::set_permissions(&tmp_path, permissions)
-        .context("Failed to set permissions on new binary")?;
+            let mut file = std::fs::File::create(&home_tmp)
+                .context("Failed to create temp file in home directory")?;
+            file.write_all(new_binary)
+                .context("Failed to write new binary to temp")?;
+            file.flush()?;
+            drop(file);
 
-    // Atomic rename
-    std::fs::rename(&tmp_path, path).context("Failed to replace binary (rename)")?;
+            // Make executable
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&home_tmp, std::fs::Permissions::from_mode(0o755))?;
+            }
+
+            // Use sudo to copy into the protected directory
+            let path_str = path.to_string_lossy();
+            let tmp_str = home_tmp.to_string_lossy();
+            println!(
+                "  {} (using sudo to install to {})",
+                "Permission required".yellow(),
+                path_str
+            );
+
+            let status = std::process::Command::new("sudo")
+                .args(["cp", &tmp_str, &path_str])
+                .status()
+                .context("Failed to run sudo cp")?;
+
+            // Clean up temp file
+            let _ = std::fs::remove_file(&home_tmp);
+
+            if !status.success() {
+                bail!(
+                    "sudo cp failed. Try manually:\n  sudo cp {} {}",
+                    tmp_str,
+                    path_str
+                );
+            }
+        }
+    }
 
     Ok(())
 }
