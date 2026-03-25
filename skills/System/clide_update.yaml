@@ -120,7 +120,12 @@ commands:
     CLIDE_BIN="$(command -v clide 2>/dev/null || echo ${PREFIX:-/usr/local}/bin/clide)";
     pkill -f "clide bot" 2>/dev/null || true;
     sleep 1;
-    cp "$SOURCE_DIR/target/release/clide" "$CLIDE_BIN" 2>&1;
+    if cp "$SOURCE_DIR/target/release/clide" "$CLIDE_BIN" 2>/dev/null; then
+    echo "    Installed to $CLIDE_BIN";
+    else
+    echo "    Permission denied, using sudo...";
+    sudo cp "$SOURCE_DIR/target/release/clide" "$CLIDE_BIN" 2>&1;
+    fi;
     echo "[2] Source build complete.";
     else
     echo "[2] ERROR: cargo build failed (exit $BUILD_EXIT).";
