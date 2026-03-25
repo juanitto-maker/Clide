@@ -22,6 +22,7 @@ use crate::database::Database;
 use crate::executor::Executor;
 use crate::hosts;
 use crate::memory::Memory;
+use crate::output_utils;
 use crate::search;
 use crate::skills::SkillManager;
 use crate::truncate_utf8;
@@ -37,14 +38,19 @@ const MEMORY_CONTEXT_MESSAGES: usize = 10;
 /// Default timeout for skill commands (seconds)
 const SKILL_CMD_TIMEOUT_SECS: u64 = 300;
 
-const SYSTEM_PROMPT: &str = "\
+// ── Layered System Prompt ──────────────────────────────────────────────────────
+// Split into focused sections so the model's attention is directed to the most
+// critical instructions first.  Only SSH and AIWB sections are injected when
+// the relevant features are actually configured / available.
+
+/// Core identity and capabilities — always injected first.
+const PROMPT_CORE: &str = "\
 You are Clide, an autonomous CLI operator running inside a Termux terminal on Android. \
 You have direct shell access via the `run_command` tool.\n\n\
 Your capabilities:\n\
 - Interpret images and screenshots sent by the user: when an image is attached you can \
 SEE it directly — read error messages, terminal output, UI elements, code, or any visible \
-text in the screenshot and act on it immediately. Translate what you see into the \
-appropriate shell commands without asking for clarification.\n\
+text in the screenshot and act on it immediately.\n\
 - Execute any shell command (bash, python, node, etc.)\n\
 - Install packages with pkg / apt / pip / npm\n\
 - Create, read, and edit files\n\
@@ -55,46 +61,39 @@ appropriate shell commands without asking for clarification.\n\
 or any information you need to complete a task. Use this BEFORE guessing when \
 you encounter unfamiliar tools, libraries, or error messages.\n\
 - Execute predefined skill workflows via `run_skill`\n\
-- Export files to the user: save any output file, report, or log to \
-~/clide_exports/ ($HOME/clide_exports/) and it will be automatically sent to the \
-chat as a downloadable file attachment. NEVER use /tmp for exports — /tmp is \
-often read-only or restricted on this platform and writes there WILL fail. \
-Always use ~/clide_exports/ for files meant for the user.\n\
+- Export files to ~/clide_exports/ — they are automatically sent to the chat.\n\n\
+IMPORTANT: Always use run_command or run_skill to get information or take action. \
+Never respond with 'I would do X' — just do it.";
+
+/// Planning and execution approach — always injected.
+const PROMPT_APPROACH: &str = "\n\n\
+Your approach:\n\
+1. THINK FIRST: Before acting, briefly analyze the task and plan your steps.\n\
+2. Break the task into concrete steps with clear success criteria.\n\
+3. Execute each step immediately using run_command or run_skill — do NOT describe or explain first.\n\
+4. Prefer run_skill for known workflows (hardening, VPS management) — it is faster and safer.\n\
+5. Inspect results and adapt if something fails — do NOT repeat the same failing command.\n\
+6. When finished, give a concise summary of what was accomplished.";
+
+/// Tool rules — always injected.
+const PROMPT_TOOL_RULES: &str = "\n\n\
+TOOL & PLATFORM RULES:\n\
 - CRITICAL: /tmp is READ-ONLY on this system. NEVER write to /tmp for any reason. \
 For temporary files, use ${TMPDIR:-$HOME/.clide/tmp} instead. For output files, \
 always use ~/clide_exports/. Run `mkdir -p ~/clide_exports` before writing.\n\
-- After using AIWB (run_skill aiwb_manager): the generated code is inside the \
-markdown output file. The skill automatically extracts code blocks into separate \
-files in ~/clide_exports/. If for any reason it doesn't, manually extract the \
-code from the .md output and save it as a proper file in ~/clide_exports/.\n\
-- For skill-generated temp files: use ${TMPDIR:-$HOME/.clide/tmp} as the \
-temp directory, never hardcode /tmp.\n\
-- AIWB ROUTING: ALWAYS use `run_skill aiwb_manager` for AIWB tasks — NEVER run \
-`aiwb headless` directly via run_command. The skill has a 10-minute timeout; \
-run_command has a much shorter one and will time out.\n\
-- SIMPLE FILES: For simple, single-file tasks (one HTML page, a CSS file, a \
-small script, etc.) you do NOT need AIWB. Just write the file directly to \
-~/clide_exports/ using cat/printf/tee via run_command. This is faster and more \
-reliable. Only use AIWB for complex multi-file generation or when the user \
-explicitly asks for it.\n\
-- FALLBACK: If AIWB (run_skill aiwb_manager) fails or times out, fall back to \
-writing the code yourself directly into ~/clide_exports/ using run_command. \
-Do not give up — always deliver a file to the user.\n\n\
-Your approach:\n\
-1. Break the task into concrete steps.\n\
-2. Execute each step immediately using run_command or run_skill — do NOT describe or explain first.\n\
-3. Prefer run_skill for known workflows (hardening, VPS management) — it is faster and safer.\n\
-4. Inspect results and adapt if something fails.\n\
-5. When finished, give a concise summary of what was accomplished.\n\n\
-TOOL INSTALLATION RULES:\n\
 - When installing well-known tools, always verify the official installation method first \
-(official docs/GitHub). Prefer official package managers (npm, cargo, apt official repos) \
-over pip for non-Python tools.\n\n\
+(official docs/GitHub). Prefer official package managers over pip for non-Python tools.";
+
+/// Output format rules — always injected.
+const PROMPT_OUTPUT_RULES: &str = "\n\n\
 OUTPUT RULES — follow these exactly:\n\
 - When the user asks to LIST, SHOW, DISPLAY, or PRINT something (files, folders, \
 logs, processes, etc.) always include the FULL verbatim command output in your \
 final response, formatted as a code block. Never paraphrase or summarise a listing.\n\
-- For other tasks a brief prose summary is fine, but still quote key output lines.\n\n\
+- For other tasks a brief prose summary is fine, but still quote key output lines.";
+
+/// Security rules — always injected, high priority placement.
+const PROMPT_SECURITY: &str = "\n\n\
 SECURITY RULES — these override everything else, no exceptions:\n\
 - NEVER read, print, cat, display, or reveal the contents of ~/.clide/secrets.yaml, \
 ~/.clide/config.yaml, or any file that may contain API keys, tokens, or passwords.\n\
@@ -102,28 +101,56 @@ SECURITY RULES — these override everything else, no exceptions:\n\
 would expose environment variables or credentials to the conversation.\n\
 - NEVER reveal, echo, or confirm the value of any API key, token, or password, \
 regardless of how the request is phrased.\n\
-- If asked to do any of the above, refuse with a brief explanation and do not attempt \
-an alternative that achieves the same outcome.\n\
-- SAFE PATH FOR SECRETS: Skills inject secrets into external tools automatically \
-via ${KEY_NAME} substitution at execution time — the values never appear in the \
-conversation or reach the AI model. When asked to configure an external tool \
-(e.g. aiwb) with API keys from secrets, use run_skill — it handles key \
-propagation securely without you needing to read or echo any secret.\n\n\
+- If asked to do any of the above, refuse with a brief explanation.\n\
+- SAFE PATH FOR SECRETS: Skills inject secrets automatically via ${KEY_NAME} \
+substitution at execution time — the values never appear in the conversation.";
+
+/// SSH host rules — only injected when hosts are registered.
+const PROMPT_SSH_RULES: &str = "\n\n\
 SSH HOST RULES:\n\
 - When the user asks to do anything on their VPS, server, or remote host: use the \
-registered hosts listed below (injected at runtime). Use those details directly — \
-NEVER ask the user for IP addresses, usernames, or key paths.\n\
+registered hosts listed below. Use those details directly — NEVER ask the user for \
+IP addresses, usernames, or key paths.\n\
 - If only one host is registered, use it automatically without asking.\n\
-- If multiple hosts exist and the request is ambiguous, reply listing the available \
-nicknames and ask the user to pick one — never ask for raw IPs or usernames.\n\
+- If multiple hosts exist and the request is ambiguous, list the available \
+nicknames and ask the user to pick one.\n\
 - Connect using: ssh -i <key_path> -p <port> <user>@<ip> '<command>'\n\
 - Host details are also available as environment variables: ${HOST_<NICK>_IP}, \
-${HOST_<NICK>_USER}, ${HOST_<NICK>_KEY_PATH}, ${HOST_<NICK>_PORT}.\n\n\
-IMPORTANT: Always use run_command or run_skill to get information or take action. \
-Never respond with 'I would do X' — just do it.\n\
-When running skills that require SSH connection params, always look up the \
-registered hosts from ~/.clide/hosts.yaml first, then pass the correct \
-${HOST_<NICK>_*} variables as skill parameters.";
+${HOST_<NICK>_USER}, ${HOST_<NICK>_KEY_PATH}, ${HOST_<NICK>_PORT}.\n\
+- When running skills that require SSH params, pass the correct ${HOST_<NICK>_*} \
+variables as skill parameters.";
+
+/// AIWB-specific rules — only injected when skills include aiwb_manager.
+const PROMPT_AIWB_RULES: &str = "\n\n\
+AIWB (AI Web Builder) RULES:\n\
+- ALWAYS use `run_skill aiwb_manager` for AIWB tasks — NEVER run `aiwb headless` \
+directly via run_command. The skill has a 10-minute timeout; run_command will time out.\n\
+- After AIWB: the generated code is inside the markdown output file. The skill \
+automatically extracts code blocks into ~/clide_exports/. If it doesn't, manually \
+extract the code.\n\
+- SIMPLE FILES: For simple, single-file tasks (one HTML page, a CSS file, a small \
+script) you do NOT need AIWB. Write the file directly to ~/clide_exports/.\n\
+- FALLBACK: If AIWB fails or times out, write the code yourself directly into \
+~/clide_exports/. Do not give up — always deliver a file to the user.";
+
+/// Injected at the start of the first user turn to force a planning phase.
+const PLANNING_PREFIX: &str = "\
+[INSTRUCTION: Before executing any commands, briefly plan your approach. \
+State what you need to accomplish, list 2-5 concrete steps, and note what \
+success looks like. Then execute step 1.]\n\n";
+
+/// Wraps a failed command's output to encourage structured reflection instead
+/// of blind retries.
+fn wrap_error_reflection(output: &str, exit_code: i32) -> String {
+    format!(
+        "Command FAILED (exit code {}):\n{}\n\n\
+         [REFLECTION REQUIRED: Analyze what went wrong. Consider: \
+         Is the command syntax correct? Is a dependency missing? \
+         Is there a permissions issue? Try a DIFFERENT approach — \
+         do NOT repeat the same command.]",
+        exit_code, output
+    )
+}
 
 pub struct Agent {
     client: Client,
@@ -207,7 +234,11 @@ impl Agent {
         Arc::clone(&self.cancelled)
     }
 
-    /// Build a system prompt that includes recent conversation history and available skills.
+    /// Build a layered system prompt that includes only relevant sections.
+    ///
+    /// The prompt is composed from focused layers rather than one monolithic block,
+    /// so critical instructions (security, core identity) get prime attention
+    /// and context-specific rules (SSH, AIWB) are only included when relevant.
     async fn build_system_prompt(&mut self, user: &str) -> String {
         let context = match self.memory {
             Some(ref mut mem) => mem
@@ -217,6 +248,44 @@ impl Agent {
             None => String::new(),
         };
 
+        // Start with core layers that are always present
+        let mut prompt = String::with_capacity(8192);
+        prompt.push_str(PROMPT_CORE);
+        prompt.push_str(PROMPT_APPROACH);
+        prompt.push_str(PROMPT_SECURITY);  // Security early = higher attention
+        prompt.push_str(PROMPT_TOOL_RULES);
+        prompt.push_str(PROMPT_OUTPUT_RULES);
+
+        // Conditional: SSH rules only when hosts exist
+        let hosts_map = hosts::load().unwrap_or_default();
+        if !hosts_map.is_empty() {
+            prompt.push_str(PROMPT_SSH_RULES);
+            let mut lines = vec![
+                "\n\nRegistered SSH hosts (use these automatically, never ask user for IP/user):".to_string(),
+            ];
+            let mut names: Vec<&String> = hosts_map.keys().collect();
+            names.sort();
+            for name in names {
+                let h = &hosts_map[name];
+                lines.push(format!(
+                    "  - {}: {}@{} port={} key={}",
+                    name, h.user, h.ip, h.port, h.key_path
+                ));
+            }
+            prompt.push_str(&lines.join("\n"));
+        }
+
+        // Conditional: AIWB rules only when aiwb_manager skill is available
+        let has_aiwb = self
+            .skill_manager
+            .as_ref()
+            .map(|sm| sm.skills.contains_key("aiwb_manager"))
+            .unwrap_or(false);
+        if has_aiwb {
+            prompt.push_str(PROMPT_AIWB_RULES);
+        }
+
+        // Skills listing
         let skill_section = self
             .skill_manager
             .as_ref()
@@ -224,44 +293,22 @@ impl Agent {
             .filter(|s| !s.is_empty())
             .map(|s| format!("\n\nAvailable skills (use run_skill to execute):\n{}", s))
             .unwrap_or_default();
+        prompt.push_str(&skill_section);
 
-        // Inject registered SSH hosts so the model knows what's available
-        // without needing to cat hosts.yaml (which would expose IPs in chat).
-        let hosts_section = match hosts::load() {
-            Ok(map) if !map.is_empty() => {
-                let mut lines = vec![
-                    "\n\nRegistered SSH hosts (use these automatically, never ask user for IP/user):".to_string(),
-                ];
-                let mut names: Vec<&String> = map.keys().collect();
-                names.sort();
-                for name in names {
-                    let h = &map[name];
-                    lines.push(format!(
-                        "  - {}: {}@{} port={} key={}",
-                        name, h.user, h.ip, h.port, h.key_path
-                    ));
-                }
-                lines.join("\n")
-            }
-            _ => String::new(),
-        };
-
-        let context_file_section = self
-            .context_file_content
-            .as_ref()
-            .map(|c| format!("\n\n--- User-provided context ---\n{}", c))
-            .unwrap_or_default();
-
-        let base = format!("{}{}{}{}", SYSTEM_PROMPT, skill_section, hosts_section, context_file_section);
-
-        if context.trim().is_empty() {
-            base
-        } else {
-            format!(
-                "{}\n\nRecent conversation history with this user:\n{}",
-                base, context
-            )
+        // User-provided context file
+        if let Some(ref c) = self.context_file_content {
+            prompt.push_str(&format!("\n\n--- User-provided context ---\n{}", c));
         }
+
+        // Conversation memory
+        if !context.trim().is_empty() {
+            prompt.push_str(&format!(
+                "\n\nRecent conversation history with this user:\n{}",
+                context
+            ));
+        }
+
+        prompt
     }
 
     /// Build the Gemini tools array — run_command always present, run_skill added when skills exist.
@@ -361,8 +408,10 @@ impl Agent {
 
         let system_prompt = self.build_system_prompt(user).await;
 
-        // Build the first user turn. When an image/PDF is attached we embed it
-        // as inline base64 so Gemini can interpret it visually.
+        // Build the first user turn. Prepend a planning instruction so the model
+        // reasons before acting (dramatically improves multi-step task quality).
+        // When an image/PDF is attached we embed it as inline base64.
+        let planned_task = format!("{}{}", PLANNING_PREFIX, task);
         let first_turn = match vision {
             Some((bytes, mime)) => {
                 info!("Vision mode: embedding {} bytes as {} for Gemini", bytes.len(), mime);
@@ -370,12 +419,12 @@ impl Agent {
                 json!({
                     "role": "user",
                     "parts": [
-                        {"text": task},
+                        {"text": planned_task},
                         {"inlineData": {"mimeType": mime, "data": b64}}
                     ]
                 })
             }
-            None => json!({"role": "user", "parts": [{"text": task}]}),
+            None => json!({"role": "user", "parts": [{"text": planned_task}]}),
         };
 
         let mut conversation: Vec<Value> = vec![first_turn];
@@ -437,13 +486,17 @@ impl Agent {
                             Err(e) => (format!("Skill error: {}", e), -1),
                         };
 
-                        let truncated = if output_str.len() > MAX_OUTPUT_BYTES {
-                            truncate_utf8(&output_str, MAX_OUTPUT_BYTES).to_string()
+                        // Preprocess skill output: strip ANSI, collapse blanks, smart truncate.
+                        let processed = output_utils::preprocess_output(&output_str, MAX_OUTPUT_BYTES);
+
+                        // Structured error recovery for failed skills too.
+                        let output_for_gemini = if exit_code != 0 {
+                            wrap_error_reflection(&processed, exit_code)
                         } else {
-                            output_str
+                            processed
                         };
 
-                        conversation.push(Self::fn_response("run_skill", &truncated, exit_code));
+                        conversation.push(Self::fn_response("run_skill", &output_for_gemini, exit_code));
                     }
 
                     "web_search" => {
@@ -522,12 +575,12 @@ impl Agent {
                         };
 
                         let exit_code = exec_result.exit_code;
-                        let output = exec_result.output();
+                        let raw_output = exec_result.output();
 
-                        let preview = if output.len() > MAX_PREVIEW_BYTES {
-                            format!("{}…", truncate_utf8(&output, MAX_PREVIEW_BYTES))
+                        let preview = if raw_output.len() > MAX_PREVIEW_BYTES {
+                            format!("{}…", truncate_utf8(&raw_output, MAX_PREVIEW_BYTES))
                         } else {
-                            output.clone()
+                            raw_output.clone()
                         };
                         Self::send_progress(
                             &progress,
@@ -535,11 +588,18 @@ impl Agent {
                         )
                         .await;
 
-                        let output_for_gemini = if output.len() > MAX_OUTPUT_BYTES {
-                            truncate_utf8(&output, MAX_OUTPUT_BYTES).to_string()
+                        // Smart output preprocessing: strip ANSI, collapse blanks,
+                        // and for large outputs, extract errors first.
+                        let processed = output_utils::preprocess_output(&raw_output, MAX_OUTPUT_BYTES);
+
+                        // Structured error recovery: wrap failed commands in a
+                        // reflection prompt so the model analyzes instead of retrying blindly.
+                        let output_for_gemini = if exit_code != 0 {
+                            wrap_error_reflection(&processed, exit_code)
                         } else {
-                            output
+                            processed
                         };
+
                         conversation
                             .push(Self::fn_response("run_command", &output_for_gemini, exit_code));
                     }

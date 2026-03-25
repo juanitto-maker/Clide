@@ -13,6 +13,7 @@ pub mod logger;
 pub mod pass_store;
 pub mod matrix;
 pub mod memory;
+pub mod output_utils;
 pub mod scrubber;
 pub mod search;
 pub mod skills;
