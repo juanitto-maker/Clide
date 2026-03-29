@@ -4,6 +4,8 @@
 
 use anyhow::Result;
 use log::{info, warn, error};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::agent::Agent;
 use crate::config::Config;
@@ -13,7 +15,7 @@ use crate::matrix::MatrixClient;
 pub struct Bot {
     config: Config,
     agent: Agent,
-    matrix: MatrixClient,
+    matrix: Arc<Mutex<MatrixClient>>,
 }
 
 impl Bot {
@@ -30,7 +32,7 @@ impl Bot {
         Ok(Self {
             config,
             agent,
-            matrix,
+            matrix: Arc::new(Mutex::new(matrix)),
         })
     }
 
@@ -40,24 +42,26 @@ impl Bot {
 
         // Resolve the bot's actual Matrix user ID so the self-response guard
         // works correctly regardless of what is written in matrix_user in config.
-        match self.matrix.fetch_bot_user_id().await {
-            Ok(ref id) => {
-                info!(
-                    "Bot authenticated as: {} — messages from this account will be \
-                     ignored (self-response guard). Messages from any other account \
-                     will be processed normally.",
-                    id
-                );
+        {
+            let mut mx = self.matrix.lock().await;
+            match mx.fetch_bot_user_id().await {
+                Ok(ref id) => {
+                    info!(
+                        "Bot authenticated as: {} — messages from this account will be \
+                         ignored (self-response guard). Messages from any other account \
+                         will be processed normally.",
+                        id
+                    );
+                }
+                Err(e) => error!(
+                    "Could not fetch bot user ID via /whoami ({}). \
+                     Self-response filtering is DISABLED — check your homeserver URL and \
+                     access token.  If the bot loops, stop it and fix the config.",
+                    e
+                ),
             }
-            Err(e) => error!(
-                "Could not fetch bot user ID via /whoami ({}). \
-                 Self-response filtering is DISABLED — check your homeserver URL and \
-                 access token.  If the bot loops, stop it and fix the config.",
-                e
-            ),
+            mx.log_room_id();
         }
-
-        self.matrix.log_room_id();
 
         println!(
             "Bot running. Send a message in Matrix room {}. Ctrl+C to stop.",
@@ -65,17 +69,39 @@ impl Bot {
         );
         println!("Send /stop in the room to abort a running task.");
 
+        // ── Start the scheduler background task ──────────────────────────
+        let _scheduler_handle = if !self.config.scheduled_tasks.is_empty() {
+            let notify = crate::scheduler::NotifyChannel::Matrix {
+                client: Arc::clone(&self.matrix),
+            };
+            let handle = crate::scheduler::spawn(self.config.clone(), notify);
+            println!(
+                "Scheduler: {} task(s) active",
+                self.config
+                    .scheduled_tasks
+                    .iter()
+                    .filter(|t| t.enabled)
+                    .count()
+            );
+            Some(handle)
+        } else {
+            None
+        };
+
         let ctrl_c_fut = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c_fut);
 
         loop {
-            let messages = tokio::select! {
-                biased;
-                _ = &mut ctrl_c_fut => {
-                    println!("\nShutting down Clide bot...");
-                    break Ok(());
+            let messages = {
+                let mut mx = self.matrix.lock().await;
+                tokio::select! {
+                    biased;
+                    _ = &mut ctrl_c_fut => {
+                        println!("\nShutting down Clide bot...");
+                        break Ok(());
+                    }
+                    r = mx.receive_messages() => r,
                 }
-                r = self.matrix.receive_messages() => r,
             };
 
             match messages {
@@ -90,6 +116,8 @@ impl Bot {
                             info!("Received /stop while idle — no task running.");
                             let _ = self
                                 .matrix
+                                .lock()
+                                .await
                                 .send_message("No task is currently running.")
                                 .await;
                             continue;
@@ -98,7 +126,14 @@ impl Bot {
                         // /stats — show usage statistics
                         if msg.text.trim().eq_ignore_ascii_case("/stats") {
                             let reply = self.build_stats_message();
-                            let _ = self.matrix.send_message(&reply).await;
+                            let _ = self.matrix.lock().await.send_message(&reply).await;
+                            continue;
+                        }
+
+                        // /schedule — show scheduled tasks status
+                        if msg.text.trim().eq_ignore_ascii_case("/schedule") {
+                            let reply = crate::scheduler::build_schedule_message(&self.config);
+                            let _ = self.matrix.lock().await.send_message(&reply).await;
                             continue;
                         }
 
@@ -128,7 +163,7 @@ impl Bot {
         // an infinite loop.  Uses only the user ID resolved via /whoami so that
         // a wrong/old value in config.matrix_user cannot accidentally block
         // messages from the human operator.
-        if self.matrix.is_bot_sender(&sender) {
+        if self.matrix.lock().await.is_bot_sender(&sender) {
             info!("Ignoring own message from {} to prevent self-response loop.", sender);
             return Ok(());
         }
@@ -159,7 +194,7 @@ impl Bot {
         info!("Running agent task...");
         let response = self.agent.run(&text, &sender, None, None).await?;
 
-        self.matrix.send_message(&response).await?;
+        self.matrix.lock().await.send_message(&response).await?;
         info!("Replied to {}", sender);
 
         Ok(())
@@ -203,10 +238,12 @@ impl Bot {
             text
         );
 
-        self.matrix.send_message(&confirm_msg).await?;
+        self.matrix.lock().await.send_message(&confirm_msg).await?;
 
         let reply = self
             .matrix
+            .lock()
+            .await
             .wait_for_reply(sender, self.config.confirmation_timeout)
             .await?;
 

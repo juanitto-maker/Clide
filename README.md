@@ -808,6 +808,7 @@ Any amount helps keep the project active. Thank you.
 | [docs/INSTALL.md](docs/INSTALL.md) | Full platform-specific installation guide |
 | [docs/SECRETS.md](docs/SECRETS.md) | Credential manager — secrets file, pass, host registry, vault |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security model and best practices |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Planned features and future direction |
 | [docs/COMPARISON.md](docs/COMPARISON.md) | How Clide compares to Open Interpreter, StackStorm, Rundeck, and others |
 | [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | Real-world usage examples and skill templates |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Contribution guidelines |

@@ -614,21 +614,35 @@ impl Agent {
                         info!("Agent running command: {}", cmd);
                         Self::send_progress(&progress, format!("$ {}", cmd)).await;
 
+                        // Create a streaming channel so live output lines are
+                        // forwarded to the progress channel during execution.
+                        let (live_tx, live_rx) = tokio::sync::mpsc::channel::<String>(64);
+                        let stream_progress = progress.clone();
+                        let stream_forwarder = tokio::spawn(async move {
+                            Self::forward_live_output(live_rx, &stream_progress).await;
+                        });
+
                         let cmd_timeout = Duration::from_secs(self.command_timeout);
                         let exec_result = match timeout(
                             cmd_timeout,
-                            self.executor.execute(&cmd),
+                            self.executor.execute_streaming(&cmd, Some(live_tx)),
                         )
                         .await
                         {
-                            Ok(Ok(r)) => r,
+                            Ok(Ok(r)) => {
+                                // Wait for the forwarder to finish flushing
+                                let _ = stream_forwarder.await;
+                                r
+                            }
                             Ok(Err(e)) => {
+                                stream_forwarder.abort();
                                 let err = format!("Command error: {}", e);
                                 Self::send_progress(&progress, format!("  ✗ {}", err)).await;
                                 conversation.push(Self::fn_response("run_command", &err, -1));
                                 continue;
                             }
                             Err(_) => {
+                                stream_forwarder.abort();
                                 let err = format!("Command timed out after {}s", self.command_timeout);
                                 Self::send_progress(&progress, format!("  ✗ {}", err)).await;
                                 conversation.push(Self::fn_response("run_command", &err, -1));
@@ -757,8 +771,16 @@ impl Agent {
 
             Self::send_progress(progress, format!("  [skill:{}] $ {}", skill_name, cmd)).await;
 
-            let res = match timeout(cmd_timeout, self.executor.execute(&cmd)).await {
+            // Create a streaming channel for live output during skill commands.
+            let (live_tx, live_rx) = tokio::sync::mpsc::channel::<String>(64);
+            let stream_progress = progress.clone();
+            let stream_forwarder = tokio::spawn(async move {
+                Self::forward_live_output(live_rx, &stream_progress).await;
+            });
+
+            let res = match timeout(cmd_timeout, self.executor.execute_streaming(&cmd, Some(live_tx))).await {
                 Ok(Ok(r)) => {
+                    let _ = stream_forwarder.await;
                     if !r.success() {
                         overall_exit = r.exit_code;
                     }
@@ -773,10 +795,12 @@ impl Agent {
                     format!("$ {}\n{}", cmd, out)
                 }
                 Ok(Err(e)) => {
+                    stream_forwarder.abort();
                     overall_exit = -1;
                     format!("$ {}\nError: {}", cmd, e)
                 }
                 Err(_) => {
+                    stream_forwarder.abort();
                     overall_exit = -1;
                     format!("$ {}\nTimeout after {}s", cmd, cmd_timeout.as_secs())
                 }
@@ -793,6 +817,27 @@ impl Agent {
     async fn send_progress(progress: &Option<Sender<String>>, line: String) {
         if let Some(tx) = progress {
             let _ = tx.send(line).await;
+        }
+    }
+
+    /// Forward live output chunks from a streaming executor to the progress
+    /// channel, prefixing each line with `"  │ "` so it renders as indented
+    /// command output in the chat log.
+    async fn forward_live_output(
+        mut live_rx: tokio::sync::mpsc::Receiver<String>,
+        progress: &Option<Sender<String>>,
+    ) {
+        while let Some(chunk) = live_rx.recv().await {
+            if chunk.is_empty() {
+                continue;
+            }
+            // Prefix each line in the chunk for visual indentation
+            let prefixed: String = chunk
+                .lines()
+                .map(|line| format!("  │ {}", line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Self::send_progress(progress, prefixed).await;
         }
     }
 
