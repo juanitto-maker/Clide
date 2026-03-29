@@ -8,6 +8,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::env;
 use std::io::Write;
+use std::process::Command;
 
 const GITHUB_REPO: &str = "juanitto-maker/Clide";
 
@@ -58,7 +59,21 @@ fn cfg_if_target() -> &'static str {
 }
 
 /// Run the update command: check, download, replace, print changelog.
+/// If `purge` is true, clean up leftover artifacts from previous versions
+/// (old binaries, stale temp files, source checkouts) after updating.
+pub async fn run_with_opts(purge: bool) -> Result<()> {
+    let result = run_inner().await;
+    if purge {
+        purge_old_artifacts();
+    }
+    result
+}
+
 pub async fn run() -> Result<()> {
+    run_inner().await
+}
+
+async fn run_inner() -> Result<()> {
     let current_version = crate::VERSION;
     println!("{}", "Checking for updates...".bright_cyan());
 
@@ -142,6 +157,16 @@ pub async fn run() -> Result<()> {
 
     // Replace ourselves
     let exec_path = env::current_exe().context("Cannot determine executable path")?;
+
+    // On Linux (non-Android): stop systemd service before replacing if it's active
+    let systemd_active = is_systemd_service_active();
+    if systemd_active {
+        println!("  {} stopping clide service...", "systemd:".bright_cyan());
+        let _ = Command::new("sudo")
+            .args(["systemctl", "stop", "clide"])
+            .status();
+    }
+
     replace_binary(&exec_path, &binary_data)?;
 
     println!(
@@ -156,6 +181,37 @@ pub async fn run() -> Result<()> {
             println!("\n{}", "Changelog:".bright_cyan().bold());
             println!("{}", body);
         }
+    }
+
+    // On Linux: restart systemd service if it exists, otherwise advise manual restart
+    if systemd_active {
+        println!("\n  {} restarting clide service...", "systemd:".bright_cyan());
+        let status = Command::new("sudo")
+            .args(["systemctl", "restart", "clide"])
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                println!("  {}", "Service restarted successfully.".bright_green());
+            }
+            _ => {
+                println!(
+                    "  {} Failed to restart service. Run: sudo systemctl restart clide",
+                    "Warning:".yellow()
+                );
+            }
+        }
+    } else if has_systemd_unit() {
+        // Unit file exists but service wasn't running — just let user know
+        println!(
+            "\n{} Service was not running. Start it with: sudo systemctl start clide",
+            "Note:".bright_cyan()
+        );
+    } else {
+        #[cfg(not(target_os = "android"))]
+        println!(
+            "\n{} Restart clide manually, or install the systemd service:\n  bash scripts/install-service.sh",
+            "Note:".bright_cyan()
+        );
     }
 
     Ok(())
@@ -263,7 +319,7 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
 
     // Try writing temp file next to the binary first (atomic rename possible).
     // If that fails (e.g. /usr/local/bin/ owned by root), fall back to writing
-    // in a user-writable temp dir + sudo cp.
+    // in a user-writable temp dir + sudo mv (atomic rename avoids "Text file busy").
     let tmp_path = path.with_extension("tmp");
 
     match std::fs::File::create(&tmp_path) {
@@ -274,11 +330,16 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
             drop(file);
             std::fs::set_permissions(&tmp_path, permissions.clone())
                 .context("Failed to set permissions on new binary")?;
+            // rename() is atomic on Linux — replaces the directory entry without
+            // opening the old file for writing, so it works on running binaries.
             std::fs::rename(&tmp_path, path)
                 .context("Failed to replace binary (rename)")?;
         }
         Err(_) => {
-            // Permission denied writing next to the binary — use home dir + sudo cp
+            // Permission denied writing next to the binary — use sudo to create
+            // a temp file in the same directory, then atomically rename it.
+            // This avoids "Text file busy" which happens with `sudo cp` on a
+            // running binary.
             let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
             let home_tmp = std::path::PathBuf::from(&home).join(".clide_update_tmp");
 
@@ -296,27 +357,44 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
                 std::fs::set_permissions(&home_tmp, std::fs::Permissions::from_mode(0o755))?;
             }
 
-            // Use sudo to copy into the protected directory
             let path_str = path.to_string_lossy();
             let tmp_str = home_tmp.to_string_lossy();
+            let dest_tmp = format!("{}.new", path_str);
             println!(
                 "  {} (using sudo to install to {})",
                 "Permission required".yellow(),
                 path_str
             );
 
-            let status = std::process::Command::new("sudo")
-                .args(["cp", &tmp_str, &path_str])
+            // Step 1: sudo cp to a temp file next to the target (same filesystem)
+            let status = Command::new("sudo")
+                .args(["cp", &tmp_str, &dest_tmp])
                 .status()
                 .context("Failed to run sudo cp")?;
 
-            // Clean up temp file
+            // Clean up home temp regardless of outcome
             let _ = std::fs::remove_file(&home_tmp);
 
             if !status.success() {
+                let _ = Command::new("sudo").args(["rm", "-f", &dest_tmp]).status();
                 bail!(
                     "sudo cp failed. Try manually:\n  sudo cp {} {}",
                     tmp_str,
+                    path_str
+                );
+            }
+
+            // Step 2: sudo mv (atomic rename) — avoids "Text file busy"
+            let status = Command::new("sudo")
+                .args(["mv", &dest_tmp, &path_str])
+                .status()
+                .context("Failed to run sudo mv")?;
+
+            if !status.success() {
+                let _ = Command::new("sudo").args(["rm", "-f", &dest_tmp]).status();
+                bail!(
+                    "sudo mv failed. Try manually:\n  sudo mv {} {}",
+                    dest_tmp,
                     path_str
                 );
             }
@@ -324,4 +402,118 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check if the clide systemd service is currently active (running).
+/// Returns false on non-Linux, Android/Termux, or if systemd is not available.
+fn is_systemd_service_active() -> bool {
+    #[cfg(target_os = "android")]
+    { return false; }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        Command::new("systemctl")
+            .args(["is-active", "clide"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// Check if a clide systemd unit file exists (even if service is stopped).
+fn has_systemd_unit() -> bool {
+    #[cfg(target_os = "android")]
+    { return false; }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        std::path::Path::new("/etc/systemd/system/clide.service").exists()
+    }
+}
+
+/// Remove leftover artifacts from previous installs/updates.
+fn purge_old_artifacts() {
+    println!("\n{}", "Purging old artifacts...".bright_cyan());
+    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let home = std::path::PathBuf::from(home);
+    let mut removed = 0u32;
+
+    // 1. Stale temp files from previous update attempts
+    let temp_files = [
+        home.join(".clide_update_tmp"),
+        std::path::PathBuf::from("/usr/local/bin/clide.tmp"),
+        std::path::PathBuf::from("/usr/local/bin/clide.new"),
+    ];
+    for path in &temp_files {
+        if path.exists() {
+            if std::fs::remove_file(path).is_ok() {
+                println!("  Removed: {}", path.display());
+                removed += 1;
+            } else {
+                // Try with sudo for protected paths
+                let _ = Command::new("sudo")
+                    .args(["rm", "-f", &path.to_string_lossy()])
+                    .status();
+                println!("  Removed (sudo): {}", path.display());
+                removed += 1;
+            }
+        }
+    }
+
+    // 2. Old source checkout (Clide_Source from manual build installs)
+    let source_dir = home.join("Clide_Source");
+    if source_dir.is_dir() {
+        println!("  Found old source dir: {}", source_dir.display());
+        if std::fs::remove_dir_all(&source_dir).is_ok() {
+            println!("  Removed: {}", source_dir.display());
+            removed += 1;
+        } else {
+            println!(
+                "  {} Could not remove {}. Run: rm -rf ~/Clide_Source",
+                "Warning:".yellow(),
+                source_dir.display()
+            );
+        }
+    }
+
+    // 3. Termux: stale binary copies in $PREFIX/bin/ (old names)
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(prefix) = env::var("PREFIX") {
+            let old_names = ["clide.tmp", "clide.new", "clide.bak", "clide.old"];
+            for name in &old_names {
+                let p = std::path::PathBuf::from(&prefix).join("bin").join(name);
+                if p.exists() {
+                    let _ = std::fs::remove_file(&p);
+                    println!("  Removed: {}", p.display());
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    // 4. Linux: stale binary copies next to /usr/local/bin/clide
+    #[cfg(not(target_os = "android"))]
+    {
+        let stale = ["clide.bak", "clide.old"];
+        for name in &stale {
+            let p = std::path::PathBuf::from("/usr/local/bin").join(name);
+            if p.exists() {
+                let _ = Command::new("sudo")
+                    .args(["rm", "-f", &p.to_string_lossy()])
+                    .status();
+                println!("  Removed: {}", p.display());
+                removed += 1;
+            }
+        }
+    }
+
+    if removed == 0 {
+        println!("  {}", "No stale artifacts found — all clean.".bright_green());
+    } else {
+        println!(
+            "  {}",
+            format!("Cleaned up {} artifact(s).", removed).bright_green()
+        );
+    }
 }

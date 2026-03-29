@@ -24,7 +24,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.get(1).map(|s| s.as_str()) == Some("update") {
-        return clide::update::run().await.map_err(|e| e.into());
+        let purge = args.iter().any(|a| a == "--purge");
+        return clide::update::run_with_opts(purge).await.map_err(|e| e.into());
     }
 
     if args.iter().any(|a| a == "--bot" || a == "bot") {
