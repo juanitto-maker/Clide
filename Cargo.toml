@@ -1,6 +1,6 @@
 [package]
 name = "clide"
-version = "0.4.2"
+version = "0.2.1"
 edition = "2021"
 authors = ["juanitto-maker"]
 description = "AI bot for Termux - chat via Element/Matrix, powered by Gemini"
