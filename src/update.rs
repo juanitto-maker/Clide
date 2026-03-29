@@ -69,7 +69,7 @@ pub async fn run() -> Result<()> {
 
     // Fetch latest release
     let release = fetch_latest_release(&client).await?;
-    let latest_version = release.tag_name.trim_start_matches('v');
+    let latest_version = release.tag_name.trim_start_matches('v').trim_start_matches('.');
 
     println!(
         "  Current version: {}",
