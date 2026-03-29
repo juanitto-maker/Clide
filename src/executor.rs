@@ -3,6 +3,7 @@
 // ============================================
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -19,6 +20,8 @@ const MAX_STDERR_BYTES: usize = 512 * 1024;
 #[derive(Debug, Clone)]
 pub struct Executor {
     config: Config,
+    /// Compiled regex patterns for blocked commands.
+    blocked_patterns: Vec<Regex>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,18 +50,44 @@ impl ExecutionResult {
 
 impl Executor {
     pub fn new(config: Config) -> Self {
-        Self { config }
+        let blocked_patterns: Vec<Regex> = config
+            .blocked_patterns
+            .iter()
+            .filter_map(|p| match Regex::new(p) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    warn!("Invalid blocked_pattern regex '{}': {}", p, e);
+                    None
+                }
+            })
+            .collect();
+        if !blocked_patterns.is_empty() {
+            debug!("Loaded {} regex blocked patterns", blocked_patterns.len());
+        }
+        Self { config, blocked_patterns }
     }
 
     pub async fn execute(&self, command_str: &str) -> Result<ExecutionResult> {
         let start = std::time::Instant::now();
 
+        // Check simple string-match blocklist
         for blocked in &self.config.blocked_commands {
             if command_str.contains(blocked) {
                 error!("Blocked command attempt: {}", command_str);
                 return Err(anyhow::anyhow!(
                     "Command contains blocked pattern: {}",
                     blocked
+                ));
+            }
+        }
+
+        // Check regex-based blocklist
+        for pattern in &self.blocked_patterns {
+            if pattern.is_match(command_str) {
+                error!("Blocked command (regex) attempt: {}", command_str);
+                return Err(anyhow::anyhow!(
+                    "Command matches blocked regex pattern: {}",
+                    pattern.as_str()
                 ));
             }
         }

@@ -26,7 +26,7 @@ pub mod workflow;
 pub use agent::Agent;
 pub use bot::Bot;
 pub use config::Config;
-pub use database::{Conversation, Database, Stats};
+pub use database::{Conversation, Database, Fact, Stats, Summary};
 pub use executor::{ExecutionResult, Executor};
 pub use gemini::{CommandAnalysis, GeminiClient};
 pub use matrix::MatrixClient;

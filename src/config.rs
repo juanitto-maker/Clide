@@ -75,6 +75,33 @@ pub struct Config {
     #[serde(default)]
     pub context_file: Option<String>,
 
+    /// Fallback model to use when the primary model fails or for complex tasks.
+    /// Example: "gemini-2.5-pro" for automatic escalation.
+    #[serde(default)]
+    pub fallback_model: Option<String>,
+
+    /// Whether to automatically escalate to the fallback model when the primary
+    /// model fails twice on the same task (default: true if fallback_model is set).
+    #[serde(default = "default_auto_escalate")]
+    pub auto_escalate: bool,
+
+    /// Number of conversations between automatic summarizations (default: 5).
+    #[serde(default = "default_summarize_interval")]
+    pub summarize_interval: usize,
+
+    /// Whether to extract structured facts from conversations (default: true).
+    #[serde(default = "default_true")]
+    pub extract_facts: bool,
+
+    /// Whether to enable self-reflection/verification after task completion (default: true).
+    #[serde(default = "default_true")]
+    pub self_reflection: bool,
+
+    /// Regex patterns for blocked commands. These are checked in addition to
+    /// the simple string-match `blocked_commands` list.
+    #[serde(default = "default_blocked_patterns")]
+    pub blocked_patterns: Vec<String>,
+
     /// All secrets from ~/.clide/secrets.yaml plus env overrides.
     /// Available as ${KEY_NAME} placeholders in skill commands.
     /// Never serialised back to disk.
@@ -107,6 +134,42 @@ fn default_blocked_commands() -> Vec<String> {
         "rm -rf /".to_string(),
         "mkfs".to_string(),
         "dd if=".to_string(),
+    ]
+}
+
+fn default_auto_escalate() -> bool {
+    true
+}
+
+fn default_summarize_interval() -> usize {
+    5
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_blocked_patterns() -> Vec<String> {
+    vec![
+        // Destructive filesystem operations
+        r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?/\s*$".to_string(),
+        r"rm\s+-[a-zA-Z]*r[a-zA-Z]*\s+/\s*$".to_string(),
+        r"chmod\s+(-R\s+)?777\s+/".to_string(),
+        r"chown\s+-R\s+.*\s+/\s*$".to_string(),
+        r"mkfs\.\w+".to_string(),
+        r"dd\s+.*if=.*of=/dev/".to_string(),
+        // Fork bombs and resource exhaustion
+        r":\(\)\s*\{.*\}.*:".to_string(),
+        r"\.\s*/dev/sda".to_string(),
+        // Credential exfiltration
+        r"curl\s+.*[-d].*password".to_string(),
+        r"wget\s+.*password".to_string(),
+        // Dangerous redirects
+        r">\s*/dev/sd[a-z]".to_string(),
+        r">\s*/etc/passwd".to_string(),
+        r">\s*/etc/shadow".to_string(),
+        // Disable firewall entirely
+        r"(ufw|iptables)\s+(disable|--flush|-F)".to_string(),
     ]
 }
 
