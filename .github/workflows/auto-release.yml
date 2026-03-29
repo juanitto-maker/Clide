@@ -49,7 +49,7 @@ jobs:
         id: bump
         run: |
           set -euo pipefail
-          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/' | tr -d '\r\n')
           echo "Current version from Cargo.toml: '$CURRENT'"
 
           # Validate semver format
