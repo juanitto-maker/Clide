@@ -15,6 +15,11 @@ pub struct Config {
     #[serde(default = "default_model")]
     pub gemini_model: String,
 
+    /// Fallback model for complex tasks when primary model fails twice.
+    /// Defaults to "gemini-2.5-pro" if not set.
+    #[serde(default = "default_fallback_model")]
+    pub fallback_model: String,
+
     /// Which messaging platform(s) to use: "matrix", "telegram", or "both"
     #[serde(default = "default_platform")]
     pub platform: String,
@@ -53,9 +58,26 @@ pub struct Config {
     #[serde(default)]
     pub authorized_users: Vec<String>,
 
-    // Commands blocked from execution in executor.rs
+    // Commands blocked from execution in executor.rs (simple substring match)
     #[serde(default = "default_blocked_commands")]
     pub blocked_commands: Vec<String>,
+
+    /// Regex patterns for blocked commands (more powerful than simple substring).
+    /// These are compiled at startup and checked on every command execution.
+    #[serde(default = "default_blocked_patterns")]
+    pub blocked_patterns: Vec<String>,
+
+    /// Number of recent messages to include as hot-tier context (default 10).
+    #[serde(default = "default_memory_messages")]
+    pub memory_messages: usize,
+
+    /// Enable self-reflection step after task completion (default true).
+    #[serde(default = "default_true")]
+    pub enable_reflection: bool,
+
+    /// Enable automatic fact extraction from conversations (default true).
+    #[serde(default = "default_true")]
+    pub enable_fact_extraction: bool,
 
     /// Maximum tool-call steps per agent task (default 40)
     #[serde(default = "default_agent_steps")]
@@ -86,6 +108,18 @@ fn default_model() -> String {
     "gemini-2.5-flash".to_string()
 }
 
+fn default_fallback_model() -> String {
+    "gemini-2.5-pro".to_string()
+}
+
+fn default_memory_messages() -> usize {
+    10
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn default_platform() -> String {
     "matrix".to_string()
 }
@@ -107,6 +141,29 @@ fn default_blocked_commands() -> Vec<String> {
         "rm -rf /".to_string(),
         "mkfs".to_string(),
         "dd if=".to_string(),
+    ]
+}
+
+fn default_blocked_patterns() -> Vec<String> {
+    vec![
+        // Destructive filesystem operations
+        r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?/(?!tmp|home)".to_string(),
+        r"rm\s+-[a-zA-Z]*r[a-zA-Z]*\s+/(?!tmp|home)".to_string(),
+        r"mkfs\b".to_string(),
+        r"dd\s+.*\bof=/dev/".to_string(),
+        r">\s*/dev/sd[a-z]".to_string(),
+        // Dangerous system commands
+        r":()\s*\{\s*:\|\s*:&\s*\}".to_string(), // fork bomb
+        r"chmod\s+(-[a-zA-Z]*\s+)?[0-7]*777\s+/".to_string(),
+        r"chown\s+.*\s+/(?!tmp|home)".to_string(),
+        // Credential exfiltration
+        r"curl\s+.*\bupload\b.*\b(secrets|config|\.env|\.ssh|id_rsa)".to_string(),
+        r"wget\s+.*--post-file".to_string(),
+        // Process/system manipulation
+        r"kill\s+-9\s+1\b".to_string(),
+        r"shutdown\b".to_string(),
+        r"reboot\b".to_string(),
+        r"init\s+0".to_string(),
     ]
 }
 

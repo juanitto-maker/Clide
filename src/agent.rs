@@ -33,10 +33,10 @@ use crate::truncate_utf8;
 const MAX_OUTPUT_BYTES: usize = 24_000;
 /// Maximum progress preview sent over the channel per command
 const MAX_PREVIEW_BYTES: usize = 500;
-/// How many past conversations to inject as context
-const MEMORY_CONTEXT_MESSAGES: usize = 10;
 /// Default timeout for skill commands (seconds)
 const SKILL_CMD_TIMEOUT_SECS: u64 = 300;
+/// Maximum consecutive Gemini failures before escalating to fallback model.
+const FALLBACK_THRESHOLD: usize = 2;
 
 // ── Layered System Prompt ──────────────────────────────────────────────────────
 // Split into focused sections so the model's attention is directed to the most
@@ -156,17 +156,23 @@ pub struct Agent {
     client: Client,
     api_key: String,
     model: String,
+    /// Fallback model for complex/failing tasks (e.g., gemini-2.5-pro).
+    fallback_model: String,
     executor: Executor,
     max_steps: usize,
     /// Per-command timeout for run_command calls (seconds).
     command_timeout: u64,
+    /// Number of recent messages to include in hot-tier context.
+    memory_messages: usize,
+    /// Whether to run a self-reflection step after task completion.
+    enable_reflection: bool,
+    /// Whether to extract facts from conversations.
+    enable_fact_extraction: bool,
     memory: Option<Memory>,
     skill_manager: Option<SkillManager>,
     /// Shared cancellation flag — set to true by a /stop command to abort the running task.
     cancelled: Arc<AtomicBool>,
     /// Secrets loaded from ~/.clide/secrets.yaml (and env overrides).
-    /// Injected as ${KEY_NAME} placeholders in skill commands at execution time.
-    /// Never sent to the AI model.
     secrets: HashMap<String, String>,
     /// Optional permanent context loaded from a markdown file at startup.
     context_file_content: Option<String>,
@@ -184,9 +190,13 @@ impl Agent {
             client: Client::new(),
             api_key: config.gemini_api_key.clone(),
             model: config.get_model().to_string(),
+            fallback_model: config.fallback_model.clone(),
             executor: Executor::new(config.clone()),
             max_steps: config.max_agent_steps,
             command_timeout: config.command_timeout,
+            memory_messages: config.memory_messages,
+            enable_reflection: config.enable_reflection,
+            enable_fact_extraction: config.enable_fact_extraction,
             memory,
             skill_manager,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -242,7 +252,7 @@ impl Agent {
     async fn build_system_prompt(&mut self, user: &str) -> String {
         let context = match self.memory {
             Some(ref mut mem) => mem
-                .get_context(user, MEMORY_CONTEXT_MESSAGES)
+                .get_context(user, self.memory_messages)
                 .await
                 .unwrap_or_default(),
             None => String::new(),
@@ -430,6 +440,8 @@ impl Agent {
         let mut conversation: Vec<Value> = vec![first_turn];
 
         let mut final_answer: Option<String> = None;
+        let mut consecutive_failures: usize = 0;
+        let mut using_fallback = false;
 
         'agent_loop: for step in 0..self.max_steps {
             // Check for /stop between every Gemini round-trip.
@@ -441,7 +453,42 @@ impl Agent {
 
             info!("Agent step {}/{}", step + 1, self.max_steps);
 
-            let response = self.call_gemini(&conversation, &system_prompt).await?;
+            // Try primary model, escalate to fallback after repeated failures.
+            let active_model = if using_fallback {
+                &self.fallback_model
+            } else {
+                &self.model
+            };
+            let response = match self
+                .call_gemini_model(active_model, &conversation, &system_prompt)
+                .await
+            {
+                Ok(r) => {
+                    consecutive_failures = 0;
+                    r
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    if !using_fallback && consecutive_failures >= FALLBACK_THRESHOLD {
+                        warn!(
+                            "Primary model failed {} times, escalating to fallback: {}",
+                            consecutive_failures, self.fallback_model
+                        );
+                        using_fallback = true;
+                        consecutive_failures = 0;
+                        // Retry immediately with fallback
+                        match self
+                            .call_gemini_model(&self.fallback_model, &conversation, &system_prompt)
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(e2) => return Err(e2),
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
             let candidate_content = &response["candidates"][0]["content"];
             let parts: Vec<Value> = candidate_content["parts"]
                 .as_array()
@@ -618,7 +665,7 @@ impl Agent {
             }
         }
 
-        let answer = final_answer.unwrap_or_else(|| {
+        let mut answer = final_answer.unwrap_or_else(|| {
             warn!("Agent reached max steps ({})", self.max_steps);
             format!(
                 "⚠️ Reached maximum steps ({}). Task may be incomplete.",
@@ -626,7 +673,17 @@ impl Agent {
             )
         });
 
+        // ── Self-reflection step ──────────────────────────────────────────
+        // After completing a task, ask the model to verify its own answer.
+        // This catches incomplete or incorrect responses cheaply (one extra call).
+        if self.enable_reflection && !self.cancelled.load(Ordering::SeqCst) {
+            if let Some(reflected) = self.run_reflection(task, &answer).await {
+                answer = reflected;
+            }
+        }
+
         // Persist the conversation turn to memory
+        let mut needs_summary = false;
         if let Some(ref mut mem) = self.memory {
             if let Err(e) = mem
                 .save_conversation(user, task, &answer, None, None, None)
@@ -634,6 +691,17 @@ impl Agent {
             {
                 warn!("Failed to save conversation to memory: {}", e);
             }
+            needs_summary = mem.needs_summarization(user);
+        }
+
+        // ── Fact extraction (runs outside the memory borrow) ──────────
+        if self.enable_fact_extraction {
+            self.extract_and_store_facts(user, task, &answer).await;
+        }
+
+        // ── Summarization trigger ─────────────────────────────────────
+        if needs_summary {
+            self.generate_summary(user).await;
         }
 
         Ok(answer)
@@ -727,11 +795,16 @@ impl Agent {
         })
     }
 
-    /// Call the Gemini API with function-calling enabled.
-    async fn call_gemini(&self, conversation: &[Value], system_prompt: &str) -> Result<Value> {
+    /// Call Gemini with a specific model name.
+    async fn call_gemini_model(
+        &self,
+        model: &str,
+        conversation: &[Value],
+        system_prompt: &str,
+    ) -> Result<Value> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.model, self.api_key
+            model, self.api_key
         );
 
         let body = json!({
@@ -752,9 +825,154 @@ impl Agent {
             .await?;
 
         if let Some(err) = resp.get("error") {
-            return Err(anyhow::anyhow!("Gemini API error: {}", err));
+            return Err(anyhow::anyhow!("Gemini API error ({}): {}", model, err));
         }
 
         Ok(resp)
+    }
+
+    // ── Post-loop intelligence methods ────────────────────────────────────
+
+    /// Run a self-reflection pass: ask the model to review its own answer.
+    /// Returns Some(improved_answer) if the model suggests improvements,
+    /// or None to keep the original.
+    async fn run_reflection(&self, task: &str, answer: &str) -> Option<String> {
+        let reflection_prompt = format!(
+            "You just completed this task:\nTask: {}\n\nYour answer:\n{}\n\n\
+             Review your answer critically. Is it complete, correct, and helpful?\n\
+             If YES: respond with exactly \"LGTM\"\n\
+             If NO: provide the corrected/improved answer.",
+            task, answer
+        );
+
+        let conversation = vec![
+            json!({"role": "user", "parts": [{"text": reflection_prompt}]}),
+        ];
+
+        let system = "You are a quality reviewer. Be concise. Only suggest changes if there are genuine issues.";
+
+        match self.call_gemini_model(&self.model, &conversation, system).await {
+            Ok(resp) => {
+                let text = resp["candidates"][0]["content"]["parts"][0]["text"]
+                    .as_str()
+                    .unwrap_or("");
+                if text.trim().to_uppercase().contains("LGTM") {
+                    info!("Self-reflection: answer approved");
+                    None
+                } else if !text.is_empty() {
+                    info!("Self-reflection: answer improved");
+                    Some(text.to_string())
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                warn!("Self-reflection call failed (non-critical): {}", e);
+                None
+            }
+        }
+    }
+
+    /// Extract structured facts from a conversation turn and store them.
+    async fn extract_and_store_facts(&mut self, user: &str, task: &str, answer: &str) {
+        let extraction_prompt = format!(
+            "Extract key facts from this conversation that should be remembered for future interactions.\n\n\
+             User message: {}\nAssistant response: {}\n\n\
+             Return ONLY a JSON array of objects, each with: {{\"type\": \"...\", \"key\": \"...\", \"value\": \"...\"}}\n\
+             Fact types: server, preference, project, tool, credential_name (NOT the value), workflow, system_info\n\
+             If no facts worth remembering, return: []\n\
+             Examples:\n\
+             - {{\"type\": \"server\", \"key\": \"prod\", \"value\": \"192.168.1.10 running nginx\"}}\n\
+             - {{\"type\": \"preference\", \"key\": \"editor\", \"value\": \"vim\"}}\n\
+             Return ONLY the JSON array, no other text.",
+            task, crate::truncate_utf8(answer, 1000)
+        );
+
+        let conversation = vec![
+            json!({"role": "user", "parts": [{"text": extraction_prompt}]}),
+        ];
+
+        let system = "You extract structured facts from conversations. Return only valid JSON arrays.";
+
+        let resp = match self.call_gemini_model(&self.model, &conversation, system).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Fact extraction call failed (non-critical): {}", e);
+                return;
+            }
+        };
+
+        let text = resp["candidates"][0]["content"]["parts"][0]["text"]
+            .as_str()
+            .unwrap_or("[]");
+
+        // Parse the JSON response — be lenient with formatting
+        let clean = text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        if let Ok(facts) = serde_json::from_str::<Vec<Value>>(clean) {
+            if let Some(ref mut mem) = self.memory {
+                for fact in facts {
+                    let ft = fact["type"].as_str().unwrap_or("other");
+                    let key = fact["key"].as_str().unwrap_or("");
+                    let value = fact["value"].as_str().unwrap_or("");
+                    if !key.is_empty() && !value.is_empty() {
+                        if let Err(e) = mem.store_fact(user, ft, key, value, 0.85).await {
+                            warn!("Failed to store fact: {}", e);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Not valid JSON — that's fine, just skip
+            info!("Fact extraction returned non-JSON, skipping");
+        }
+    }
+
+    /// Generate a rolling summary of recent conversations and store it.
+    async fn generate_summary(&mut self, user: &str) {
+        // Get recent conversations to summarize
+        let context = match self.memory {
+            Some(ref mut mem) => mem
+                .get_context(user, 20)
+                .await
+                .unwrap_or_default(),
+            None => return,
+        };
+
+        if context.trim().is_empty() {
+            return;
+        }
+
+        let summary_prompt = format!(
+            "Summarize the following conversation history into a concise paragraph (3-5 sentences). \
+             Focus on: what tasks were done, what the user cares about, any ongoing projects or issues.\n\n\
+             {}\n\nSummary:",
+            crate::truncate_utf8(&context, 3000)
+        );
+
+        let conversation = vec![
+            json!({"role": "user", "parts": [{"text": summary_prompt}]}),
+        ];
+
+        let system = "You summarize conversations concisely. Focus on actionable information.";
+
+        match self.call_gemini_model(&self.model, &conversation, system).await {
+            Ok(resp) => {
+                let text = resp["candidates"][0]["content"]["parts"][0]["text"]
+                    .as_str()
+                    .unwrap_or("");
+                if !text.is_empty() {
+                    if let Some(ref mem) = self.memory {
+                        if let Err(e) = mem.save_summary(user, text, 20).await {
+                            warn!("Failed to save summary: {}", e);
+                        } else {
+                            info!("Generated and saved conversation summary for {}", user);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Summary generation failed (non-critical): {}", e);
+            }
+        }
     }
 }
