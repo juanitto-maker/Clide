@@ -8,6 +8,8 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tracing::{debug, error, warn};
 
+use regex::Regex;
+
 use crate::config::Config;
 
 /// Hard cap on stdout per command (2 MB). Output beyond this is drained and
@@ -19,6 +21,8 @@ const MAX_STDERR_BYTES: usize = 512 * 1024;
 #[derive(Debug, Clone)]
 pub struct Executor {
     config: Config,
+    /// Compiled regex patterns for blocked commands.
+    blocked_regexes: Vec<Regex>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +51,19 @@ impl ExecutionResult {
 
 impl Executor {
     pub fn new(config: Config) -> Self {
-        Self { config }
+        let blocked_regexes: Vec<Regex> = config
+            .blocked_patterns
+            .iter()
+            .filter_map(|p| match Regex::new(p) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    warn!("Invalid blocked_pattern regex '{}': {}", p, e);
+                    None
+                }
+            })
+            .collect();
+        debug!("Compiled {} blocked command regex patterns", blocked_regexes.len());
+        Self { config, blocked_regexes }
     }
 
     pub async fn execute(&self, command_str: &str) -> Result<ExecutionResult> {
@@ -55,10 +71,20 @@ impl Executor {
 
         for blocked in &self.config.blocked_commands {
             if command_str.contains(blocked) {
-                error!("Blocked command attempt: {}", command_str);
+                error!("Blocked command attempt (substring): {}", command_str);
                 return Err(anyhow::anyhow!(
                     "Command contains blocked pattern: {}",
                     blocked
+                ));
+            }
+        }
+
+        for re in &self.blocked_regexes {
+            if re.is_match(command_str) {
+                error!("Blocked command attempt (regex): {}", command_str);
+                return Err(anyhow::anyhow!(
+                    "Command matches blocked regex pattern: {}",
+                    re.as_str()
                 ));
             }
         }
