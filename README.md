@@ -209,7 +209,16 @@ clide --version
 
 Updates Clide's binary to the latest release **without** touching your config, secrets, or reinstalling Rust.
 
-**Via installer (recommended for Termux):**
+**Self-update (recommended):**
+```bash
+clide update            # download latest release and replace binary
+clide update --purge    # same, but also clean up stale temp files and old source dirs
+```
+
+On VPS with systemd: the update command automatically stops and restarts the clide service.
+On Termux: the binary is replaced atomically — just restart clide if it was running.
+
+**Via installer (recommended for Termux first-time):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/juanitto-maker/Clide/main/install.sh | bash
 ```
@@ -235,6 +244,35 @@ cp target/release/clide "$PREFIX/bin/clide"          # Termux
 ```
 
 > Your `~/.clide/config.yaml`, `~/.clide/secrets.yaml`, and all skill files are **not touched** by any of the above.
+
+---
+
+### VPS systemd service (one-time setup)
+
+Run this once on your VPS to install Clide as a systemd service that auto-restarts:
+
+```bash
+sudo bash scripts/install-service.sh
+```
+
+This will:
+1. Copy the binary to `/usr/local/bin/clide` (if not already there)
+2. Create a systemd unit at `/etc/systemd/system/clide.service`
+3. Enable and start the service
+
+After this, `clide update` will automatically stop and restart the service when updating.
+
+```bash
+# Useful commands
+sudo systemctl status clide      # check status
+sudo journalctl -u clide -f      # follow logs
+sudo systemctl restart clide     # manual restart
+```
+
+You can override the service user and binary path:
+```bash
+sudo CLIDE_USER=myuser CLIDE_BIN=/opt/clide/clide bash scripts/install-service.sh
+```
 
 ---
 
