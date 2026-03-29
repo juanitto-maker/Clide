@@ -6,6 +6,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTask {
+    pub name: String,
+    pub schedule: String, // cron expression
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    // One of these three must be set:
+    pub task: Option<String>,    // natural language for agent
+    pub skill: Option<String>,   // skill name
+    pub command: Option<String>, // raw shell command
+    #[serde(default)]
+    pub params: HashMap<String, String>, // skill params
+}
+
 use crate::hosts;
 use crate::pass_store;
 
@@ -14,6 +28,11 @@ pub struct Config {
     pub gemini_api_key: String,
     #[serde(default = "default_model")]
     pub gemini_model: String,
+
+    /// Fallback model for complex tasks when primary model fails twice.
+    /// Defaults to "gemini-2.5-pro" if not set.
+    #[serde(default = "default_fallback_model")]
+    pub fallback_model: String,
 
     /// Which messaging platform(s) to use: "matrix", "telegram", or "both"
     #[serde(default = "default_platform")]
@@ -53,9 +72,26 @@ pub struct Config {
     #[serde(default)]
     pub authorized_users: Vec<String>,
 
-    // Commands blocked from execution in executor.rs
+    // Commands blocked from execution in executor.rs (simple substring match)
     #[serde(default = "default_blocked_commands")]
     pub blocked_commands: Vec<String>,
+
+    /// Regex patterns for blocked commands (more powerful than simple substring).
+    /// These are compiled at startup and checked on every command execution.
+    #[serde(default = "default_blocked_patterns")]
+    pub blocked_patterns: Vec<String>,
+
+    /// Number of recent messages to include as hot-tier context (default 10).
+    #[serde(default = "default_memory_messages")]
+    pub memory_messages: usize,
+
+    /// Enable self-reflection step after task completion (default true).
+    #[serde(default = "default_true")]
+    pub enable_reflection: bool,
+
+    /// Enable automatic fact extraction from conversations (default true).
+    #[serde(default = "default_true")]
+    pub enable_fact_extraction: bool,
 
     /// Maximum tool-call steps per agent task (default 40)
     #[serde(default = "default_agent_steps")]
@@ -75,32 +111,10 @@ pub struct Config {
     #[serde(default)]
     pub context_file: Option<String>,
 
-    /// Fallback model to use when the primary model fails or for complex tasks.
-    /// Example: "gemini-2.5-pro" for automatic escalation.
+    /// Scheduled tasks (cron-like) that run in the background.
+    /// Each task can be a natural language prompt, a skill name, or a raw command.
     #[serde(default)]
-    pub fallback_model: Option<String>,
-
-    /// Whether to automatically escalate to the fallback model when the primary
-    /// model fails twice on the same task (default: true if fallback_model is set).
-    #[serde(default = "default_auto_escalate")]
-    pub auto_escalate: bool,
-
-    /// Number of conversations between automatic summarizations (default: 5).
-    #[serde(default = "default_summarize_interval")]
-    pub summarize_interval: usize,
-
-    /// Whether to extract structured facts from conversations (default: true).
-    #[serde(default = "default_true")]
-    pub extract_facts: bool,
-
-    /// Whether to enable self-reflection/verification after task completion (default: true).
-    #[serde(default = "default_true")]
-    pub self_reflection: bool,
-
-    /// Regex patterns for blocked commands. These are checked in addition to
-    /// the simple string-match `blocked_commands` list.
-    #[serde(default = "default_blocked_patterns")]
-    pub blocked_patterns: Vec<String>,
+    pub scheduled_tasks: Vec<ScheduledTask>,
 
     /// All secrets from ~/.clide/secrets.yaml plus env overrides.
     /// Available as ${KEY_NAME} placeholders in skill commands.
@@ -111,6 +125,18 @@ pub struct Config {
 
 fn default_model() -> String {
     "gemini-2.5-flash".to_string()
+}
+
+fn default_fallback_model() -> String {
+    "gemini-2.5-pro".to_string()
+}
+
+fn default_memory_messages() -> usize {
+    10
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_platform() -> String {
@@ -137,39 +163,26 @@ fn default_blocked_commands() -> Vec<String> {
     ]
 }
 
-fn default_auto_escalate() -> bool {
-    true
-}
-
-fn default_summarize_interval() -> usize {
-    5
-}
-
-fn default_true() -> bool {
-    true
-}
-
 fn default_blocked_patterns() -> Vec<String> {
     vec![
         // Destructive filesystem operations
-        r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?/\s*$".to_string(),
-        r"rm\s+-[a-zA-Z]*r[a-zA-Z]*\s+/\s*$".to_string(),
-        r"chmod\s+(-R\s+)?777\s+/".to_string(),
-        r"chown\s+-R\s+.*\s+/\s*$".to_string(),
-        r"mkfs\.\w+".to_string(),
-        r"dd\s+.*if=.*of=/dev/".to_string(),
-        // Fork bombs and resource exhaustion
-        r":\(\)\s*\{.*\}.*:".to_string(),
-        r"\.\s*/dev/sda".to_string(),
-        // Credential exfiltration
-        r"curl\s+.*[-d].*password".to_string(),
-        r"wget\s+.*password".to_string(),
-        // Dangerous redirects
+        r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?/(?!tmp|home)".to_string(),
+        r"rm\s+-[a-zA-Z]*r[a-zA-Z]*\s+/(?!tmp|home)".to_string(),
+        r"mkfs\b".to_string(),
+        r"dd\s+.*\bof=/dev/".to_string(),
         r">\s*/dev/sd[a-z]".to_string(),
-        r">\s*/etc/passwd".to_string(),
-        r">\s*/etc/shadow".to_string(),
-        // Disable firewall entirely
-        r"(ufw|iptables)\s+(disable|--flush|-F)".to_string(),
+        // Dangerous system commands
+        r":()\s*\{\s*:\|\s*:&\s*\}".to_string(), // fork bomb
+        r"chmod\s+(-[a-zA-Z]*\s+)?[0-7]*777\s+/".to_string(),
+        r"chown\s+.*\s+/(?!tmp|home)".to_string(),
+        // Credential exfiltration
+        r"curl\s+.*\bupload\b.*\b(secrets|config|\.env|\.ssh|id_rsa)".to_string(),
+        r"wget\s+.*--post-file".to_string(),
+        // Process/system manipulation
+        r"kill\s+-9\s+1\b".to_string(),
+        r"shutdown\b".to_string(),
+        r"reboot\b".to_string(),
+        r"init\s+0".to_string(),
     ]
 }
 

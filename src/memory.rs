@@ -1,25 +1,26 @@
 // ============================================
-// memory.rs - Enhanced Conversation Memory
+// memory.rs - Tiered Conversation Memory
 // ============================================
-// Implements tiered memory retrieval:
+// Implements a three-tier memory system:
 //   Hot:  Current conversation (full messages, in-memory)
-//   Warm: Rolling summary of recent conversations (from DB)
-//   Cold: Structured knowledge base (facts extracted from all history)
+//   Warm: Rolling summary of recent conversations (compressed, from DB)
+//   Cold: Persistent knowledge facts (structured, from DB)
 
 use anyhow::Result;
 use std::collections::HashMap;
 use tracing::debug;
 
-use crate::database::{Conversation, Database, Fact, Summary};
+use crate::database::Database;
 
-/// Maximum number of facts to inject into context.
-const MAX_FACTS: usize = 30;
-/// Maximum number of summaries to inject.
-const MAX_SUMMARIES: usize = 3;
+/// How many conversations between automatic summarization passes.
+const SUMMARIZE_EVERY: i64 = 5;
 
 pub struct Memory {
     db: Database,
+    /// In-memory key-value store per user (ephemeral session variables).
     context_cache: HashMap<String, HashMap<String, String>>,
+    /// Tracks how many messages since last summarization per user.
+    messages_since_summary: HashMap<String, i64>,
 }
 
 impl Memory {
@@ -27,7 +28,13 @@ impl Memory {
         Self {
             db,
             context_cache: HashMap::new(),
+            messages_since_summary: HashMap::new(),
         }
+    }
+
+    /// Access the underlying database (for fact extraction, stats, etc.).
+    pub fn db(&self) -> &Database {
+        &self.db
     }
 
     pub async fn save_conversation(
@@ -47,56 +54,64 @@ impl Memory {
             exit_code,
             duration_ms,
         )?;
+        // Also record a stat event
+        let _ = self.db.record_stat("message", Some(user), None);
         debug!("Saved conversation for user: {}", user);
         Ok(())
     }
 
-    /// Build a tiered context string for the given user.
+    /// Build a tiered context string for the agent's system prompt.
     ///
-    /// Layers:
-    /// 1. **Cold** — Structured facts from the knowledge base (persistent memory)
-    /// 2. **Warm** — Rolling summaries of older conversations
-    /// 3. **Hot**  — Last N raw conversation messages
-    /// 4. Active in-memory variables
+    /// Layers (injected in this order):
+    /// 1. **Cold** — Persistent knowledge facts (always relevant)
+    /// 2. **Warm** — Rolling conversation summary (compressed history)
+    /// 3. **Hot**  — Recent full messages (immediate context)
+    /// 4. **Session variables** — In-memory key-value pairs
     pub async fn get_context(&mut self, user: &str, message_count: usize) -> Result<String> {
         let mut context = String::with_capacity(4096);
 
-        // ── Cold layer: Knowledge base facts ──────────────────────────────
-        let facts = self.db.get_facts(user, MAX_FACTS)?;
+        // ── Cold tier: knowledge facts ────────────────────────────────────
+        let facts = self.db.get_facts(user).unwrap_or_default();
         if !facts.is_empty() {
             context.push_str("Known facts about this user:\n");
-            for fact in &facts {
+            for f in &facts {
                 context.push_str(&format!(
-                    "  [{}] {} = {}\n",
-                    fact.fact_type, fact.key, fact.value
+                    "  [{}] {} = {} (confidence: {:.0}%)\n",
+                    f.fact_type,
+                    f.key,
+                    f.value,
+                    f.confidence * 100.0
                 ));
             }
             context.push('\n');
         }
 
-        // ── Warm layer: Conversation summaries ────────────────────────────
-        let summaries = self.db.get_recent_summaries(user, MAX_SUMMARIES)?;
-        if !summaries.is_empty() {
-            context.push_str("Summary of earlier conversations:\n");
-            for summary in summaries.iter().rev() {
-                context.push_str(&format!("{}\n", summary.summary));
-            }
-            context.push('\n');
+        // ── Warm tier: rolling summary ────────────────────────────────────
+        if let Ok(Some(summary)) = self.db.get_latest_summary(user) {
+            context.push_str("Conversation summary (older history):\n");
+            context.push_str(&summary.summary);
+            context.push_str("\n\n");
         }
 
-        // ── Hot layer: Recent raw messages ────────────────────────────────
+        // ── Hot tier: recent messages ─────────────────────────────────────
         let history = self.db.get_recent_conversations(user, message_count)?;
         if !history.is_empty() {
-            context.push_str("Recent conversation:\n");
+            context.push_str("Recent messages:\n");
             for conv in history.into_iter().rev() {
                 context.push_str(&format!("User: {}\n", conv.message));
                 if let Some(resp) = conv.response {
-                    context.push_str(&format!("Clide: {}\n", resp));
+                    // Truncate long responses in context to save tokens
+                    let trimmed = if resp.len() > 500 {
+                        format!("{}…", &resp[..500])
+                    } else {
+                        resp
+                    };
+                    context.push_str(&format!("Clide: {}\n", trimmed));
                 }
             }
         }
 
-        // ── Active in-memory variables ────────────────────────────────────
+        // ── Session variables ─────────────────────────────────────────────
         if let Some(user_cache) = self.context_cache.get(user) {
             if !user_cache.is_empty() {
                 context.push_str("\nActive Variables:\n");
@@ -109,10 +124,52 @@ impl Memory {
         Ok(context)
     }
 
+    /// Store a knowledge fact persistently in the database.
+    pub async fn store_fact(
+        &self,
+        user: &str,
+        fact_type: &str,
+        key: &str,
+        value: &str,
+        confidence: f64,
+    ) -> Result<()> {
+        self.db.upsert_fact(user, fact_type, key, value, confidence)?;
+        debug!("Stored fact for {}: [{}] {} = {}", user, fact_type, key, value);
+        Ok(())
+    }
+
+    /// Check if summarization is needed and return true if so.
+    /// Call this after saving a conversation; the caller (agent) should then
+    /// generate a summary via the LLM and call `save_summary`.
+    pub fn needs_summarization(&mut self, user: &str) -> bool {
+        let count = self.messages_since_summary
+            .entry(user.to_string())
+            .or_insert(0);
+        *count += 1;
+        if *count >= SUMMARIZE_EVERY {
+            *count = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Save a conversation summary to the warm tier.
+    pub async fn save_summary(&self, user: &str, summary: &str, message_count: i64) -> Result<()> {
+        self.db.save_summary(user, summary, message_count)?;
+        debug!("Saved conversation summary for {} ({} messages)", user, message_count);
+        Ok(())
+    }
+
+    /// Get conversation count for a user (used for summarization decisions).
+    pub fn conversation_count(&self, user: &str) -> i64 {
+        self.db.count_conversations(user).unwrap_or(0)
+    }
+
     pub async fn set(&mut self, user: &str, key: &str, value: &str) -> Result<()> {
         self.context_cache
             .entry(user.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(key.to_string(), value.to_string());
         Ok(())
     }
@@ -121,103 +178,5 @@ impl Memory {
         Ok(self.context_cache
             .get(user)
             .and_then(|m| m.get(key).cloned()))
-    }
-
-    // ── Knowledge Base Operations ─────────────────────────────────────────
-
-    /// Store a structured fact extracted from conversation.
-    pub async fn save_fact(
-        &self,
-        user: &str,
-        fact_type: &str,
-        key: &str,
-        value: &str,
-        confidence: f64,
-    ) -> Result<()> {
-        self.db.save_fact(user, fact_type, key, value, confidence)?;
-        debug!("Saved fact for {}: [{}] {} = {}", user, fact_type, key, value);
-        Ok(())
-    }
-
-    /// Retrieve facts for a user.
-    pub async fn get_facts(&self, user: &str, limit: usize) -> Result<Vec<Fact>> {
-        self.db.get_facts(user, limit)
-    }
-
-    /// Search facts by keyword relevance.
-    pub async fn search_facts(&self, user: &str, query: &str) -> Result<Vec<Fact>> {
-        self.db.search_facts(user, query, MAX_FACTS)
-    }
-
-    // ── Summary Operations ────────────────────────────────────────────────
-
-    /// Save a conversation summary.
-    pub async fn save_summary(
-        &self,
-        user: &str,
-        summary: &str,
-        message_count: usize,
-        from_timestamp: i64,
-        to_timestamp: i64,
-    ) -> Result<()> {
-        self.db
-            .save_summary(user, summary, message_count, from_timestamp, to_timestamp)?;
-        debug!(
-            "Saved summary for {} ({} messages, ts {}-{})",
-            user, message_count, from_timestamp, to_timestamp
-        );
-        Ok(())
-    }
-
-    /// Get recent summaries for a user.
-    pub async fn get_summaries(&self, user: &str, limit: usize) -> Result<Vec<Summary>> {
-        self.db.get_recent_summaries(user, limit)
-    }
-
-    /// Check how many conversations haven't been summarized yet.
-    pub async fn unsummarized_count(&self, user: &str) -> Result<usize> {
-        self.db.get_unsummarized_count(user)
-    }
-
-    /// Get unsummarized conversations for summary generation.
-    pub async fn get_unsummarized_conversations(
-        &self,
-        user: &str,
-        limit: usize,
-    ) -> Result<Vec<Conversation>> {
-        self.db.get_unsummarized_conversations(user, limit)
-    }
-
-    // ── Usage Stats ───────────────────────────────────────────────────────
-
-    /// Record a usage event.
-    pub async fn record_usage(
-        &self,
-        user: &str,
-        event_type: &str,
-        model: Option<&str>,
-        tokens_in: i64,
-        tokens_out: i64,
-        duration_ms: i64,
-    ) -> Result<()> {
-        self.db
-            .record_usage(user, event_type, model, tokens_in, tokens_out, duration_ms)
-    }
-
-    // ── Maintenance ───────────────────────────────────────────────────────
-
-    /// Archive old conversations (older than N days).
-    pub async fn archive_old(&self, days: i64) -> Result<usize> {
-        self.db.archive_old_conversations(days)
-    }
-
-    /// Reclaim disk space.
-    pub async fn vacuum(&self) -> Result<()> {
-        self.db.vacuum()
-    }
-
-    /// Get aggregate stats.
-    pub async fn get_stats(&self) -> Result<crate::database::Stats> {
-        self.db.get_stats()
     }
 }

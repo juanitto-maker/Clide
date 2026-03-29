@@ -1,8 +1,6 @@
 // ============================================
-// database.rs - SQLite Memory DB (Enhanced)
+// database.rs - SQLite Memory DB (CORRECTED)
 // ============================================
-// Provides conversation storage, structured knowledge base,
-// conversation summaries, and usage statistics.
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
@@ -22,9 +20,14 @@ pub struct Conversation {
     pub timestamp: i64,
 }
 
-/// A structured fact extracted from conversations.
+/// SQLite database wrapped in a Mutex so it is Send + Sync and can live
+/// inside tokio::spawn futures.
+pub struct Database {
+    conn: Mutex<Connection>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Fact {
+pub struct KnowledgeFact {
     pub id: i64,
     pub user: String,
     pub fact_type: String,
@@ -34,31 +37,21 @@ pub struct Fact {
     pub last_seen: i64,
 }
 
-/// A rolling summary of recent conversations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Summary {
+pub struct ConversationSummary {
     pub id: i64,
     pub user: String,
     pub summary: String,
     pub message_count: i64,
-    pub from_timestamp: i64,
-    pub to_timestamp: i64,
     pub created_at: i64,
-}
-
-/// SQLite database wrapped in a Mutex so it is Send + Sync and can live
-/// inside tokio::spawn futures.
-pub struct Database {
-    conn: Mutex<Connection>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Stats {
     pub total_messages: usize,
     pub total_commands: usize,
+    pub total_users: usize,
     pub total_facts: usize,
-    pub total_summaries: usize,
-    pub unique_users: usize,
 }
 
 impl Database {
@@ -87,36 +80,51 @@ impl Database {
                 last_seen INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_knowledge_user ON knowledge(user);
-            CREATE INDEX IF NOT EXISTS idx_knowledge_user_key ON knowledge(user, key);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_unique ON knowledge(user, fact_type, key);
 
             CREATE TABLE IF NOT EXISTS summaries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user TEXT NOT NULL,
                 summary TEXT NOT NULL,
-                message_count INTEGER NOT NULL DEFAULT 0,
-                from_timestamp INTEGER NOT NULL,
-                to_timestamp INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_summaries_user ON summaries(user);
 
-            CREATE TABLE IF NOT EXISTS usage_stats (
+            CREATE TABLE IF NOT EXISTS stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user TEXT NOT NULL,
                 event_type TEXT NOT NULL,
-                model TEXT,
-                tokens_in INTEGER DEFAULT 0,
-                tokens_out INTEGER DEFAULT 0,
-                duration_ms INTEGER DEFAULT 0,
+                user TEXT,
+                detail TEXT,
                 timestamp INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_stats(user);
+            CREATE INDEX IF NOT EXISTS idx_stats_type ON stats(event_type);
+
+            CREATE TABLE IF NOT EXISTS examples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                task TEXT NOT NULL,
+                response TEXT NOT NULL,
+                quality_score REAL NOT NULL DEFAULT 1.0,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_examples_domain ON examples(domain);
+
+            CREATE TABLE IF NOT EXISTS scheduled_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_name TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                success INTEGER NOT NULL DEFAULT 0,
+                output TEXT,
+                error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_scheduled_runs_name ON scheduled_runs(task_name);
             "#,
         )?;
         Ok(Self { conn: Mutex::new(conn) })
     }
-
-    // ── Conversations ─────────────────────────────────────────────────────
 
     pub fn save_conversation(
         &self,
@@ -179,118 +187,11 @@ impl Database {
         Ok(conversations)
     }
 
-    /// Get total conversation count for a user (used to trigger summarization).
-    pub fn get_conversation_count(&self, user: &str) -> Result<usize> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM conversations WHERE user = ?1",
-            params![user],
-            |row| row.get(0),
-        )?;
-        Ok(count as usize)
-    }
+    // ── Knowledge facts ───────────────────────────────────────────────────
 
-    /// Get conversations in a timestamp range (for summarization).
-    pub fn get_conversations_in_range(
-        &self,
-        user: &str,
-        from_ts: i64,
-        to_ts: i64,
-    ) -> Result<Vec<Conversation>> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, user, message, response, command, exit_code, duration_ms, timestamp
-            FROM conversations
-            WHERE user = ?1 AND timestamp >= ?2 AND timestamp <= ?3
-            ORDER BY timestamp ASC
-            "#,
-        )?;
-        let rows = stmt.query_map(params![user, from_ts, to_ts], |row| {
-            Ok(Conversation {
-                id: row.get(0)?,
-                user: row.get(1)?,
-                message: row.get(2)?,
-                response: row.get(3)?,
-                command: row.get(4)?,
-                exit_code: row.get(5)?,
-                duration_ms: row.get(6)?,
-                timestamp: row.get(7)?,
-            })
-        })?;
-        let mut convs = Vec::new();
-        for c in rows {
-            convs.push(c?);
-        }
-        Ok(convs)
-    }
-
-    /// Get the count of unsummarized conversations for a user
-    /// (conversations newer than the latest summary).
-    pub fn get_unsummarized_count(&self, user: &str) -> Result<usize> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let latest_summary_ts: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(to_timestamp), 0) FROM summaries WHERE user = ?1",
-                params![user],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM conversations WHERE user = ?1 AND timestamp > ?2",
-            params![user, latest_summary_ts],
-            |row| row.get(0),
-        )?;
-        Ok(count as usize)
-    }
-
-    /// Get conversations that haven't been summarized yet.
-    pub fn get_unsummarized_conversations(
-        &self,
-        user: &str,
-        limit: usize,
-    ) -> Result<Vec<Conversation>> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let latest_summary_ts: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(to_timestamp), 0) FROM summaries WHERE user = ?1",
-                params![user],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, user, message, response, command, exit_code, duration_ms, timestamp
-            FROM conversations
-            WHERE user = ?1 AND timestamp > ?2
-            ORDER BY timestamp ASC
-            LIMIT ?3
-            "#,
-        )?;
-        let rows = stmt.query_map(params![user, latest_summary_ts, limit as i64], |row| {
-            Ok(Conversation {
-                id: row.get(0)?,
-                user: row.get(1)?,
-                message: row.get(2)?,
-                response: row.get(3)?,
-                command: row.get(4)?,
-                exit_code: row.get(5)?,
-                duration_ms: row.get(6)?,
-                timestamp: row.get(7)?,
-            })
-        })?;
-        let mut convs = Vec::new();
-        for c in rows {
-            convs.push(c?);
-        }
-        Ok(convs)
-    }
-
-    // ── Knowledge Base ────────────────────────────────────────────────────
-
-    /// Save or update a structured fact. If a fact with the same (user, key)
-    /// exists, update its value and last_seen timestamp.
-    pub fn save_fact(
+    /// Upsert a knowledge fact. If the (user, fact_type, key) already exists,
+    /// update the value, confidence, and last_seen.
+    pub fn upsert_fact(
         &self,
         user: &str,
         fact_type: &str,
@@ -300,197 +201,193 @@ impl Database {
     ) -> Result<()> {
         let timestamp = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().expect("db mutex poisoned");
-        // Upsert: update if same user+key exists, insert otherwise
-        let updated = conn.execute(
-            r#"
-            UPDATE knowledge SET value = ?1, fact_type = ?2, confidence = ?3, last_seen = ?4
-            WHERE user = ?5 AND key = ?6
-            "#,
-            params![value, fact_type, confidence, timestamp, user, key],
-        )?;
-        if updated == 0 {
-            conn.execute(
-                r#"
-                INSERT INTO knowledge (user, fact_type, key, value, confidence, last_seen)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                "#,
-                params![user, fact_type, key, value, confidence, timestamp],
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Retrieve all facts for a user, ordered by last_seen (most recent first).
-    pub fn get_facts(&self, user: &str, limit: usize) -> Result<Vec<Fact>> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, user, fact_type, key, value, confidence, last_seen
-            FROM knowledge
-            WHERE user = ?1
-            ORDER BY last_seen DESC
-            LIMIT ?2
-            "#,
-        )?;
-        let rows = stmt.query_map(params![user, limit as i64], |row| {
-            Ok(Fact {
-                id: row.get(0)?,
-                user: row.get(1)?,
-                fact_type: row.get(2)?,
-                key: row.get(3)?,
-                value: row.get(4)?,
-                confidence: row.get(5)?,
-                last_seen: row.get(6)?,
-            })
-        })?;
-        let mut facts = Vec::new();
-        for f in rows {
-            facts.push(f?);
-        }
-        Ok(facts)
-    }
-
-    /// Search facts by keyword (matches key or value).
-    pub fn search_facts(&self, user: &str, query: &str, limit: usize) -> Result<Vec<Fact>> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let pattern = format!("%{}%", query);
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, user, fact_type, key, value, confidence, last_seen
-            FROM knowledge
-            WHERE user = ?1 AND (key LIKE ?2 OR value LIKE ?2)
-            ORDER BY confidence DESC, last_seen DESC
-            LIMIT ?3
-            "#,
-        )?;
-        let rows = stmt.query_map(params![user, pattern, limit as i64], |row| {
-            Ok(Fact {
-                id: row.get(0)?,
-                user: row.get(1)?,
-                fact_type: row.get(2)?,
-                key: row.get(3)?,
-                value: row.get(4)?,
-                confidence: row.get(5)?,
-                last_seen: row.get(6)?,
-            })
-        })?;
-        let mut facts = Vec::new();
-        for f in rows {
-            facts.push(f?);
-        }
-        Ok(facts)
-    }
-
-    // ── Summaries ─────────────────────────────────────────────────────────
-
-    /// Save a conversation summary.
-    pub fn save_summary(
-        &self,
-        user: &str,
-        summary: &str,
-        message_count: usize,
-        from_timestamp: i64,
-        to_timestamp: i64,
-    ) -> Result<()> {
-        let created_at = chrono::Utc::now().timestamp();
-        let conn = self.conn.lock().expect("db mutex poisoned");
         conn.execute(
             r#"
-            INSERT INTO summaries (user, summary, message_count, from_timestamp, to_timestamp, created_at)
+            INSERT INTO knowledge (user, fact_type, key, value, confidence, last_seen)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(user, fact_type, key)
+            DO UPDATE SET value = excluded.value,
+                          confidence = excluded.confidence,
+                          last_seen = excluded.last_seen
             "#,
-            params![user, summary, message_count as i64, from_timestamp, to_timestamp, created_at],
+            params![user, fact_type, key, value, confidence, timestamp],
         )?;
         Ok(())
     }
 
-    /// Get the most recent summaries for a user.
-    pub fn get_recent_summaries(&self, user: &str, limit: usize) -> Result<Vec<Summary>> {
+    /// Get all knowledge facts for a user.
+    pub fn get_facts(&self, user: &str) -> Result<Vec<KnowledgeFact>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
-            r#"
-            SELECT id, user, summary, message_count, from_timestamp, to_timestamp, created_at
-            FROM summaries
-            WHERE user = ?1
-            ORDER BY created_at DESC
-            LIMIT ?2
-            "#,
+            "SELECT id, user, fact_type, key, value, confidence, last_seen \
+             FROM knowledge WHERE user = ?1 ORDER BY last_seen DESC",
         )?;
-        let rows = stmt.query_map(params![user, limit as i64], |row| {
-            Ok(Summary {
+        let rows = stmt.query_map(params![user], |row| {
+            Ok(KnowledgeFact {
+                id: row.get(0)?,
+                user: row.get(1)?,
+                fact_type: row.get(2)?,
+                key: row.get(3)?,
+                value: row.get(4)?,
+                confidence: row.get(5)?,
+                last_seen: row.get(6)?,
+            })
+        })?;
+        let mut facts = Vec::new();
+        for f in rows {
+            facts.push(f?);
+        }
+        Ok(facts)
+    }
+
+    // ── Conversation summaries ────────────────────────────────────────────
+
+    /// Save a rolling conversation summary.
+    pub fn save_summary(&self, user: &str, summary: &str, message_count: i64) -> Result<()> {
+        let timestamp = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO summaries (user, summary, message_count, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![user, summary, message_count, timestamp],
+        )?;
+        Ok(())
+    }
+
+    /// Get the most recent summary for a user.
+    pub fn get_latest_summary(&self, user: &str) -> Result<Option<ConversationSummary>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, user, summary, message_count, created_at \
+             FROM summaries WHERE user = ?1 ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![user], |row| {
+            Ok(ConversationSummary {
                 id: row.get(0)?,
                 user: row.get(1)?,
                 summary: row.get(2)?,
                 message_count: row.get(3)?,
-                from_timestamp: row.get(4)?,
-                to_timestamp: row.get(5)?,
-                created_at: row.get(6)?,
+                created_at: row.get(4)?,
             })
         })?;
-        let mut summaries = Vec::new();
-        for s in rows {
-            summaries.push(s?);
+        match rows.next() {
+            Some(Ok(s)) => Ok(Some(s)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
         }
-        Ok(summaries)
     }
 
-    // ── Usage Stats ───────────────────────────────────────────────────────
+    // ── Stats ─────────────────────────────────────────────────────────────
 
-    /// Record a usage event (task completion, model call, etc.).
-    pub fn record_usage(
-        &self,
-        user: &str,
-        event_type: &str,
-        model: Option<&str>,
-        tokens_in: i64,
-        tokens_out: i64,
-        duration_ms: i64,
-    ) -> Result<()> {
+    /// Record a stats event (e.g., "message", "command", "error").
+    pub fn record_stat(&self, event_type: &str, user: Option<&str>, detail: Option<&str>) -> Result<()> {
         let timestamp = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().expect("db mutex poisoned");
         conn.execute(
-            r#"
-            INSERT INTO usage_stats (user, event_type, model, tokens_in, tokens_out, duration_ms, timestamp)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            "#,
-            params![user, event_type, model, tokens_in, tokens_out, duration_ms, timestamp],
+            "INSERT INTO stats (event_type, user, detail, timestamp) VALUES (?1, ?2, ?3, ?4)",
+            params![event_type, user, detail, timestamp],
         )?;
         Ok(())
     }
 
-    /// Get aggregate statistics.
+    /// Get aggregate stats.
     pub fn get_stats(&self) -> Result<Stats> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let total_messages: usize = conn
-            .query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
             .unwrap_or(0);
         let total_commands: usize = conn
             .query_row(
                 "SELECT COUNT(*) FROM conversations WHERE command IS NOT NULL",
                 [],
-                |row| row.get(0),
+                |r| r.get(0),
             )
             .unwrap_or(0);
-        let total_facts: usize = conn
-            .query_row("SELECT COUNT(*) FROM knowledge", [], |row| row.get(0))
-            .unwrap_or(0);
-        let total_summaries: usize = conn
-            .query_row("SELECT COUNT(*) FROM summaries", [], |row| row.get(0))
-            .unwrap_or(0);
-        let unique_users: usize = conn
+        let total_users: usize = conn
             .query_row(
                 "SELECT COUNT(DISTINCT user) FROM conversations",
                 [],
-                |row| row.get(0),
+                |r| r.get(0),
             )
+            .unwrap_or(0);
+        let total_facts: usize = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
             .unwrap_or(0);
         Ok(Stats {
             total_messages,
             total_commands,
+            total_users,
             total_facts,
-            total_summaries,
-            unique_users,
         })
+    }
+
+    /// Count total conversations for a user (used to decide when to summarize).
+    pub fn count_conversations(&self, user: &str) -> Result<i64> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM conversations WHERE user = ?1",
+            params![user],
+            |r| r.get(0),
+        )?;
+        Ok(count)
+    }
+
+    // ── Few-shot examples ──────────────────────────────────────────────────
+
+    /// Store an exemplary interaction for a given domain (e.g., "sysadmin", "security").
+    pub fn save_example(
+        &self,
+        domain: &str,
+        task: &str,
+        response: &str,
+        quality_score: f64,
+    ) -> Result<()> {
+        let timestamp = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO examples (domain, task, response, quality_score, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![domain, task, response, quality_score, timestamp],
+        )?;
+        Ok(())
+    }
+
+    /// Get top-K examples for a domain, ordered by quality score.
+    pub fn get_examples(&self, domain: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT task, response FROM examples \
+             WHERE domain = ?1 ORDER BY quality_score DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![domain, limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut examples = Vec::new();
+        for r in rows {
+            examples.push(r?);
+        }
+        Ok(examples)
+    }
+
+    /// Get examples across all domains (for general context), top-K by quality.
+    pub fn get_best_examples(&self, limit: usize) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT domain, task, response FROM examples \
+             ORDER BY quality_score DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut examples = Vec::new();
+        for r in rows {
+            examples.push(r?);
+        }
+        Ok(examples)
     }
 
     // ── Maintenance ───────────────────────────────────────────────────────
@@ -507,10 +404,122 @@ impl Database {
         Ok(deleted)
     }
 
-    /// Run VACUUM to reclaim disk space.
+    /// Archive old summaries, keeping only the most recent per user.
+    pub fn archive_old_summaries(&self) -> Result<usize> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        // Keep only the latest summary per user
+        let deleted = conn.execute(
+            "DELETE FROM summaries WHERE id NOT IN (\
+                SELECT MAX(id) FROM summaries GROUP BY user\
+            )",
+            [],
+        )?;
+        Ok(deleted)
+    }
+
+    /// Prune low-confidence or stale knowledge facts older than `days`.
+    pub fn prune_stale_facts(&self, days: i64, min_confidence: f64) -> Result<usize> {
+        let cutoff = chrono::Utc::now().timestamp() - (days * 86400);
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let deleted = conn.execute(
+            "DELETE FROM knowledge WHERE last_seen < ?1 AND confidence < ?2",
+            params![cutoff, min_confidence],
+        )?;
+        Ok(deleted)
+    }
+
+    /// Run SQLite VACUUM to reclaim disk space after archiving.
     pub fn vacuum(&self) -> Result<()> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         conn.execute_batch("VACUUM")?;
         Ok(())
+    }
+
+    /// Run all maintenance tasks: archive old data + vacuum.
+    /// Returns a summary string.
+    pub fn run_maintenance(&self) -> Result<String> {
+        let convs = self.archive_old_conversations(30)?;
+        let sums = self.archive_old_summaries()?;
+        let facts = self.prune_stale_facts(90, 0.5)?;
+        self.vacuum()?;
+        Ok(format!(
+            "Maintenance complete: {} old conversations archived, \
+             {} old summaries pruned, {} stale facts removed, VACUUM done",
+            convs, sums, facts
+        ))
+    }
+
+    // ── Scheduled task runs ──────────────────────────────────────────────
+
+    /// Log a scheduled task execution.
+    pub fn log_scheduled_run(
+        &self,
+        task_name: &str,
+        task_type: &str,
+        started_at: i64,
+        finished_at: Option<i64>,
+        success: bool,
+        output: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO scheduled_runs \
+             (task_name, task_type, started_at, finished_at, success, output, error) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                task_name,
+                task_type,
+                started_at,
+                finished_at,
+                success as i32,
+                output,
+                error,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get the timestamp of the last run for a given task name.
+    pub fn get_last_run(&self, task_name: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT started_at FROM scheduled_runs \
+             WHERE task_name = ?1 ORDER BY started_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![task_name], |row| row.get::<_, i64>(0))?;
+        match rows.next() {
+            Some(Ok(ts)) => Ok(Some(ts)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Get aggregate stats for all scheduled tasks:
+    /// `(task_name, last_run_timestamp, total_runs, success_count)`.
+    pub fn get_scheduled_stats(&self) -> Result<Vec<(String, i64, i64, i64)>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT task_name, \
+                    MAX(started_at) AS last_run, \
+                    COUNT(*) AS total_runs, \
+                    SUM(success) AS success_count \
+             FROM scheduled_runs \
+             GROUP BY task_name \
+             ORDER BY last_run DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut stats = Vec::new();
+        for r in rows {
+            stats.push(r?);
+        }
+        Ok(stats)
     }
 }

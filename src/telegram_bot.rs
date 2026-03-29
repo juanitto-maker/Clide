@@ -147,6 +147,44 @@ impl TelegramBot {
             Err(e) => println!("skipped ({}).", e),
         }
 
+        // ── Step 5: Run database maintenance on startup ─────────────────
+        {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let db_path = format!("{}/.clide/memory.db", home);
+            if let Ok(db) = crate::database::Database::new(&db_path) {
+                match db.run_maintenance() {
+                    Ok(msg) => info!("DB maintenance: {}", msg),
+                    Err(e) => warn!("DB maintenance failed (non-critical): {}", e),
+                }
+            }
+        }
+
+        // ── Step 6: Start the scheduler background task ─────────────────
+        // The scheduler needs a chat_id to send notifications, but we don't
+        // know it until the first user message arrives.  We use a shared
+        // AtomicI64 that starts at 0 (= "unknown") and gets set on the first
+        // incoming message from an authorized user.
+        let scheduler_chat_id = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let _scheduler_handle = if !self.config.scheduled_tasks.is_empty() {
+            let notify = crate::scheduler::NotifyChannel::Telegram {
+                client: self.telegram.clone(),
+                chat_id: Arc::clone(&scheduler_chat_id),
+                thread_id: None,
+            };
+            let handle = crate::scheduler::spawn(self.config.clone(), notify);
+            println!(
+                "  Scheduler: {} task(s) active",
+                self.config
+                    .scheduled_tasks
+                    .iter()
+                    .filter(|t| t.enabled)
+                    .count()
+            );
+            Some(handle)
+        } else {
+            None
+        };
+
         println!("Polling for messages (long-poll 30s)…");
         println!();
 
@@ -182,6 +220,10 @@ impl TelegramBot {
                                 self.handle_callback_query(cb).await;
                             }
                             TelegramUpdate::Message(msg) => {
+                        // Update the scheduler's chat_id so it can send
+                        // notifications to this chat once we know a real one.
+                        scheduler_chat_id.store(msg.chat_id, Ordering::Relaxed);
+
                         // ── Built-in commands ────────────────────────────────
 
                         // /ping or /start — health-check, useful to confirm the
@@ -246,6 +288,20 @@ impl TelegramBot {
                                 exp_dir,
                                 if exp_dir_exists { "exists" } else { "not created yet" },
                             );
+                            let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
+                            continue;
+                        }
+
+                        // /stats — show usage statistics
+                        if msg.text.trim().eq_ignore_ascii_case("/stats") {
+                            let reply = self.build_stats_message().await;
+                            let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
+                            continue;
+                        }
+
+                        // /schedule — show scheduled tasks status
+                        if msg.text.trim().eq_ignore_ascii_case("/schedule") {
+                            let reply = crate::scheduler::build_schedule_message(&self.config);
                             let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
                             continue;
                         }
@@ -560,6 +616,37 @@ impl TelegramBot {
         // Remove from cache after delivery
         let mut cache = self.full_output_cache.lock().await;
         cache.remove(&cb.data);
+    }
+
+    /// Build a stats summary message from the database.
+    async fn build_stats_message(&self) -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let db_path = format!("{}/.clide/memory.db", home);
+        match crate::database::Database::new(&db_path) {
+            Ok(db) => match db.get_stats() {
+                Ok(stats) => {
+                    format!(
+                        "📊 Clide Stats\n\n\
+                         Messages: {}\n\
+                         Commands: {}\n\
+                         Users: {}\n\
+                         Known facts: {}\n\
+                         Model: {}\n\
+                         Fallback: {}\n\
+                         Version: {}",
+                        stats.total_messages,
+                        stats.total_commands,
+                        stats.total_users,
+                        stats.total_facts,
+                        self.config.gemini_model,
+                        self.config.fallback_model,
+                        crate::VERSION,
+                    )
+                }
+                Err(e) => format!("❌ Could not read stats: {}", e),
+            },
+            Err(e) => format!("❌ Could not open database: {}", e),
+        }
     }
 
     /// Scan the export directory **recursively** and send every file as a

@@ -21,12 +21,13 @@ pub mod ssh;
 pub mod telegram;
 pub mod telegram_bot;
 pub mod update;
+pub mod scheduler;
 pub mod workflow;
 
 pub use agent::Agent;
 pub use bot::Bot;
 pub use config::Config;
-pub use database::{Conversation, Database, Fact, Stats, Summary};
+pub use database::{Conversation, ConversationSummary, Database, KnowledgeFact, Stats};
 pub use executor::{ExecutionResult, Executor};
 pub use gemini::{CommandAnalysis, GeminiClient};
 pub use matrix::MatrixClient;

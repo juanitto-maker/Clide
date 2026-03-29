@@ -1,14 +1,8 @@
 // ============================================
-// agent.rs - Autonomous Agentic Loop (Enhanced)
+// agent.rs - Autonomous Agentic Loop
 // ============================================
 // Uses Gemini function-calling to iteratively run shell commands
 // until the model produces a final text answer.
-//
-// Enhancements:
-// - Self-reflection/verification step after task completion
-// - Fact extraction from conversations (structured knowledge base)
-// - Rolling conversation summarization
-// - LLM fallback chain (auto-escalation to stronger model)
 
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
@@ -39,12 +33,10 @@ use crate::truncate_utf8;
 const MAX_OUTPUT_BYTES: usize = 24_000;
 /// Maximum progress preview sent over the channel per command
 const MAX_PREVIEW_BYTES: usize = 500;
-/// How many past conversations to inject as context
-const MEMORY_CONTEXT_MESSAGES: usize = 10;
 /// Default timeout for skill commands (seconds)
 const SKILL_CMD_TIMEOUT_SECS: u64 = 300;
-/// Maximum number of conversations to include in a single summarization batch.
-const SUMMARIZE_BATCH_SIZE: usize = 20;
+/// Maximum consecutive Gemini failures before escalating to fallback model.
+const FALLBACK_THRESHOLD: usize = 2;
 
 // ── Layered System Prompt ──────────────────────────────────────────────────────
 // Split into focused sections so the model's attention is directed to the most
@@ -164,30 +156,26 @@ pub struct Agent {
     client: Client,
     api_key: String,
     model: String,
-    /// Fallback model for auto-escalation when primary fails.
-    fallback_model: Option<String>,
-    /// Whether to auto-escalate to fallback on repeated failures.
-    auto_escalate: bool,
+    /// Fallback model for complex/failing tasks (e.g., gemini-2.5-pro).
+    fallback_model: String,
     executor: Executor,
     max_steps: usize,
     /// Per-command timeout for run_command calls (seconds).
     command_timeout: u64,
+    /// Number of recent messages to include in hot-tier context.
+    memory_messages: usize,
+    /// Whether to run a self-reflection step after task completion.
+    enable_reflection: bool,
+    /// Whether to extract facts from conversations.
+    enable_fact_extraction: bool,
     memory: Option<Memory>,
     skill_manager: Option<SkillManager>,
     /// Shared cancellation flag — set to true by a /stop command to abort the running task.
     cancelled: Arc<AtomicBool>,
     /// Secrets loaded from ~/.clide/secrets.yaml (and env overrides).
-    /// Injected as ${KEY_NAME} placeholders in skill commands at execution time.
-    /// Never sent to the AI model.
     secrets: HashMap<String, String>,
     /// Optional permanent context loaded from a markdown file at startup.
     context_file_content: Option<String>,
-    /// Number of conversations between automatic summarizations.
-    summarize_interval: usize,
-    /// Whether to extract structured facts from conversations.
-    extract_facts: bool,
-    /// Whether to run self-reflection after task completion.
-    self_reflection: bool,
 }
 
 impl Agent {
@@ -198,30 +186,22 @@ impl Agent {
         if context_file_content.is_some() {
             info!("Loaded context file into permanent agent context");
         }
-        if config.fallback_model.is_some() {
-            info!(
-                "LLM fallback enabled: {} → {}",
-                config.get_model(),
-                config.fallback_model.as_deref().unwrap_or("none")
-            );
-        }
         Self {
             client: Client::new(),
             api_key: config.gemini_api_key.clone(),
             model: config.get_model().to_string(),
             fallback_model: config.fallback_model.clone(),
-            auto_escalate: config.auto_escalate,
             executor: Executor::new(config.clone()),
             max_steps: config.max_agent_steps,
             command_timeout: config.command_timeout,
+            memory_messages: config.memory_messages,
+            enable_reflection: config.enable_reflection,
+            enable_fact_extraction: config.enable_fact_extraction,
             memory,
             skill_manager,
             cancelled: Arc::new(AtomicBool::new(false)),
             secrets: config.secrets.clone(),
             context_file_content,
-            summarize_interval: config.summarize_interval,
-            extract_facts: config.extract_facts,
-            self_reflection: config.self_reflection,
         }
     }
 
@@ -272,7 +252,7 @@ impl Agent {
     async fn build_system_prompt(&mut self, user: &str) -> String {
         let context = match self.memory {
             Some(ref mut mem) => mem
-                .get_context(user, MEMORY_CONTEXT_MESSAGES)
+                .get_context(user, self.memory_messages)
                 .await
                 .unwrap_or_default(),
             None => String::new(),
@@ -324,6 +304,21 @@ impl Agent {
             .map(|s| format!("\n\nAvailable skills (use run_skill to execute):\n{}", s))
             .unwrap_or_default();
         prompt.push_str(&skill_section);
+
+        // Few-shot examples (if any exist in the database)
+        if let Some(ref mem) = self.memory {
+            let examples = mem.db().get_best_examples(2).unwrap_or_default();
+            if !examples.is_empty() {
+                prompt.push_str("\n\nExemplary past interactions (use as reference for quality):\n");
+                for (domain, task, response) in &examples {
+                    let resp_preview = crate::truncate_utf8(response, 300);
+                    prompt.push_str(&format!(
+                        "---\n[{}] User: {}\nClide: {}\n",
+                        domain, task, resp_preview
+                    ));
+                }
+            }
+        }
 
         // User-provided context file
         if let Some(ref c) = self.context_file_content {
@@ -431,7 +426,6 @@ impl Agent {
         progress: Option<Sender<String>>,
         vision: Option<(Vec<u8>, String)>,
     ) -> Result<String> {
-        let task_start = std::time::Instant::now();
         info!("Agent starting task for '{}': {}", user, task);
 
         // Reset any previous cancellation before starting a new task.
@@ -439,97 +433,6 @@ impl Agent {
 
         let system_prompt = self.build_system_prompt(user).await;
 
-        // Try with primary model first.
-        let result = self
-            .run_with_model(task, user, &progress, &vision, &system_prompt, &self.model.clone())
-            .await;
-
-        let answer = match result {
-            Ok(ans) => ans,
-            Err(e) => {
-                // ── LLM Fallback Chain ────────────────────────────────────
-                // If primary model fails and auto-escalation is enabled,
-                // retry with the fallback (stronger) model.
-                if self.auto_escalate {
-                    if let Some(fallback) = self.fallback_model.clone() {
-                        warn!(
-                            "Primary model '{}' failed: {}. Escalating to '{}'",
-                            self.model, e, fallback
-                        );
-                        Self::send_progress(
-                            &progress,
-                            format!("[fallback] Escalating to {}", fallback),
-                        )
-                        .await;
-                        match self
-                            .run_with_model(task, user, &progress, &vision, &system_prompt, &fallback)
-                            .await
-                        {
-                            Ok(ans) => ans,
-                            Err(e2) => {
-                                warn!("Fallback model '{}' also failed: {}", fallback, e2);
-                                return Err(e2);
-                            }
-                        }
-                    } else {
-                        return Err(e);
-                    }
-                } else {
-                    return Err(e);
-                }
-            }
-        };
-
-        // ── Self-Reflection / Verification ────────────────────────────────
-        // After completing a task, optionally ask the model to verify its own
-        // answer. This catches incomplete responses, factual errors, and
-        // missed steps. Costs one extra API call but significantly improves
-        // output quality.
-        let final_answer = if self.self_reflection && !answer.starts_with("🛑") {
-            self.maybe_reflect(task, &answer, &system_prompt).await
-        } else {
-            answer
-        };
-
-        let duration_ms = task_start.elapsed().as_millis() as i64;
-
-        // Persist the conversation turn to memory
-        if let Some(ref mut mem) = self.memory {
-            if let Err(e) = mem
-                .save_conversation(user, task, &final_answer, None, None, None)
-                .await
-            {
-                warn!("Failed to save conversation to memory: {}", e);
-            }
-
-            // Record usage stats
-            if let Err(e) = mem
-                .record_usage(user, "task", Some(&self.model), 0, 0, duration_ms)
-                .await
-            {
-                warn!("Failed to record usage stats: {}", e);
-            }
-
-            // ── Post-task intelligence ────────────────────────────────────
-            // These run asynchronously after the answer is ready so they
-            // don't delay the response to the user.
-            self.post_task_intelligence(user, task, &final_answer)
-                .await;
-        }
-
-        Ok(final_answer)
-    }
-
-    /// Core agentic loop, parameterized by model name for fallback support.
-    async fn run_with_model(
-        &mut self,
-        task: &str,
-        _user: &str,
-        progress: &Option<Sender<String>>,
-        vision: &Option<(Vec<u8>, String)>,
-        system_prompt: &str,
-        model: &str,
-    ) -> Result<String> {
         // Build the first user turn. Prepend a planning instruction so the model
         // reasons before acting (dramatically improves multi-step task quality).
         // When an image/PDF is attached we embed it as inline base64.
@@ -537,7 +440,7 @@ impl Agent {
         let first_turn = match vision {
             Some((bytes, mime)) => {
                 info!("Vision mode: embedding {} bytes as {} for Gemini", bytes.len(), mime);
-                let b64 = general_purpose::STANDARD.encode(bytes);
+                let b64 = general_purpose::STANDARD.encode(&bytes);
                 json!({
                     "role": "user",
                     "parts": [
@@ -550,7 +453,10 @@ impl Agent {
         };
 
         let mut conversation: Vec<Value> = vec![first_turn];
+
         let mut final_answer: Option<String> = None;
+        let mut consecutive_failures: usize = 0;
+        let mut using_fallback = false;
 
         'agent_loop: for step in 0..self.max_steps {
             // Check for /stop between every Gemini round-trip.
@@ -560,9 +466,44 @@ impl Agent {
                 break 'agent_loop;
             }
 
-            info!("Agent step {}/{} (model: {})", step + 1, self.max_steps, model);
+            info!("Agent step {}/{}", step + 1, self.max_steps);
 
-            let response = self.call_gemini_model(&conversation, system_prompt, model).await?;
+            // Try primary model, escalate to fallback after repeated failures.
+            let active_model = if using_fallback {
+                &self.fallback_model
+            } else {
+                &self.model
+            };
+            let response = match self
+                .call_gemini_model(active_model, &conversation, &system_prompt)
+                .await
+            {
+                Ok(r) => {
+                    consecutive_failures = 0;
+                    r
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    if !using_fallback && consecutive_failures >= FALLBACK_THRESHOLD {
+                        warn!(
+                            "Primary model failed {} times, escalating to fallback: {}",
+                            consecutive_failures, self.fallback_model
+                        );
+                        using_fallback = true;
+                        consecutive_failures = 0;
+                        // Retry immediately with fallback
+                        match self
+                            .call_gemini_model(&self.fallback_model, &conversation, &system_prompt)
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(e2) => return Err(e2),
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
             let candidate_content = &response["candidates"][0]["content"];
             let parts: Vec<Value> = candidate_content["parts"]
                 .as_array()
@@ -596,12 +537,12 @@ impl Agent {
 
                         info!("Agent running skill '{}' with params: {:?}", skill_name, params);
                         Self::send_progress(
-                            progress,
+                            &progress,
                             format!("[skill] {}", skill_name),
                         )
                         .await;
 
-                        let output = self.execute_skill(&skill_name, &params, progress).await;
+                        let output = self.execute_skill(&skill_name, &params, &progress).await;
                         let (output_str, exit_code) = match output {
                             Ok(s) => (s, 0i32),
                             Err(e) => (format!("Skill error: {}", e), -1),
@@ -625,7 +566,7 @@ impl Agent {
 
                         info!("Agent searching web: {}", query);
                         Self::send_progress(
-                            progress,
+                            &progress,
                             format!("[search] {}", query),
                         )
                         .await;
@@ -640,7 +581,7 @@ impl Agent {
                             Ok(Ok(results)) => {
                                 let formatted = search::format_results(&results);
                                 Self::send_progress(
-                                    progress,
+                                    &progress,
                                     format!("  {} result(s)", results.len()),
                                 )
                                 .await;
@@ -648,12 +589,12 @@ impl Agent {
                             }
                             Ok(Err(e)) => {
                                 let err = format!("Search error: {}", e);
-                                Self::send_progress(progress, format!("  ✗ {}", err)).await;
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
                                 err
                             }
                             Err(_) => {
                                 let err = "Search timed out after 30s".to_string();
-                                Self::send_progress(progress, format!("  ✗ {}", err)).await;
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
                                 err
                             }
                         };
@@ -671,25 +612,39 @@ impl Agent {
                         let cmd = fc["args"]["command"].as_str().unwrap_or("").to_string();
 
                         info!("Agent running command: {}", cmd);
-                        Self::send_progress(progress, format!("$ {}", cmd)).await;
+                        Self::send_progress(&progress, format!("$ {}", cmd)).await;
+
+                        // Create a streaming channel so live output lines are
+                        // forwarded to the progress channel during execution.
+                        let (live_tx, live_rx) = tokio::sync::mpsc::channel::<String>(64);
+                        let stream_progress = progress.clone();
+                        let stream_forwarder = tokio::spawn(async move {
+                            Self::forward_live_output(live_rx, &stream_progress).await;
+                        });
 
                         let cmd_timeout = Duration::from_secs(self.command_timeout);
                         let exec_result = match timeout(
                             cmd_timeout,
-                            self.executor.execute(&cmd),
+                            self.executor.execute_streaming(&cmd, Some(live_tx)),
                         )
                         .await
                         {
-                            Ok(Ok(r)) => r,
+                            Ok(Ok(r)) => {
+                                // Wait for the forwarder to finish flushing
+                                let _ = stream_forwarder.await;
+                                r
+                            }
                             Ok(Err(e)) => {
+                                stream_forwarder.abort();
                                 let err = format!("Command error: {}", e);
-                                Self::send_progress(progress, format!("  ✗ {}", err)).await;
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
                                 conversation.push(Self::fn_response("run_command", &err, -1));
                                 continue;
                             }
                             Err(_) => {
+                                stream_forwarder.abort();
                                 let err = format!("Command timed out after {}s", self.command_timeout);
-                                Self::send_progress(progress, format!("  ✗ {}", err)).await;
+                                Self::send_progress(&progress, format!("  ✗ {}", err)).await;
                                 conversation.push(Self::fn_response("run_command", &err, -1));
                                 continue;
                             }
@@ -704,7 +659,7 @@ impl Agent {
                             raw_output.clone()
                         };
                         Self::send_progress(
-                            progress,
+                            &progress,
                             format!("  exit:{} {}", exit_code, preview),
                         )
                         .await;
@@ -739,242 +694,46 @@ impl Agent {
             }
         }
 
-        final_answer.ok_or_else(|| {
+        let mut answer = final_answer.unwrap_or_else(|| {
             warn!("Agent reached max steps ({})", self.max_steps);
-            anyhow::anyhow!(
+            format!(
                 "⚠️ Reached maximum steps ({}). Task may be incomplete.",
                 self.max_steps
             )
-        })
-    }
+        });
 
-    // ── Self-Reflection ───────────────────────────────────────────────────────
-
-    /// Ask the model to review its own answer for completeness and correctness.
-    /// Returns the original answer if reflection finds no issues, or a revised
-    /// answer if the model catches a problem.
-    async fn maybe_reflect(
-        &self,
-        task: &str,
-        answer: &str,
-        system_prompt: &str,
-    ) -> String {
-        // Skip reflection for very short answers (likely simple Q&A).
-        if answer.len() < 100 {
-            return answer.to_string();
-        }
-
-        let reflection_prompt = format!(
-            "You just completed this task:\n\
-             Task: {}\n\n\
-             Your answer was:\n{}\n\n\
-             Review your answer critically:\n\
-             1. Is it complete? Did you address everything the user asked?\n\
-             2. Is it correct? Are there any factual errors or missed steps?\n\
-             3. Is it clear? Could anything be explained better?\n\n\
-             If the answer is good, respond with EXACTLY: LGTM\n\
-             If there are issues, provide a corrected/improved version of the full answer.",
-            task, answer
-        );
-
-        let conversation = vec![
-            json!({"role": "user", "parts": [{"text": reflection_prompt}]}),
-        ];
-
-        match self.call_gemini_model(&conversation, system_prompt, &self.model).await {
-            Ok(response) => {
-                let parts = response["candidates"][0]["content"]["parts"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                if let Some(text_part) = parts.iter().find(|p| p.get("text").is_some()) {
-                    let reflection = text_part["text"].as_str().unwrap_or("").trim();
-                    if reflection.starts_with("LGTM") || reflection.is_empty() {
-                        info!("Self-reflection: answer approved (LGTM)");
-                        answer.to_string()
-                    } else {
-                        info!("Self-reflection: answer revised");
-                        reflection.to_string()
-                    }
-                } else {
-                    answer.to_string()
-                }
-            }
-            Err(e) => {
-                warn!("Self-reflection failed (non-fatal): {}", e);
-                answer.to_string()
-            }
-        }
-    }
-
-    // ── Post-Task Intelligence ────────────────────────────────────────────────
-
-    /// Run fact extraction and summarization after a task completes.
-    /// These are best-effort — failures are logged but don't affect the response.
-    async fn post_task_intelligence(&mut self, user: &str, task: &str, answer: &str) {
-        // 1. Extract structured facts from this conversation
-        if self.extract_facts {
-            if let Err(e) = self.extract_and_store_facts(user, task, answer).await {
-                warn!("Fact extraction failed (non-fatal): {}", e);
+        // ── Self-reflection step ──────────────────────────────────────────
+        // After completing a task, ask the model to verify its own answer.
+        // This catches incomplete or incorrect responses cheaply (one extra call).
+        if self.enable_reflection && !self.cancelled.load(Ordering::SeqCst) {
+            if let Some(reflected) = self.run_reflection(task, &answer).await {
+                answer = reflected;
             }
         }
 
-        // 2. Trigger summarization if enough unsummarized conversations have accumulated
-        if let Some(ref mem) = self.memory {
-            match mem.unsummarized_count(user).await {
-                Ok(count) if count >= self.summarize_interval => {
-                    info!(
-                        "Triggering summarization for '{}': {} unsummarized conversations",
-                        user, count
-                    );
-                    if let Err(e) = self.summarize_recent(user).await {
-                        warn!("Summarization failed (non-fatal): {}", e);
-                    }
-                }
-                _ => {}
+        // Persist the conversation turn to memory
+        let mut needs_summary = false;
+        if let Some(ref mut mem) = self.memory {
+            if let Err(e) = mem
+                .save_conversation(user, task, &answer, None, None, None)
+                .await
+            {
+                warn!("Failed to save conversation to memory: {}", e);
             }
-        }
-    }
-
-    /// Extract structured facts from a conversation turn and store them
-    /// in the knowledge base.
-    async fn extract_and_store_facts(
-        &mut self,
-        user: &str,
-        task: &str,
-        answer: &str,
-    ) -> Result<()> {
-        let extraction_prompt = format!(
-            "Extract key facts from this conversation that would be useful to remember for future interactions.\n\n\
-             User message: {}\n\
-             Assistant response: {}\n\n\
-             Return ONLY a JSON array of facts, each with: type, key, value, confidence (0.0-1.0).\n\
-             Types: preference, server, tool, project, name, location, workflow, other\n\
-             Only include genuinely useful persistent facts (not transient task details).\n\
-             If no facts worth remembering, return an empty array: []\n\n\
-             Example: [{{\"type\":\"server\",\"key\":\"prod_ip\",\"value\":\"192.168.1.10\",\"confidence\":0.95}}]\n\
-             Return ONLY the JSON array, nothing else.",
-            truncate_utf8(task, 2000),
-            truncate_utf8(answer, 2000)
-        );
-
-        let conversation = vec![
-            json!({"role": "user", "parts": [{"text": extraction_prompt}]}),
-        ];
-
-        let response = self
-            .call_gemini_model(&conversation, "You are a fact extraction engine. Return only valid JSON.", &self.model)
-            .await?;
-
-        let parts = response["candidates"][0]["content"]["parts"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-
-        if let Some(text_part) = parts.iter().find(|p| p.get("text").is_some()) {
-            let text = text_part["text"].as_str().unwrap_or("[]").trim();
-            // Strip markdown code fences if present
-            let json_text = text
-                .trim_start_matches("```json")
-                .trim_start_matches("```")
-                .trim_end_matches("```")
-                .trim();
-
-            if let Ok(facts) = serde_json::from_str::<Vec<Value>>(json_text) {
-                let mem = self.memory.as_ref().ok_or_else(|| anyhow::anyhow!("No memory"))?;
-                let mut saved = 0;
-                for fact in &facts {
-                    let ft = fact["type"].as_str().unwrap_or("other");
-                    let key = fact["key"].as_str().unwrap_or("");
-                    let value = fact["value"].as_str().unwrap_or("");
-                    let conf = fact["confidence"].as_f64().unwrap_or(0.8);
-                    if !key.is_empty() && !value.is_empty() {
-                        mem.save_fact(user, ft, key, value, conf).await?;
-                        saved += 1;
-                    }
-                }
-                if saved > 0 {
-                    info!("Extracted {} fact(s) for user '{}'", saved, user);
-                }
-            }
+            needs_summary = mem.needs_summarization(user);
         }
 
-        Ok(())
-    }
-
-    /// Summarize recent unsummarized conversations into a rolling summary.
-    async fn summarize_recent(&mut self, user: &str) -> Result<()> {
-        let conversations = match &self.memory {
-            Some(mem) => mem
-                .get_unsummarized_conversations(user, SUMMARIZE_BATCH_SIZE)
-                .await?,
-            None => return Ok(()),
-        };
-
-        if conversations.is_empty() {
-            return Ok(());
+        // ── Fact extraction (runs outside the memory borrow) ──────────
+        if self.enable_fact_extraction {
+            self.extract_and_store_facts(user, task, &answer).await;
         }
 
-        let from_ts = conversations.first().map(|c| c.timestamp).unwrap_or(0);
-        let to_ts = conversations.last().map(|c| c.timestamp).unwrap_or(0);
-        let count = conversations.len();
-
-        // Build a text block of the conversations to summarize
-        let mut conv_text = String::with_capacity(4096);
-        for conv in &conversations {
-            conv_text.push_str(&format!("User: {}\n", conv.message));
-            if let Some(ref resp) = conv.response {
-                conv_text.push_str(&format!(
-                    "Clide: {}\n\n",
-                    truncate_utf8(resp, 500)
-                ));
-            }
+        // ── Summarization trigger ─────────────────────────────────────
+        if needs_summary {
+            self.generate_summary(user).await;
         }
 
-        let summary_prompt = format!(
-            "Summarize these {} conversations between a user and Clide (an AI CLI assistant) \
-             into a concise paragraph. Focus on:\n\
-             - What tasks were performed\n\
-             - Key outcomes and results\n\
-             - Any important context for future interactions\n\
-             - Problems encountered and how they were resolved\n\n\
-             Keep it under 300 words. Be factual and specific.\n\n\
-             Conversations:\n{}",
-            count, conv_text
-        );
-
-        let conversation = vec![
-            json!({"role": "user", "parts": [{"text": summary_prompt}]}),
-        ];
-
-        let response = self
-            .call_gemini_model(
-                &conversation,
-                "You are a conversation summarizer. Be concise and factual.",
-                &self.model,
-            )
-            .await?;
-
-        let parts = response["candidates"][0]["content"]["parts"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-
-        if let Some(text_part) = parts.iter().find(|p| p.get("text").is_some()) {
-            let summary = text_part["text"].as_str().unwrap_or("").trim();
-            if !summary.is_empty() {
-                if let Some(ref mem) = self.memory {
-                    mem.save_summary(user, summary, count, from_ts, to_ts)
-                        .await?;
-                    info!(
-                        "Saved summary for '{}': {} conversations compressed",
-                        user, count
-                    );
-                }
-            }
-        }
-
-        Ok(())
+        Ok(answer)
     }
 
     /// Execute all commands of a skill and return aggregated output.
@@ -1012,8 +771,16 @@ impl Agent {
 
             Self::send_progress(progress, format!("  [skill:{}] $ {}", skill_name, cmd)).await;
 
-            let res = match timeout(cmd_timeout, self.executor.execute(&cmd)).await {
+            // Create a streaming channel for live output during skill commands.
+            let (live_tx, live_rx) = tokio::sync::mpsc::channel::<String>(64);
+            let stream_progress = progress.clone();
+            let stream_forwarder = tokio::spawn(async move {
+                Self::forward_live_output(live_rx, &stream_progress).await;
+            });
+
+            let res = match timeout(cmd_timeout, self.executor.execute_streaming(&cmd, Some(live_tx))).await {
                 Ok(Ok(r)) => {
+                    let _ = stream_forwarder.await;
                     if !r.success() {
                         overall_exit = r.exit_code;
                     }
@@ -1028,10 +795,12 @@ impl Agent {
                     format!("$ {}\n{}", cmd, out)
                 }
                 Ok(Err(e)) => {
+                    stream_forwarder.abort();
                     overall_exit = -1;
                     format!("$ {}\nError: {}", cmd, e)
                 }
                 Err(_) => {
+                    stream_forwarder.abort();
                     overall_exit = -1;
                     format!("$ {}\nTimeout after {}s", cmd, cmd_timeout.as_secs())
                 }
@@ -1051,6 +820,27 @@ impl Agent {
         }
     }
 
+    /// Forward live output chunks from a streaming executor to the progress
+    /// channel, prefixing each line with `"  │ "` so it renders as indented
+    /// command output in the chat log.
+    async fn forward_live_output(
+        mut live_rx: tokio::sync::mpsc::Receiver<String>,
+        progress: &Option<Sender<String>>,
+    ) {
+        while let Some(chunk) = live_rx.recv().await {
+            if chunk.is_empty() {
+                continue;
+            }
+            // Prefix each line in the chunk for visual indentation
+            let prefixed: String = chunk
+                .lines()
+                .map(|line| format!("  │ {}", line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Self::send_progress(progress, prefixed).await;
+        }
+    }
+
     /// Build a functionResponse conversation turn.
     fn fn_response(name: &str, output: &str, exit_code: i32) -> Value {
         json!({
@@ -1065,12 +855,12 @@ impl Agent {
         })
     }
 
-    /// Call the Gemini API with a specific model (supports fallback chain).
+    /// Call Gemini with a specific model name.
     async fn call_gemini_model(
         &self,
+        model: &str,
         conversation: &[Value],
         system_prompt: &str,
-        model: &str,
     ) -> Result<Value> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -1095,9 +885,154 @@ impl Agent {
             .await?;
 
         if let Some(err) = resp.get("error") {
-            return Err(anyhow::anyhow!("Gemini API error (model: {}): {}", model, err));
+            return Err(anyhow::anyhow!("Gemini API error ({}): {}", model, err));
         }
 
         Ok(resp)
+    }
+
+    // ── Post-loop intelligence methods ────────────────────────────────────
+
+    /// Run a self-reflection pass: ask the model to review its own answer.
+    /// Returns Some(improved_answer) if the model suggests improvements,
+    /// or None to keep the original.
+    async fn run_reflection(&self, task: &str, answer: &str) -> Option<String> {
+        let reflection_prompt = format!(
+            "You just completed this task:\nTask: {}\n\nYour answer:\n{}\n\n\
+             Review your answer critically. Is it complete, correct, and helpful?\n\
+             If YES: respond with exactly \"LGTM\"\n\
+             If NO: provide the corrected/improved answer.",
+            task, answer
+        );
+
+        let conversation = vec![
+            json!({"role": "user", "parts": [{"text": reflection_prompt}]}),
+        ];
+
+        let system = "You are a quality reviewer. Be concise. Only suggest changes if there are genuine issues.";
+
+        match self.call_gemini_model(&self.model, &conversation, system).await {
+            Ok(resp) => {
+                let text = resp["candidates"][0]["content"]["parts"][0]["text"]
+                    .as_str()
+                    .unwrap_or("");
+                if text.trim().to_uppercase().contains("LGTM") {
+                    info!("Self-reflection: answer approved");
+                    None
+                } else if !text.is_empty() {
+                    info!("Self-reflection: answer improved");
+                    Some(text.to_string())
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                warn!("Self-reflection call failed (non-critical): {}", e);
+                None
+            }
+        }
+    }
+
+    /// Extract structured facts from a conversation turn and store them.
+    async fn extract_and_store_facts(&mut self, user: &str, task: &str, answer: &str) {
+        let extraction_prompt = format!(
+            "Extract key facts from this conversation that should be remembered for future interactions.\n\n\
+             User message: {}\nAssistant response: {}\n\n\
+             Return ONLY a JSON array of objects, each with: {{\"type\": \"...\", \"key\": \"...\", \"value\": \"...\"}}\n\
+             Fact types: server, preference, project, tool, credential_name (NOT the value), workflow, system_info\n\
+             If no facts worth remembering, return: []\n\
+             Examples:\n\
+             - {{\"type\": \"server\", \"key\": \"prod\", \"value\": \"192.168.1.10 running nginx\"}}\n\
+             - {{\"type\": \"preference\", \"key\": \"editor\", \"value\": \"vim\"}}\n\
+             Return ONLY the JSON array, no other text.",
+            task, crate::truncate_utf8(answer, 1000)
+        );
+
+        let conversation = vec![
+            json!({"role": "user", "parts": [{"text": extraction_prompt}]}),
+        ];
+
+        let system = "You extract structured facts from conversations. Return only valid JSON arrays.";
+
+        let resp = match self.call_gemini_model(&self.model, &conversation, system).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Fact extraction call failed (non-critical): {}", e);
+                return;
+            }
+        };
+
+        let text = resp["candidates"][0]["content"]["parts"][0]["text"]
+            .as_str()
+            .unwrap_or("[]");
+
+        // Parse the JSON response — be lenient with formatting
+        let clean = text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        if let Ok(facts) = serde_json::from_str::<Vec<Value>>(clean) {
+            if let Some(ref mut mem) = self.memory {
+                for fact in facts {
+                    let ft = fact["type"].as_str().unwrap_or("other");
+                    let key = fact["key"].as_str().unwrap_or("");
+                    let value = fact["value"].as_str().unwrap_or("");
+                    if !key.is_empty() && !value.is_empty() {
+                        if let Err(e) = mem.store_fact(user, ft, key, value, 0.85).await {
+                            warn!("Failed to store fact: {}", e);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Not valid JSON — that's fine, just skip
+            info!("Fact extraction returned non-JSON, skipping");
+        }
+    }
+
+    /// Generate a rolling summary of recent conversations and store it.
+    async fn generate_summary(&mut self, user: &str) {
+        // Get recent conversations to summarize
+        let context = match self.memory {
+            Some(ref mut mem) => mem
+                .get_context(user, 20)
+                .await
+                .unwrap_or_default(),
+            None => return,
+        };
+
+        if context.trim().is_empty() {
+            return;
+        }
+
+        let summary_prompt = format!(
+            "Summarize the following conversation history into a concise paragraph (3-5 sentences). \
+             Focus on: what tasks were done, what the user cares about, any ongoing projects or issues.\n\n\
+             {}\n\nSummary:",
+            crate::truncate_utf8(&context, 3000)
+        );
+
+        let conversation = vec![
+            json!({"role": "user", "parts": [{"text": summary_prompt}]}),
+        ];
+
+        let system = "You summarize conversations concisely. Focus on actionable information.";
+
+        match self.call_gemini_model(&self.model, &conversation, system).await {
+            Ok(resp) => {
+                let text = resp["candidates"][0]["content"]["parts"][0]["text"]
+                    .as_str()
+                    .unwrap_or("");
+                if !text.is_empty() {
+                    if let Some(ref mem) = self.memory {
+                        if let Err(e) = mem.save_summary(user, text, 20).await {
+                            warn!("Failed to save summary: {}", e);
+                        } else {
+                            info!("Generated and saved conversation summary for {}", user);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Summary generation failed (non-critical): {}", e);
+            }
+        }
     }
 }

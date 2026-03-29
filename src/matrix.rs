@@ -211,8 +211,13 @@ impl MatrixClient {
         Ok(messages)
     }
 
-    /// Send a text message to the configured Matrix room
+    /// Send a text message to the configured Matrix room.
     pub async fn send_message(&mut self, message: &str) -> Result<()> {
+        self.send_message_returning_id(message).await.map(|_| ())
+    }
+
+    /// Send a text message and return the event ID of the sent message.
+    pub async fn send_message_returning_id(&mut self, message: &str) -> Result<String> {
         self.txn_counter += 1;
         let txn_id = format!(
             "clide-{}-{}",
@@ -249,6 +254,74 @@ impl MatrixClient {
             let body_text = resp.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
                 "Matrix send_message failed {}: {}",
+                status,
+                body_text
+            ));
+        }
+
+        let resp_json: Value = resp.json().await.unwrap_or_default();
+        let event_id = resp_json["event_id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        Ok(event_id)
+    }
+
+    /// Edit an existing message in the configured Matrix room using the
+    /// `m.replace` relation (MSC2676 / Matrix v1.4+).
+    ///
+    /// `event_id` is the event ID returned by `send_message_returning_id`.
+    /// `new_text` is the replacement body text.
+    pub async fn edit_message(&mut self, event_id: &str, new_text: &str) -> Result<()> {
+        if event_id.is_empty() {
+            // Nothing to edit — silently succeed so callers don't need to guard.
+            return Ok(());
+        }
+
+        self.txn_counter += 1;
+        let txn_id = format!(
+            "clide-edit-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            self.txn_counter
+        );
+
+        let url = format!(
+            "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+            self.homeserver,
+            Self::url_encode(&self.room_id),
+            txn_id
+        );
+
+        let body = json!({
+            "msgtype": "m.text",
+            "body": format!("* {}", new_text),
+            "m.new_content": {
+                "msgtype": "m.text",
+                "body": new_text
+            },
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": event_id
+            }
+        });
+
+        let resp = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to edit Matrix message")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Matrix edit_message failed {}: {}",
                 status,
                 body_text
             ));
