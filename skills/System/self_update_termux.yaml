@@ -1,0 +1,179 @@
+# ============================================
+# Clide Self-Update Skill (Termux / VPS Dual-Mode)
+# ============================================
+# Detects the runtime environment via TERMUX_VERSION and runs the
+# appropriate update flow:
+#
+#   Termux (Android):
+#     1. Record current version
+#     2. pkill clide (no systemd on Termux)
+#     3. clide update (download latest binary)
+#     4. Restart: clide bot & (background)
+#     5. Report new version
+#
+#   VPS (Linux with systemd):
+#     1. Record current version
+#     2. clide update (download latest binary)
+#     3. sudo systemctl stop clide
+#     4. Replace binary if hash differs
+#     5. sudo systemctl restart clide
+#     6. Report new version
+#
+# Usage:
+#   run_skill self_update_termux          # auto-detects environment
+
+name: self_update_termux
+description: >
+  Dual-mode self-update for Clide. Auto-detects whether it is running on
+  Termux (Android) or a systemd-based VPS and executes the correct update
+  flow. On Termux: pkill, clide update, restart in background. On VPS:
+  clide update, systemctl stop/restart, binary replacement with hash check.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - clide
+  - update
+  - system
+  - termux
+  - android
+
+parameters: {}
+
+commands:
+  # ── 0. Detect environment and record current state ───────────────────────
+  - >-
+    echo "===== Clide Self-Update (Dual-Mode) =====";
+    if [ -n "$TERMUX_VERSION" ]; then
+    ENV_TYPE="termux";
+    echo "Environment:    Termux (Android)";
+    echo "TERMUX_VERSION: $TERMUX_VERSION";
+    else
+    ENV_TYPE="vps";
+    echo "Environment:    VPS / Linux (systemd)";
+    fi;
+    CLIDE_BIN=$(which clide 2>/dev/null || echo "not found");
+    OLD_VERSION=$(clide --version 2>/dev/null || echo "unknown");
+    echo "Binary path:    $CLIDE_BIN";
+    echo "Current version: $OLD_VERSION";
+    echo ""
+
+  # ── 1. Termux flow: pkill → update → restart ────────────────────────────
+  - >-
+    if [ -z "$TERMUX_VERSION" ]; then
+    echo "[Termux] Skipping — not running on Termux.";
+    exit 0;
+    fi;
+    echo "[1/3] Stopping all clide processes...";
+    pkill -f clide 2>/dev/null || true;
+    sleep 2;
+    if pgrep -f clide >/dev/null 2>&1; then
+    echo "        Processes still running, sending SIGKILL...";
+    pkill -9 -f clide 2>/dev/null || true;
+    sleep 1;
+    fi;
+    echo "[1/3] Clide processes stopped.";
+    echo "";
+    echo "[2/3] Downloading latest binary via 'clide update'...";
+    CLIDE_BIN=$(which clide 2>/dev/null || echo "${PREFIX:-/data/data/com.termux/files/usr}/bin/clide");
+    clide update 2>&1;
+    UPDATE_EXIT=$?;
+    if [ $UPDATE_EXIT -eq 0 ]; then
+    echo "[2/3] Update successful.";
+    else
+    echo "[2/3] WARNING: 'clide update' exited with code $UPDATE_EXIT.";
+    echo "        The binary at $CLIDE_BIN may not have been updated.";
+    fi;
+    echo "";
+    echo "[3/3] Restarting clide bot in background...";
+    nohup clide bot </dev/null >/dev/null 2>&1 &
+    sleep 2;
+    if pgrep -f "clide bot" >/dev/null 2>&1; then
+    echo "[3/3] Bot restarted (PID: $(pgrep -f 'clide bot' | head -1)).";
+    else
+    echo "[3/3] WARNING: Bot process not detected. Start manually: clide bot &";
+    fi;
+    echo "";
+    NEW_VERSION=$(clide --version 2>/dev/null || echo "unknown");
+    echo "===== Termux Update Complete =====";
+    echo "New version:  $NEW_VERSION";
+    echo "Binary path:  $(which clide 2>/dev/null || echo 'not found')"
+
+  # ── 2. VPS flow: update → stop service → replace binary → restart ───────
+  - >-
+    if [ -n "$TERMUX_VERSION" ]; then
+    echo "[VPS] Skipping — running on Termux.";
+    exit 0;
+    fi;
+    echo "[1/4] Downloading latest binary via 'clide update'...";
+    clide update 2>&1;
+    if [ $? -eq 0 ]; then
+    echo "[1/4] Download successful.";
+    else
+    echo "[1/4] WARNING: 'clide update' returned non-zero. Continuing...";
+    fi;
+    echo "";
+    echo "[2/4] Stopping clide service...";
+    sudo systemctl stop clide 2>&1;
+    sleep 1;
+    if [ "$(systemctl is-active clide 2>/dev/null)" = "inactive" ]; then
+    echo "[2/4] Service stopped.";
+    else
+    echo "[2/4] WARNING: Service may still be running. Forcing stop...";
+    sudo systemctl kill clide 2>/dev/null;
+    sleep 1;
+    fi;
+    echo "";
+    echo "[3/4] Checking for updated binary...";
+    SOURCE_BIN=~/Clide/target/release/clide;
+    INSTALLED_BIN=$(which clide 2>/dev/null || echo "/usr/local/bin/clide");
+    if [ -f "$SOURCE_BIN" ]; then
+    SOURCE_HASH=$(sha256sum "$SOURCE_BIN" 2>/dev/null | awk '{print $1}');
+    INSTALLED_HASH=$(sha256sum "$INSTALLED_BIN" 2>/dev/null | awk '{print $1}');
+    if [ "$SOURCE_HASH" != "$INSTALLED_HASH" ]; then
+    echo "        New binary detected. Replacing...";
+    sudo rm -f "$INSTALLED_BIN" &&
+    sudo cp "$SOURCE_BIN" "$INSTALLED_BIN" &&
+    sudo chmod +x "$INSTALLED_BIN";
+    echo "[3/4] Binary replaced.";
+    else
+    echo "[3/4] Binary already up to date.";
+    fi;
+    else
+    echo "[3/4] No source binary at $SOURCE_BIN. Skipping replacement.";
+    fi;
+    echo "";
+    echo "[4/4] Restarting clide service...";
+    sudo systemctl restart clide 2>&1;
+    sleep 2;
+    STATUS=$(systemctl is-active clide 2>/dev/null);
+    NEW_VERSION=$(clide --version 2>/dev/null || echo "unknown");
+    echo "";
+    echo "===== VPS Update Complete =====";
+    echo "New version:    $NEW_VERSION";
+    echo "Service status: $STATUS";
+    if [ "$STATUS" = "active" ]; then
+    echo "Result:         Update successful!";
+    else
+    echo "Result:         WARNING — service not active. Check logs:";
+    echo "                sudo journalctl -u clide --no-pager -n 20";
+    fi
+
+rollback_command:
+  - >-
+    if [ -n "$TERMUX_VERSION" ]; then
+    echo "Rollback: Restarting clide bot on Termux...";
+    pkill -f clide 2>/dev/null || true;
+    sleep 1;
+    nohup clide bot </dev/null >/dev/null 2>&1 &
+    sleep 2;
+    pgrep -f "clide bot" >/dev/null && echo "Bot restarted." || echo "WARNING: Bot not running.";
+    else
+    echo "Rollback: Restarting clide service...";
+    sudo systemctl restart clide 2>&1;
+    echo "Service status: $(systemctl is-active clide 2>/dev/null)";
+    fi
+
+require_confirmation: false
+parallel: false
+retry_count: 0
+timeout: 300
