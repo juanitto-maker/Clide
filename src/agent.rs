@@ -305,6 +305,21 @@ impl Agent {
             .unwrap_or_default();
         prompt.push_str(&skill_section);
 
+        // Few-shot examples (if any exist in the database)
+        if let Some(ref mem) = self.memory {
+            let examples = mem.db().get_best_examples(2).unwrap_or_default();
+            if !examples.is_empty() {
+                prompt.push_str("\n\nExemplary past interactions (use as reference for quality):\n");
+                for (domain, task, response) in &examples {
+                    let resp_preview = crate::truncate_utf8(response, 300);
+                    prompt.push_str(&format!(
+                        "---\n[{}] User: {}\nClide: {}\n",
+                        domain, task, resp_preview
+                    ));
+                }
+            }
+        }
+
         // User-provided context file
         if let Some(ref c) = self.context_file_content {
             prompt.push_str(&format!("\n\n--- User-provided context ---\n{}", c));

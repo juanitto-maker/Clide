@@ -95,6 +95,13 @@ impl Bot {
                             continue;
                         }
 
+                        // /stats — show usage statistics
+                        if msg.text.trim().eq_ignore_ascii_case("/stats") {
+                            let reply = self.build_stats_message();
+                            let _ = self.matrix.send_message(&reply).await;
+                            continue;
+                        }
+
                         if let Err(e) = self.handle_message(msg.sender, msg.text).await {
                             eprintln!("Error handling message: {}", e);
                         }
@@ -156,6 +163,37 @@ impl Bot {
         info!("Replied to {}", sender);
 
         Ok(())
+    }
+
+    /// Build a stats summary message from the database.
+    fn build_stats_message(&self) -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let db_path = format!("{}/.clide/memory.db", home);
+        match crate::database::Database::new(&db_path) {
+            Ok(db) => match db.get_stats() {
+                Ok(stats) => {
+                    format!(
+                        "📊 Clide Stats\n\n\
+                         Messages: {}\n\
+                         Commands: {}\n\
+                         Users: {}\n\
+                         Known facts: {}\n\
+                         Model: {}\n\
+                         Fallback: {}\n\
+                         Version: {}",
+                        stats.total_messages,
+                        stats.total_commands,
+                        stats.total_users,
+                        stats.total_facts,
+                        self.config.gemini_model,
+                        self.config.fallback_model,
+                        crate::VERSION,
+                    )
+                }
+                Err(e) => format!("❌ Could not read stats: {}", e),
+            },
+            Err(e) => format!("❌ Could not open database: {}", e),
+        }
     }
 
     /// Ask the room for YES/NO confirmation before proceeding
