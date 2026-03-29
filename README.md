@@ -16,6 +16,8 @@
 ---
 
 > **Clide** is a Rust-based autonomous terminal agent. Send natural language commands from Element/Matrix or Telegram — Clide interprets them with Gemini AI, executes them on your machine or over SSH, and replies with the results. Runs as a static binary with zero runtime dependencies.
+>
+> **New here?** See [how Clide compares to other tools](docs/COMPARISON.md) — Open Interpreter, StackStorm, Rundeck, Hubot, and more.
 
 ---
 
@@ -806,6 +808,8 @@ Any amount helps keep the project active. Thank you.
 | [docs/INSTALL.md](docs/INSTALL.md) | Full platform-specific installation guide |
 | [docs/SECRETS.md](docs/SECRETS.md) | Credential manager — secrets file, pass, host registry, vault |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security model and best practices |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Planned features and future direction |
+| [docs/COMPARISON.md](docs/COMPARISON.md) | How Clide compares to Open Interpreter, StackStorm, Rundeck, and others |
 | [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | Real-world usage examples and skill templates |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Contribution guidelines |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
@@ -842,12 +846,13 @@ MIT — see [LICENSE](LICENSE).
 - [x] Linux VPS support with systemd service
 - [x] `/stop` command to abort running tasks
 - [x] Vision / image interpretation via Telegram
-- [ ] Multi-model LLM support (Claude, Ollama)
-- [ ] Web UI dashboard
+- [ ] Scheduled commands / cron integration
+- [ ] Streaming output (live command progress in chat)
+- [ ] Web UI dashboard (monitoring + light interaction)
 - [ ] Docker support
 - [ ] Multi-room support
-- [ ] Scheduled commands
-- [ ] Workflow marketplace
+- [ ] Multi-user RBAC (role-based access control)
+- [ ] Skill marketplace (community-contributed workflows)
 
 ---
 

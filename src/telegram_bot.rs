@@ -159,6 +159,32 @@ impl TelegramBot {
             }
         }
 
+        // ── Step 6: Start the scheduler background task ─────────────────
+        // The scheduler needs a chat_id to send notifications, but we don't
+        // know it until the first user message arrives.  We use a shared
+        // AtomicI64 that starts at 0 (= "unknown") and gets set on the first
+        // incoming message from an authorized user.
+        let scheduler_chat_id = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let _scheduler_handle = if !self.config.scheduled_tasks.is_empty() {
+            let notify = crate::scheduler::NotifyChannel::Telegram {
+                client: self.telegram.clone(),
+                chat_id: Arc::clone(&scheduler_chat_id),
+                thread_id: None,
+            };
+            let handle = crate::scheduler::spawn(self.config.clone(), notify);
+            println!(
+                "  Scheduler: {} task(s) active",
+                self.config
+                    .scheduled_tasks
+                    .iter()
+                    .filter(|t| t.enabled)
+                    .count()
+            );
+            Some(handle)
+        } else {
+            None
+        };
+
         println!("Polling for messages (long-poll 30s)…");
         println!();
 
@@ -194,6 +220,10 @@ impl TelegramBot {
                                 self.handle_callback_query(cb).await;
                             }
                             TelegramUpdate::Message(msg) => {
+                        // Update the scheduler's chat_id so it can send
+                        // notifications to this chat once we know a real one.
+                        scheduler_chat_id.store(msg.chat_id, Ordering::Relaxed);
+
                         // ── Built-in commands ────────────────────────────────
 
                         // /ping or /start — health-check, useful to confirm the
@@ -265,6 +295,13 @@ impl TelegramBot {
                         // /stats — show usage statistics
                         if msg.text.trim().eq_ignore_ascii_case("/stats") {
                             let reply = self.build_stats_message().await;
+                            let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
+                            continue;
+                        }
+
+                        // /schedule — show scheduled tasks status
+                        if msg.text.trim().eq_ignore_ascii_case("/schedule") {
+                            let reply = crate::scheduler::build_schedule_message(&self.config);
                             let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
                             continue;
                         }

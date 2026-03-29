@@ -6,6 +6,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTask {
+    pub name: String,
+    pub schedule: String, // cron expression
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    // One of these three must be set:
+    pub task: Option<String>,    // natural language for agent
+    pub skill: Option<String>,   // skill name
+    pub command: Option<String>, // raw shell command
+    #[serde(default)]
+    pub params: HashMap<String, String>, // skill params
+}
+
 use crate::hosts;
 use crate::pass_store;
 
@@ -96,6 +110,11 @@ pub struct Config {
     /// directory.  Example: `~/.clide/context.md`
     #[serde(default)]
     pub context_file: Option<String>,
+
+    /// Scheduled tasks (cron-like) that run in the background.
+    /// Each task can be a natural language prompt, a skill name, or a raw command.
+    #[serde(default)]
+    pub scheduled_tasks: Vec<ScheduledTask>,
 
     /// All secrets from ~/.clide/secrets.yaml plus env overrides.
     /// Available as ${KEY_NAME} placeholders in skill commands.

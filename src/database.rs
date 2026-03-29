@@ -109,6 +109,18 @@ impl Database {
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_examples_domain ON examples(domain);
+
+            CREATE TABLE IF NOT EXISTS scheduled_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_name TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                success INTEGER NOT NULL DEFAULT 0,
+                output TEXT,
+                error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_scheduled_runs_name ON scheduled_runs(task_name);
             "#,
         )?;
         Ok(Self { conn: Mutex::new(conn) })
@@ -435,5 +447,79 @@ impl Database {
              {} old summaries pruned, {} stale facts removed, VACUUM done",
             convs, sums, facts
         ))
+    }
+
+    // ── Scheduled task runs ──────────────────────────────────────────────
+
+    /// Log a scheduled task execution.
+    pub fn log_scheduled_run(
+        &self,
+        task_name: &str,
+        task_type: &str,
+        started_at: i64,
+        finished_at: Option<i64>,
+        success: bool,
+        output: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO scheduled_runs \
+             (task_name, task_type, started_at, finished_at, success, output, error) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                task_name,
+                task_type,
+                started_at,
+                finished_at,
+                success as i32,
+                output,
+                error,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get the timestamp of the last run for a given task name.
+    pub fn get_last_run(&self, task_name: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT started_at FROM scheduled_runs \
+             WHERE task_name = ?1 ORDER BY started_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![task_name], |row| row.get::<_, i64>(0))?;
+        match rows.next() {
+            Some(Ok(ts)) => Ok(Some(ts)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Get aggregate stats for all scheduled tasks:
+    /// `(task_name, last_run_timestamp, total_runs, success_count)`.
+    pub fn get_scheduled_stats(&self) -> Result<Vec<(String, i64, i64, i64)>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT task_name, \
+                    MAX(started_at) AS last_run, \
+                    COUNT(*) AS total_runs, \
+                    SUM(success) AS success_count \
+             FROM scheduled_runs \
+             GROUP BY task_name \
+             ORDER BY last_run DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut stats = Vec::new();
+        for r in rows {
+            stats.push(r?);
+        }
+        Ok(stats)
     }
 }
