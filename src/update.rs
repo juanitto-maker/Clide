@@ -359,16 +359,33 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
 
             let path_str = path.to_string_lossy();
             let tmp_str = home_tmp.to_string_lossy();
-            let dest_tmp = format!("{}.new", path_str);
             println!(
                 "  {} (using sudo to install to {})",
                 "Permission required".yellow(),
                 path_str
             );
 
-            // Step 1: sudo cp to a temp file next to the target (same filesystem)
+            // Step 1: sudo rm the running binary first.
+            // On Linux, rm unlinks the directory entry while the kernel keeps
+            // the old inode open for the running process.  This avoids
+            // "Text file busy" which both `sudo cp` and `sudo mv` can trigger
+            // when overwriting a running binary on some VPS kernels.
             let status = Command::new("sudo")
-                .args(["cp", &tmp_str, &dest_tmp])
+                .args(["rm", "-f", &path_str])
+                .status()
+                .context("Failed to run sudo rm")?;
+
+            if !status.success() {
+                let _ = std::fs::remove_file(&home_tmp);
+                bail!(
+                    "sudo rm failed. Try manually:\n  sudo rm -f {}",
+                    path_str
+                );
+            }
+
+            // Step 2: sudo cp the new binary into place (fresh inode).
+            let status = Command::new("sudo")
+                .args(["cp", &tmp_str, &path_str])
                 .status()
                 .context("Failed to run sudo cp")?;
 
@@ -376,7 +393,6 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
             let _ = std::fs::remove_file(&home_tmp);
 
             if !status.success() {
-                let _ = Command::new("sudo").args(["rm", "-f", &dest_tmp]).status();
                 bail!(
                     "sudo cp failed. Try manually:\n  sudo cp {} {}",
                     tmp_str,
@@ -384,20 +400,10 @@ fn replace_binary(path: &std::path::Path, new_binary: &[u8]) -> Result<()> {
                 );
             }
 
-            // Step 2: sudo mv (atomic rename) — avoids "Text file busy"
-            let status = Command::new("sudo")
-                .args(["mv", &dest_tmp, &path_str])
-                .status()
-                .context("Failed to run sudo mv")?;
-
-            if !status.success() {
-                let _ = Command::new("sudo").args(["rm", "-f", &dest_tmp]).status();
-                bail!(
-                    "sudo mv failed. Try manually:\n  sudo mv {} {}",
-                    dest_tmp,
-                    path_str
-                );
-            }
+            // Ensure the new binary is executable
+            let _ = Command::new("sudo")
+                .args(["chmod", "+x", &path_str])
+                .status();
         }
     }
 
