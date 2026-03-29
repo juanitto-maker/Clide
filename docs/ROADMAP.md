@@ -104,6 +104,18 @@ Replace shell-based SSH (`ssh -i ...` via executor) with a native Rust SSH libra
 - Library candidate: `russh` (previously failed on Android ARM64)
 - Only enabled for x86_64 Linux and macOS builds
 
+### Database Hardening
+**Priority:** Medium | **Target:** v0.6.x
+
+Secure the SQLite database at rest and enforce strict access controls. Currently the `~/.clide/` database is an unencrypted file with no authentication — security relies solely on Unix file permissions.
+
+**Planned measures:**
+- **Encryption at rest** — Integrate SQLCipher (or libsql-encryption) so the `.db` file is AES-256 encrypted; key derived from a user-supplied passphrase or device secret
+- **Strict file permissions** — Automatically set `chmod 700` on `~/.clide/` and `chmod 600` on database files during init / migration
+- **Optional container isolation** — Provide a Docker / Podman Compose file so Clide and its database run in an isolated filesystem namespace on shared / VPS hosts
+- **WAL integrity checks** — Periodic `PRAGMA integrity_check` via a scheduled task to detect corruption early
+- **Backup encryption** — Ensure `clide backup` produces encrypted archives (age / GPG) that never write plaintext database snapshots to disk
+
 ### Multi-User RBAC
 **Priority:** Low | **Target:** v0.7.x
 
