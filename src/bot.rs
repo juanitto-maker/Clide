@@ -5,11 +5,17 @@
 use anyhow::Result;
 use log::{info, warn, error};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::agent::Agent;
 use crate::config::Config;
 use crate::matrix::MatrixClient;
+use crate::scrubber;
+
+/// Maximum characters for the Matrix progress status message.
+/// Matrix doesn't have a hard limit like Telegram's 4096, but we keep
+/// the live-updating message readable.
+const MATRIX_MAX_PROGRESS_CHARS: usize = 4000;
 
 /// Main bot structure (exported as Bot from lib.rs)
 pub struct Bot {
@@ -192,9 +198,100 @@ impl Bot {
         }
 
         info!("Running agent task...");
-        let response = self.agent.run(&text, &sender, None, None).await?;
 
-        self.matrix.lock().await.send_message(&response).await?;
+        // Send an initial "Working..." status message and get its event ID
+        // so we can edit it with live progress updates.
+        let status_event_id = self
+            .matrix
+            .lock()
+            .await
+            .send_message_returning_id("Working...")
+            .await
+            .unwrap_or_default();
+
+        // Progress channel (agent -> updater task)
+        let (tx, mut rx) = mpsc::channel::<String>(64);
+
+        // Spawn an updater task that edits the status message with cumulative
+        // progress.  It edits in-place every 3 seconds at most to avoid
+        // flooding the Matrix server with edit requests.
+        let matrix_handle = Arc::clone(&self.matrix);
+        let event_id = status_event_id.clone();
+        let live_secrets = self.config.secrets.clone();
+        let updater: tokio::task::JoinHandle<String> = tokio::spawn(async move {
+            let mut log = String::new();
+            let mut last_edit = tokio::time::Instant::now();
+            let edit_interval = tokio::time::Duration::from_secs(3);
+
+            while let Some(line) = rx.recv().await {
+                log.push('\n');
+                log.push_str(&line);
+
+                // Only edit the message if enough time has passed since the last edit
+                if last_edit.elapsed() >= edit_interval {
+                    let display = if log.len() > MATRIX_MAX_PROGRESS_CHARS {
+                        format!(
+                            "[...]\n{}",
+                            &log[log.len() - (MATRIX_MAX_PROGRESS_CHARS - 6)..]
+                        )
+                    } else {
+                        log.clone()
+                    };
+                    let display = scrubber::scrub(&display, &live_secrets);
+                    let _ = matrix_handle
+                        .lock()
+                        .await
+                        .edit_message(&event_id, &format!("Working...{}", display))
+                        .await;
+                    last_edit = tokio::time::Instant::now();
+                }
+            }
+
+            // Final flush: edit with latest progress
+            if !log.is_empty() {
+                let display = if log.len() > MATRIX_MAX_PROGRESS_CHARS {
+                    format!(
+                        "[...]\n{}",
+                        &log[log.len() - (MATRIX_MAX_PROGRESS_CHARS - 6)..]
+                    )
+                } else {
+                    log.clone()
+                };
+                let display = scrubber::scrub(&display, &live_secrets);
+                let _ = matrix_handle
+                    .lock()
+                    .await
+                    .edit_message(&event_id, &format!("Working...{}", display))
+                    .await;
+            }
+
+            log
+        });
+
+        // Run the agentic loop (drops tx when done, closing the updater channel)
+        let result = self.agent.run(&text, &sender, Some(tx), None).await;
+
+        // Wait for the updater to flush its last edit and collect the log
+        let _commands_log = updater.await.unwrap_or_default();
+
+        // Build and send the final response
+        let raw_text = match result {
+            Ok(r) if !r.is_empty() => r,
+            Ok(_) => "Done.".to_string(),
+            Err(e) => format!("Error: {}", e),
+        };
+        let final_text = scrubber::scrub(&raw_text, &self.config.secrets);
+
+        // Edit the status message with the final answer so the "Working..."
+        // placeholder is replaced by the actual result.
+        let mut mx = self.matrix.lock().await;
+        if !status_event_id.is_empty() {
+            let _ = mx.edit_message(&status_event_id, &final_text).await;
+        } else {
+            // Fallback: send as a new message if we couldn't get the event ID
+            mx.send_message(&final_text).await?;
+        }
+
         info!("Replied to {}", sender);
 
         Ok(())
