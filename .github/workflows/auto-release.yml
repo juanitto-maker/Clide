@@ -1,7 +1,8 @@
 name: Auto Release
 
 # Build and release on every push to main.
-# Automatically bumps the patch version (0.2.1 → 0.2.2 → 0.2.3 ...).
+# Version is derived from the latest git tag (single source of truth).
+# Automatically bumps the patch version (0.4.3 → 0.4.4 → 0.4.5 ...).
 # Skip by including [skip release] in the commit message.
 
 on:
@@ -45,18 +46,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Bump version
+      - name: Bump version from latest git tag
         id: bump
         run: |
           set -euo pipefail
-          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/' | tr -d '\r\n')
-          echo "Current version from Cargo.toml: '$CURRENT'"
 
-          # Validate semver format
-          if ! echo "$CURRENT" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Invalid version in Cargo.toml: '$CURRENT' — expected X.Y.Z"
+          # Single source of truth: highest semver git tag.
+          # Handle both "v0.4.3" and "v.0.4.3" tag formats (legacy used v. prefix).
+          # Strip any leading "v" or "v." to get the raw version, then sort.
+          echo "All version tags:"
+          git tag -l 'v*' | head -20
+
+          CURRENT=$(git tag -l 'v*' | sed 's/^v\.*//;' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+
+          if [ -z "$CURRENT" ]; then
+            echo "::error::No semver tags found (expected v*.*.* or v.*.*.* tags)"
             exit 1
           fi
+
+          echo "Highest version from git tags: $CURRENT"
 
           MAJOR=$(echo "$CURRENT" | cut -d. -f1)
           MINOR=$(echo "$CURRENT" | cut -d. -f2)
@@ -68,10 +76,13 @@ jobs:
           echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "new_tag=v${NEW_VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Check tag doesn't already exist
-        run: |
-          if git rev-parse "refs/tags/${{ steps.bump.outputs.new_tag }}" >/dev/null 2>&1; then
-            echo "::error::Tag ${{ steps.bump.outputs.new_tag }} already exists"
+          # Sanity check: new tag must not already exist (check both formats)
+          if git rev-parse "refs/tags/v${NEW_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v${NEW_VERSION} already exists"
+            exit 1
+          fi
+          if git rev-parse "refs/tags/v.${NEW_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v.${NEW_VERSION} already exists (legacy format)"
             exit 1
           fi
 
