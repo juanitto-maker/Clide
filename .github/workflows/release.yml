@@ -2,15 +2,75 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
+  version:
+    name: Bump version and tag
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+      skipped: ${{ steps.bump.outputs.skipped }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine and bump version
+        id: bump
+        run: |
+          # Skip if this commit is a version bump from CI
+          LAST_MSG=$(git log -1 --pretty=%s)
+          if echo "$LAST_MSG" | grep -qE '^\[release\] v[0-9]'; then
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: commit is a CI version bump"
+            exit 0
+          fi
+
+          # Find latest version tag (supports both v0.4.2 and v.0.4.2 formats)
+          LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v\.?[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            # Fallback: read version from Cargo.toml
+            CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            PATCH=$((PATCH + 1))
+          else
+            # Strip v. or v prefix
+            VERSION="${LATEST_TAG#v.}"
+            VERSION="${VERSION#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
+
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+          echo "Bumping to $NEW_VERSION (tag: $NEW_TAG)"
+
+      - name: Update Cargo.toml and push tag
+        if: steps.bump.outputs.skipped != 'true'
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ steps.bump.outputs.new_version }}"/' Cargo.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git diff --staged --quiet || git commit -m "[release] ${{ steps.bump.outputs.new_tag }} - bump version"
+          git tag "${{ steps.bump.outputs.new_tag }}"
+          git push origin main --tags
+
   build:
     name: Build ${{ matrix.target }}
+    needs: version
+    if: needs.version.outputs.skipped != 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -21,9 +81,10 @@ jobs:
             artifact: clide-aarch64
           - target: aarch64-linux-android
             artifact: clide-aarch64-android
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.new_tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -47,7 +108,8 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [version, build]
+    if: needs.version.outputs.skipped != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -59,5 +121,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.new_tag }}
+          name: ${{ needs.version.outputs.new_tag }}
           files: artifacts/*
           generate_release_notes: true
