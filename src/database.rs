@@ -99,6 +99,16 @@ impl Database {
                 timestamp INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_stats_type ON stats(event_type);
+
+            CREATE TABLE IF NOT EXISTS examples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                task TEXT NOT NULL,
+                response TEXT NOT NULL,
+                quality_score REAL NOT NULL DEFAULT 1.0,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_examples_domain ON examples(domain);
             "#,
         )?;
         Ok(Self { conn: Mutex::new(conn) })
@@ -308,5 +318,122 @@ impl Database {
             |r| r.get(0),
         )?;
         Ok(count)
+    }
+
+    // ── Few-shot examples ──────────────────────────────────────────────────
+
+    /// Store an exemplary interaction for a given domain (e.g., "sysadmin", "security").
+    pub fn save_example(
+        &self,
+        domain: &str,
+        task: &str,
+        response: &str,
+        quality_score: f64,
+    ) -> Result<()> {
+        let timestamp = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO examples (domain, task, response, quality_score, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![domain, task, response, quality_score, timestamp],
+        )?;
+        Ok(())
+    }
+
+    /// Get top-K examples for a domain, ordered by quality score.
+    pub fn get_examples(&self, domain: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT task, response FROM examples \
+             WHERE domain = ?1 ORDER BY quality_score DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![domain, limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut examples = Vec::new();
+        for r in rows {
+            examples.push(r?);
+        }
+        Ok(examples)
+    }
+
+    /// Get examples across all domains (for general context), top-K by quality.
+    pub fn get_best_examples(&self, limit: usize) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT domain, task, response FROM examples \
+             ORDER BY quality_score DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut examples = Vec::new();
+        for r in rows {
+            examples.push(r?);
+        }
+        Ok(examples)
+    }
+
+    // ── Maintenance ───────────────────────────────────────────────────────
+
+    /// Archive (delete) conversations older than `days` days.
+    /// Returns the number of rows deleted.
+    pub fn archive_old_conversations(&self, days: i64) -> Result<usize> {
+        let cutoff = chrono::Utc::now().timestamp() - (days * 86400);
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let deleted = conn.execute(
+            "DELETE FROM conversations WHERE timestamp < ?1",
+            params![cutoff],
+        )?;
+        Ok(deleted)
+    }
+
+    /// Archive old summaries, keeping only the most recent per user.
+    pub fn archive_old_summaries(&self) -> Result<usize> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        // Keep only the latest summary per user
+        let deleted = conn.execute(
+            "DELETE FROM summaries WHERE id NOT IN (\
+                SELECT MAX(id) FROM summaries GROUP BY user\
+            )",
+            [],
+        )?;
+        Ok(deleted)
+    }
+
+    /// Prune low-confidence or stale knowledge facts older than `days`.
+    pub fn prune_stale_facts(&self, days: i64, min_confidence: f64) -> Result<usize> {
+        let cutoff = chrono::Utc::now().timestamp() - (days * 86400);
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let deleted = conn.execute(
+            "DELETE FROM knowledge WHERE last_seen < ?1 AND confidence < ?2",
+            params![cutoff, min_confidence],
+        )?;
+        Ok(deleted)
+    }
+
+    /// Run SQLite VACUUM to reclaim disk space after archiving.
+    pub fn vacuum(&self) -> Result<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
+
+    /// Run all maintenance tasks: archive old data + vacuum.
+    /// Returns a summary string.
+    pub fn run_maintenance(&self) -> Result<String> {
+        let convs = self.archive_old_conversations(30)?;
+        let sums = self.archive_old_summaries()?;
+        let facts = self.prune_stale_facts(90, 0.5)?;
+        self.vacuum()?;
+        Ok(format!(
+            "Maintenance complete: {} old conversations archived, \
+             {} old summaries pruned, {} stale facts removed, VACUUM done",
+            convs, sums, facts
+        ))
     }
 }

@@ -147,6 +147,18 @@ impl TelegramBot {
             Err(e) => println!("skipped ({}).", e),
         }
 
+        // ── Step 5: Run database maintenance on startup ─────────────────
+        {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let db_path = format!("{}/.clide/memory.db", home);
+            if let Ok(db) = crate::database::Database::new(&db_path) {
+                match db.run_maintenance() {
+                    Ok(msg) => info!("DB maintenance: {}", msg),
+                    Err(e) => warn!("DB maintenance failed (non-critical): {}", e),
+                }
+            }
+        }
+
         println!("Polling for messages (long-poll 30s)…");
         println!();
 
@@ -246,6 +258,13 @@ impl TelegramBot {
                                 exp_dir,
                                 if exp_dir_exists { "exists" } else { "not created yet" },
                             );
+                            let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
+                            continue;
+                        }
+
+                        // /stats — show usage statistics
+                        if msg.text.trim().eq_ignore_ascii_case("/stats") {
+                            let reply = self.build_stats_message().await;
                             let _ = self.telegram.send_message(msg.chat_id, msg.thread_id, &reply).await;
                             continue;
                         }
@@ -560,6 +579,37 @@ impl TelegramBot {
         // Remove from cache after delivery
         let mut cache = self.full_output_cache.lock().await;
         cache.remove(&cb.data);
+    }
+
+    /// Build a stats summary message from the database.
+    async fn build_stats_message(&self) -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let db_path = format!("{}/.clide/memory.db", home);
+        match crate::database::Database::new(&db_path) {
+            Ok(db) => match db.get_stats() {
+                Ok(stats) => {
+                    format!(
+                        "📊 Clide Stats\n\n\
+                         Messages: {}\n\
+                         Commands: {}\n\
+                         Users: {}\n\
+                         Known facts: {}\n\
+                         Model: {}\n\
+                         Fallback: {}\n\
+                         Version: {}",
+                        stats.total_messages,
+                        stats.total_commands,
+                        stats.total_users,
+                        stats.total_facts,
+                        self.config.gemini_model,
+                        self.config.fallback_model,
+                        crate::VERSION,
+                    )
+                }
+                Err(e) => format!("❌ Could not read stats: {}", e),
+            },
+            Err(e) => format!("❌ Could not open database: {}", e),
+        }
     }
 
     /// Scan the export directory **recursively** and send every file as a
