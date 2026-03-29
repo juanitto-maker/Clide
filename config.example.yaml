@@ -98,6 +98,36 @@ blocked_commands:
 # Supports ~ for the home directory.
 # context_file: "~/.clide/context.md"
 
+# --- LLM Fallback Chain ---
+# Fallback model to auto-escalate to when the primary model fails.
+# Useful for complex reasoning tasks that Flash struggles with.
+# Example: "gemini-2.5-pro"
+# fallback_model: "gemini-2.5-pro"
+
+# Whether to automatically escalate to fallback_model on failure (default: true).
+auto_escalate: true
+
+# --- Enhanced Memory ---
+# Number of conversations between automatic summarizations (default: 5).
+# Lower = more frequent summaries = better long-term memory, but uses more API calls.
+summarize_interval: 5
+
+# Whether to extract structured facts from conversations (default: true).
+# Facts are stored in a knowledge base and injected into context automatically.
+extract_facts: true
+
+# Whether to run self-reflection/verification after task completion (default: true).
+# Adds one extra API call but significantly improves answer quality.
+self_reflection: true
+
+# --- Enhanced Security ---
+# Regex patterns for blocked commands (in addition to simple string matches above).
+# These provide more precise matching for dangerous command patterns.
+# blocked_patterns:
+#   - "rm\\s+(-[a-zA-Z]*f[a-zA-Z]*\\s+)?/\\s*$"
+#   - "chmod\\s+(-R\\s+)?777\\s+/"
+#   - "mkfs\\.\\w+"
+
 # --- Logging ---
 logging:
   level: "info"   # trace | debug | info | warn | error
