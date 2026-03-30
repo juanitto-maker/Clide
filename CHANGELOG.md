@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Non-interactive `clide secret set KEY VALUE`** — when a value is passed as a positional argument, skip the interactive TTY prompt and store directly to secrets.yaml. Enables headless use from Telegram bot commands and automation scripts.
+- **`picoclaw_cascade` skill** — lightweight free-tier AI cascade proxy for PicoClaw using Groq, OpenRouter, and Cerebras. Single Python script replaces the heavier LiteLLM proxy. Supports setup/status/test/remove actions. Includes automatic LiteLLM cleanup on setup and remove.
+
 ### Coming Soon
 - Claude API support
 - Workflow marketplace

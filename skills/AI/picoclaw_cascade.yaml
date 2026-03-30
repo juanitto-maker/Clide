@@ -1,0 +1,383 @@
+# ============================================
+# PicoClaw Free AI Cascade Skill
+# ============================================
+# Sets up a lightweight cascade proxy for PicoClaw using only
+# free-tier AI providers. No LiteLLM, no heavy dependencies.
+# A single Python script acts as an OpenAI-compatible proxy
+# that tries providers in order: Groq → OpenRouter → Cerebras.
+#
+# Prerequisites:
+#   - PicoClaw installed and running on this machine
+#   - API keys stored in Clide secrets:
+#     GROQ_API_KEY, OPENROUTER_API_KEY (CEREBRAS_API_KEY optional)
+#   - python3 with aiohttp (pip install aiohttp)
+#
+# Usage:
+#   run_skill picoclaw_cascade
+#   run_skill picoclaw_cascade action=setup
+#   run_skill picoclaw_cascade action=status
+#   run_skill picoclaw_cascade action=remove
+#   run_skill picoclaw_cascade action=test
+
+name: picoclaw_cascade
+description: >
+  Set up a lightweight free-tier AI cascade proxy for PicoClaw.
+  Uses a tiny Python script (no LiteLLM) that tries providers
+  in order: Groq → OpenRouter → Cerebras. On rate-limit (429)
+  or error (5xx), automatically falls to the next provider.
+  Runs as a systemd service on port 4000, PicoClaw points at it.
+version: "1.0.0"
+author: digitalAIventures LLC
+tags:
+  - picoclaw
+  - cascade
+  - free-tier
+  - groq
+  - openrouter
+  - cerebras
+  - proxy
+
+parameters:
+  action:
+    description: >
+      'setup' to install the cascade proxy and patch PicoClaw (default).
+      'status' to check if the proxy is running and show provider health.
+      'test' to send a test request through the cascade.
+      'remove' to stop the proxy and restore PicoClaw to direct Gemini.
+    type: string
+    required: false
+    default: "setup"
+
+  port:
+    description: "Local port for the cascade proxy (default 4000)"
+    type: string
+    required: false
+    default: "4000"
+
+commands:
+  - |
+    ACTION="{{action}}"
+    PORT="{{port}}"
+    PROXY_DIR="$HOME/.picoclaw-cascade"
+    PROXY_SCRIPT="$PROXY_DIR/cascade_proxy.py"
+    SERVICE_FILE="/etc/systemd/system/picoclaw-cascade.service"
+    PICOCLAW_CONFIG="$HOME/.picoclaw/config.json"
+    PICOCLAW_BACKUP="$HOME/.picoclaw/config.json.pre-cascade"
+
+    case "$ACTION" in
+
+      # ── STATUS ───────────────────────────────────────────────────────
+      status)
+        echo "=== PicoClaw Cascade Status ==="
+        if systemctl is-active picoclaw-cascade >/dev/null 2>&1; then
+          echo "Proxy: RUNNING on port $PORT"
+          systemctl status picoclaw-cascade --no-pager | head -8
+          echo ""
+          echo "Testing providers:"
+          curl -s http://127.0.0.1:$PORT/health 2>/dev/null || echo "  /health endpoint not responding"
+        else
+          echo "Proxy: NOT RUNNING"
+          echo "Run: run_skill picoclaw_cascade action=setup"
+        fi
+        echo ""
+        echo "PicoClaw config:"
+        python3 -c "
+    import json
+    c = json.load(open('$PICOCLAW_CONFIG'))
+    d = c.get('agents', {}).get('defaults', {})
+    print(f'  provider: {d.get(\"provider\", \"(not set)\")}')
+    print(f'  model: {d.get(\"model_name\", \"(not set)\")}')
+    print(f'  api_base: {d.get(\"api_base\", \"(not set)\")}')
+    " 2>/dev/null || echo "  Could not read PicoClaw config"
+        ;;
+
+      # ── TEST ─────────────────────────────────────────────────────────
+      test)
+        echo "=== Testing Cascade Proxy ==="
+        RESP=$(curl -s http://127.0.0.1:$PORT/v1/chat/completions \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer sk-cascade-local" \
+          -d '{"model":"default","messages":[{"role":"user","content":"Say PONG and nothing else"}],"max_tokens":10}')
+        echo "$RESP" | python3 -m json.tool 2>/dev/null || echo "$RESP"
+        ;;
+
+      # ── REMOVE ───────────────────────────────────────────────────────
+      remove)
+        echo "=== Removing Cascade Proxy ==="
+        echo "$SUDO_PASSWORD" | sudo -S systemctl stop picoclaw-cascade 2>/dev/null
+        echo "$SUDO_PASSWORD" | sudo -S systemctl disable picoclaw-cascade 2>/dev/null
+        echo "$SUDO_PASSWORD" | sudo -S rm -f "$SERVICE_FILE"
+        echo "$SUDO_PASSWORD" | sudo -S systemctl daemon-reload
+
+        if [ -f "$PICOCLAW_BACKUP" ]; then
+          cp "$PICOCLAW_BACKUP" "$PICOCLAW_CONFIG"
+          echo "PicoClaw config restored from backup"
+        fi
+
+        echo "$SUDO_PASSWORD" | sudo -S systemctl restart picoclaw
+        rm -rf "$PROXY_DIR"
+
+        # Clean up LiteLLM if installed (replaces the heavier proxy)
+        if systemctl is-active litellm >/dev/null 2>&1 || systemctl is-enabled litellm >/dev/null 2>&1; then
+          echo ""
+          echo "=== LiteLLM Cleanup ==="
+          echo "LiteLLM service detected. Stopping and removing..."
+          echo "$SUDO_PASSWORD" | sudo -S systemctl stop litellm 2>/dev/null
+          echo "$SUDO_PASSWORD" | sudo -S systemctl disable litellm 2>/dev/null
+          echo "$SUDO_PASSWORD" | sudo -S rm -f /etc/systemd/system/litellm.service
+          echo "$SUDO_PASSWORD" | sudo -S systemctl daemon-reload
+          pip uninstall litellm -y 2>/dev/null
+          echo "LiteLLM removed. The lightweight cascade proxy replaces it."
+        fi
+
+        echo "Cascade proxy removed. PicoClaw restored to original config."
+        ;;
+
+      # ── SETUP ────────────────────────────────────────────────────────
+      setup)
+        echo "=== Setting Up PicoClaw Cascade ==="
+
+        # Clean up LiteLLM if present (this lightweight proxy replaces it)
+        if systemctl is-active litellm >/dev/null 2>&1 || systemctl is-enabled litellm >/dev/null 2>&1; then
+          echo "Detected LiteLLM service — stopping (cascade proxy replaces it)..."
+          echo "$SUDO_PASSWORD" | sudo -S systemctl stop litellm 2>/dev/null
+          echo "$SUDO_PASSWORD" | sudo -S systemctl disable litellm 2>/dev/null
+        fi
+
+        # Validate at least one API key is available
+        if [ -z "${GROQ_API_KEY}" ] && [ -z "${OPENROUTER_API_KEY}" ]; then
+          echo "ERROR: No API keys found. Store at least one:"
+          echo "  clide secret set GROQ_API_KEY <your-key>"
+          echo "  clide secret set OPENROUTER_API_KEY <your-key>"
+          exit 1
+        fi
+
+        # Install aiohttp if missing
+        python3 -c "import aiohttp" 2>/dev/null || pip install aiohttp --break-system-packages
+
+        # Create proxy directory
+        mkdir -p "$PROXY_DIR"
+
+        # Write the cascade proxy script
+        cat > "$PROXY_SCRIPT" << 'PROXYEOF'
+#!/usr/bin/env python3
+"""
+Tiny OpenAI-compatible cascade proxy.
+Tries providers in order. On 429 or 5xx, falls to next.
+No dependencies beyond aiohttp and stdlib.
+"""
+import asyncio, json, os, sys, time
+from aiohttp import web, ClientSession, ClientTimeout
+
+PROVIDERS = []
+MASTER_KEY = os.environ.get("CASCADE_MASTER_KEY", "sk-cascade-local")
+
+def init_providers():
+    candidates = [
+        {
+            "name": "Groq",
+            "base": "https://api.groq.com/openai/v1",
+            "key": os.environ.get("GROQ_API_KEY", ""),
+            "model": "llama-3.3-70b-versatile",
+            "rpm": 30, "rpd": 1000,
+        },
+        {
+            "name": "OpenRouter",
+            "base": "https://openrouter.ai/api/v1",
+            "key": os.environ.get("OPENROUTER_API_KEY", ""),
+            "model": "deepseek/deepseek-chat-v3-0324:free",
+            "rpm": 20, "rpd": 200,
+        },
+        {
+            "name": "Cerebras",
+            "base": "https://api.cerebras.ai/v1",
+            "key": os.environ.get("CEREBRAS_API_KEY", ""),
+            "model": "qwen3-235b-instruct",
+            "rpm": 30, "rpd": 1000,
+        },
+    ]
+    for p in candidates:
+        if p["key"]:
+            PROVIDERS.append(p)
+            print(f"  Provider loaded: {p['name']} ({p['model']})")
+        else:
+            print(f"  Provider skipped (no key): {p['name']}")
+    if not PROVIDERS:
+        print("FATAL: No providers configured. Set API keys and restart.")
+        sys.exit(1)
+
+async def handle_chat(request):
+    auth = request.headers.get("Authorization", "")
+    if MASTER_KEY and auth != f"Bearer {MASTER_KEY}":
+        return web.json_response({"error": "unauthorized"}, status=401)
+
+    body = await request.json()
+    timeout = ClientTimeout(total=30)
+
+    async with ClientSession(timeout=timeout) as session:
+        for i, prov in enumerate(PROVIDERS):
+            try:
+                payload = dict(body)
+                payload["model"] = prov["model"]
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {prov['key']}",
+                }
+                url = f"{prov['base']}/chat/completions"
+
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        data["_cascade_provider"] = prov["name"]
+                        return web.json_response(data)
+                    elif resp.status == 429:
+                        print(f"  [{prov['name']}] 429 rate-limited, trying next...")
+                        continue
+                    elif resp.status >= 500:
+                        print(f"  [{prov['name']}] {resp.status} server error, trying next...")
+                        continue
+                    else:
+                        err = await resp.text()
+                        print(f"  [{prov['name']}] {resp.status}: {err[:200]}")
+                        if i < len(PROVIDERS) - 1:
+                            continue
+                        return web.json_response(
+                            {"error": f"{prov['name']}: {resp.status}", "detail": err[:500]},
+                            status=resp.status
+                        )
+            except asyncio.TimeoutError:
+                print(f"  [{prov['name']}] timeout, trying next...")
+                continue
+            except Exception as e:
+                print(f"  [{prov['name']}] error: {e}, trying next...")
+                continue
+
+    return web.json_response({"error": "All providers failed"}, status=502)
+
+async def handle_health(request):
+    return web.json_response({
+        "status": "ok",
+        "providers": [p["name"] for p in PROVIDERS],
+    })
+
+async def handle_models(request):
+    models = [{"id": "default", "object": "model", "owned_by": "cascade"}]
+    return web.json_response({"object": "list", "data": models})
+
+app = web.Application()
+app.router.add_post("/v1/chat/completions", handle_chat)
+app.router.add_get("/health", handle_health)
+app.router.add_get("/v1/models", handle_models)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("CASCADE_PORT", "4000"))
+    print(f"Cascade proxy starting on 127.0.0.1:{port}")
+    init_providers()
+    web.run_app(app, host="127.0.0.1", port=port, print=None)
+    print(f"Listening on http://127.0.0.1:{port}")
+PROXYEOF
+        chmod +x "$PROXY_SCRIPT"
+        echo "Proxy script written to $PROXY_SCRIPT"
+
+        # Backup PicoClaw config
+        if [ ! -f "$PICOCLAW_BACKUP" ]; then
+          cp "$PICOCLAW_CONFIG" "$PICOCLAW_BACKUP"
+          echo "PicoClaw config backed up to $PICOCLAW_BACKUP"
+        fi
+
+        # Create systemd service
+        echo "$SUDO_PASSWORD" | sudo -S tee "$SERVICE_FILE" > /dev/null << SVCEOF
+    [Unit]
+    Description=PicoClaw Cascade Proxy
+    After=network.target
+    Before=picoclaw.service
+
+    [Service]
+    Type=simple
+    User=$(whoami)
+    Environment=CASCADE_MASTER_KEY=sk-cascade-local
+    Environment=CASCADE_PORT=$PORT
+    Environment=GROQ_API_KEY=${GROQ_API_KEY}
+    Environment=OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    Environment=CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
+    ExecStart=/usr/bin/python3 $PROXY_SCRIPT
+    Restart=always
+    RestartSec=5
+
+    [Install]
+    WantedBy=multi-user.target
+    SVCEOF
+
+        echo "$SUDO_PASSWORD" | sudo -S systemctl daemon-reload
+        echo "$SUDO_PASSWORD" | sudo -S systemctl enable picoclaw-cascade
+        echo "$SUDO_PASSWORD" | sudo -S systemctl start picoclaw-cascade
+        sleep 3
+
+        if ! systemctl is-active picoclaw-cascade >/dev/null 2>&1; then
+          echo "ERROR: Proxy failed to start. Logs:"
+          journalctl -u picoclaw-cascade --no-pager -n 20
+          exit 1
+        fi
+        echo "Proxy running on port $PORT"
+
+        # Patch PicoClaw config
+        python3 << PATCHEOF
+    import json
+
+    config_path = "$PICOCLAW_CONFIG"
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    defaults = config.get('agents', {}).get('defaults', {})
+    defaults['provider'] = 'openai'
+    defaults['model_name'] = 'default'
+    defaults['api_base'] = 'http://127.0.0.1:$PORT/v1'
+    defaults['api_key'] = 'sk-cascade-local'
+
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    print("PicoClaw config patched:")
+    print(f"  provider: {defaults['provider']}")
+    print(f"  model_name: {defaults['model_name']}")
+    print(f"  api_base: {defaults['api_base']}")
+    PATCHEOF
+
+        echo "$SUDO_PASSWORD" | sudo -S systemctl restart picoclaw
+        sleep 3
+
+        echo ""
+        echo "=== Setup Complete ==="
+        echo "Cascade: Groq → OpenRouter → Cerebras"
+        echo "Proxy: http://127.0.0.1:$PORT"
+        echo "PicoClaw: patched to use cascade"
+        echo ""
+        echo "Test: run_skill picoclaw_cascade action=test"
+        echo "Status: run_skill picoclaw_cascade action=status"
+        echo "Remove: run_skill picoclaw_cascade action=remove"
+        ;;
+
+      *)
+        echo "Unknown action: $ACTION"
+        echo "Valid: setup | status | test | remove"
+        exit 1
+        ;;
+    esac
+
+rollback_command:
+  - |
+    PICOCLAW_CONFIG="$HOME/.picoclaw/config.json"
+    PICOCLAW_BACKUP="$HOME/.picoclaw/config.json.pre-cascade"
+    if [ -f "$PICOCLAW_BACKUP" ]; then
+      cp "$PICOCLAW_BACKUP" "$PICOCLAW_CONFIG"
+    fi
+    echo "$SUDO_PASSWORD" | sudo -S systemctl stop picoclaw-cascade 2>/dev/null
+    echo "$SUDO_PASSWORD" | sudo -S systemctl disable picoclaw-cascade 2>/dev/null
+    echo "$SUDO_PASSWORD" | sudo -S systemctl restart picoclaw 2>/dev/null
+    rm -rf "$HOME/.picoclaw-cascade"
+    echo "Rollback complete. PicoClaw restored to original config."
+
+require_confirmation: true
+parallel: false
+retry_count: 0
+timeout: 120
