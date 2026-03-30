@@ -325,6 +325,17 @@ async fn run_secret_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error
                 None => prompt_required("Secret key name")?,
             };
 
+            // Non-interactive mode: clide secret set KEY VALUE
+            if let Some(value) = args.get(2) {
+                let value = value.clone();
+                if value.is_empty() {
+                    return Err("Value cannot be empty".into());
+                }
+                update_secret_in_yaml(&secrets_path, &key, &value)?;
+                println!("{}", format!("\n✅ '{}' saved to secrets.yaml", key).green());
+                return Ok(());
+            }
+
             // Ask where to store it
             println!("{}", "\nWhere to store this secret?".bright_cyan());
             println!("  1. secrets.yaml  (plain text, file-permission protected)");
