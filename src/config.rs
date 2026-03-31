@@ -22,6 +22,7 @@ pub struct ScheduledTask {
 
 use crate::hosts;
 use crate::pass_store;
+use crate::provider::{ApiType, ProviderConfig, ProviderConfigYaml};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -116,6 +117,11 @@ pub struct Config {
     #[serde(default)]
     pub scheduled_tasks: Vec<ScheduledTask>,
 
+    /// Provider cascade configuration (tried in order).
+    /// If empty, a single Gemini provider is created from gemini_api_key/gemini_model.
+    #[serde(default)]
+    pub providers: Vec<ProviderConfigYaml>,
+
     /// All secrets from ~/.clide/secrets.yaml plus env overrides.
     /// Available as ${KEY_NAME} placeholders in skill commands.
     /// Never serialised back to disk.
@@ -165,9 +171,15 @@ fn default_blocked_commands() -> Vec<String> {
 
 fn default_blocked_patterns() -> Vec<String> {
     vec![
-        // Destructive filesystem operations
-        r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?/(?!tmp|home)".to_string(),
-        r"rm\s+-[a-zA-Z]*r[a-zA-Z]*\s+/(?!tmp|home)".to_string(),
+        // Block rm on system root paths only (allows /home, /tmp)
+        r"rm\s+(-[a-zA-Z]*\s+)*/$".to_string(),           // rm -rf / (root itself)
+        r"rm\s+(-[a-zA-Z]*\s+)*/boot\b".to_string(),      // rm ... /boot
+        r"rm\s+(-[a-zA-Z]*\s+)*/etc\b".to_string(),       // rm ... /etc
+        r"rm\s+(-[a-zA-Z]*\s+)*/usr\b".to_string(),       // rm ... /usr
+        r"rm\s+(-[a-zA-Z]*\s+)*/var\b".to_string(),       // rm ... /var
+        r"rm\s+(-[a-zA-Z]*\s+)*/sys\b".to_string(),       // rm ... /sys
+        r"rm\s+(-[a-zA-Z]*\s+)*/proc\b".to_string(),      // rm ... /proc
+        r"rm\s+(-[a-zA-Z]*\s+)*/dev\b".to_string(),       // rm ... /dev
         r"mkfs\b".to_string(),
         r"dd\s+.*\bof=/dev/".to_string(),
         r">\s*/dev/sd[a-z]".to_string(),
@@ -300,6 +312,56 @@ Tokens or IDs containing special characters (like ':') must be quoted.",
 
     pub fn get_model(&self) -> &str {
         &self.gemini_model
+    }
+
+    /// Resolve the `providers` list into concrete `ProviderConfig` values.
+    ///
+    /// Looks up each provider's `api_key_env` in the `secrets` map and
+    /// skips providers with empty/missing keys. If no providers are
+    /// configured but `gemini_api_key` is set, creates a single Gemini
+    /// provider for backward compatibility.
+    pub fn resolve_providers(&self) -> Vec<ProviderConfig> {
+        if !self.providers.is_empty() {
+            let mut resolved = Vec::new();
+            for p in &self.providers {
+                let api_key = self
+                    .secrets
+                    .get(&p.api_key_env)
+                    .cloned()
+                    .unwrap_or_default();
+                if api_key.is_empty() {
+                    continue;
+                }
+                resolved.push(ProviderConfig {
+                    name: p.name.clone(),
+                    api_type: p.api_type.clone(),
+                    api_base: p.api_base.clone(),
+                    api_key,
+                    model: p.model.clone(),
+                    rpm_limit: p.rpm,
+                    rpd_limit: p.rpd,
+                });
+            }
+            if !resolved.is_empty() {
+                return resolved;
+            }
+            // All provider keys empty — fall through to Gemini default
+        }
+
+        // Backward compatibility: use gemini_api_key if set
+        if !self.gemini_api_key.is_empty() {
+            vec![ProviderConfig {
+                name: "Gemini".to_string(),
+                api_type: ApiType::Gemini,
+                api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+                api_key: self.gemini_api_key.clone(),
+                model: self.gemini_model.clone(),
+                rpm_limit: 10,
+                rpd_limit: 250,
+            }]
+        } else {
+            vec![]
+        }
     }
 
     /// Load the contents of the configured `context_file`, if any.

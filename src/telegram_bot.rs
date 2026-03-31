@@ -112,7 +112,15 @@ impl TelegramBot {
                 self.config.authorized_users.join(", ")
             );
         }
-        println!("  Gemini model: {}", self.config.gemini_model);
+        let providers = self.config.resolve_providers();
+        if providers.is_empty() {
+            println!("  ⚠️  No AI providers configured!");
+        } else {
+            let chain: Vec<String> = providers.iter()
+                .map(|p| format!("{} ({})", p.name, p.model))
+                .collect();
+            println!("  Providers: {}", chain.join(" → "));
+        }
         println!();
         println!("Send /stop in the chat to abort a running task.");
         println!("Send /ping to confirm the bot sees your messages.");
@@ -270,21 +278,28 @@ impl TelegramBot {
                             };
                             let exp_dir = export_dir();
                             let exp_dir_exists = std::path::Path::new(&exp_dir).exists();
+                            let providers = self.config.resolve_providers();
+                            let provider_info = if providers.is_empty() {
+                                "None configured!".to_string()
+                            } else {
+                                providers.iter()
+                                    .map(|p| format!("{} ({})", p.name, p.model))
+                                    .collect::<Vec<_>>()
+                                    .join(" → ")
+                            };
                             let reply = format!(
                                 "🔍 Clide Debug\n\
                                  Version: {}\n\
                                  Platform: {}\n\
-                                 Model: {}\n\
+                                 Providers: {}\n\
                                  Auth: {}\n\
                                  Sender username: @{}\n\
-                                 Gemini key set: {}\n\
                                  Export dir: {} ({})",
                                 crate::VERSION,
                                 self.config.platform,
-                                self.config.gemini_model,
+                                provider_info,
                                 auth_status,
                                 msg.sender,
-                                !self.config.gemini_api_key.is_empty(),
                                 exp_dir,
                                 if exp_dir_exists { "exists" } else { "not created yet" },
                             );
@@ -806,6 +821,25 @@ async fn build_task_with_file(
                 attached.bytes.len(),
                 use_vision
             );
+
+            // Special handling for .txt files that should be executed
+            let lower_name = safe_name.to_lowercase();
+            let lower_text = text.to_lowercase();
+            let is_executable_txt = lower_name.ends_with(".txt")
+                && (lower_text.contains("run")
+                    || lower_text.contains("execute")
+                    || lower_name.contains("prompt")
+                    || lower_name.contains("command"));
+
+            if is_executable_txt {
+                let task = format!(
+                    "The user uploaded a text file containing commands to execute. \
+                     Read the file at {} and execute the commands inside it exactly \
+                     as written, in order. Do not explain or analyze — just run them.",
+                    file_path
+                );
+                return (task, None);
+            }
 
             let user_instruction = if text.trim().is_empty() {
                 if use_vision {

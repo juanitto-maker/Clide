@@ -107,6 +107,50 @@ blocked_commands:
 # Whether to automatically escalate to fallback_model on failure (default: true).
 auto_escalate: true
 
+# ── Provider Cascade ─────────────────────────────────────────────────
+# Clide tries providers in order. On 429 (rate limit) or 5xx (server error),
+# it automatically falls to the next provider. All are free tier.
+#
+# To use: store API keys in ~/.clide/secrets.yaml:
+#   GROQ_API_KEY: "gsk_..."           # https://console.groq.com
+#   CEREBRAS_API_KEY: "..."           # https://cloud.cerebras.ai
+#   OPENROUTER_API_KEY: "sk-or-..."   # https://openrouter.ai
+#
+# Providers with empty/missing keys are automatically skipped.
+# If no providers are configured, falls back to gemini_api_key above.
+providers:
+  - name: "Groq"
+    api_type: "openai"
+    api_base: "https://api.groq.com/openai/v1"
+    api_key_env: "GROQ_API_KEY"
+    model: "llama-3.3-70b-versatile"
+    rpm: 30
+    rpd: 1000
+
+  - name: "Cerebras"
+    api_type: "openai"
+    api_base: "https://api.cerebras.ai/v1"
+    api_key_env: "CEREBRAS_API_KEY"
+    model: "qwen3-235b-instruct"
+    rpm: 30
+    rpd: 1000
+
+  - name: "OpenRouter"
+    api_type: "openai"
+    api_base: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    model: "deepseek/deepseek-chat-v3-0324:free"
+    rpm: 20
+    rpd: 200
+
+  - name: "Gemini"
+    api_type: "gemini"
+    api_base: "https://generativelanguage.googleapis.com/v1beta"
+    api_key_env: "GEMINI_API_KEY"
+    model: "gemini-2.5-flash"
+    rpm: 10
+    rpd: 250
+
 # --- Enhanced Memory ---
 # Number of conversations between automatic summarizations (default: 5).
 # Lower = more frequent summaries = better long-term memory, but uses more API calls.
