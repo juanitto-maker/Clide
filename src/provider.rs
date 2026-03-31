@@ -184,38 +184,47 @@ impl ProviderCascade {
             match result {
                 Ok(resp) => {
                     if resp.status == 200 {
+                        info!("[Cascade] {} responded successfully", entry.config.name);
                         return Ok(resp);
                     }
+                    // Extract error detail from response for logging
+                    let detail = resp.raw["error"]["message"]
+                        .as_str()
+                        .or_else(|| resp.raw["error"].as_str())
+                        .unwrap_or("")
+                        .chars()
+                        .take(200)
+                        .collect::<String>();
+
                     // Cascade on retryable errors
                     match resp.status {
                         429 => {
                             warn!(
-                                "[{}] Rate limited (429), trying next provider",
-                                entry.config.name
+                                "[{}] Rate limited (429), trying next. {}",
+                                entry.config.name, detail
                             );
                         }
                         401 | 403 => {
                             warn!(
-                                "[{}] Auth error ({}), trying next provider",
-                                entry.config.name, resp.status
+                                "[{}] Auth error ({}), trying next. {}",
+                                entry.config.name, resp.status, detail
                             );
                         }
                         s if s >= 500 => {
                             warn!(
-                                "[{}] Server error ({}), trying next provider",
-                                entry.config.name, resp.status
+                                "[{}] Server error ({}), trying next. {}",
+                                entry.config.name, resp.status, detail
                             );
                         }
                         _ => {
-                            // Non-retryable client error — still cascade but log
                             warn!(
-                                "[{}] HTTP {}, trying next provider",
-                                entry.config.name, resp.status
+                                "[{}] HTTP {}, trying next. {}",
+                                entry.config.name, resp.status, detail
                             );
                         }
                     }
                     last_error =
-                        Some(anyhow::anyhow!("[{}] HTTP {}", entry.config.name, resp.status));
+                        Some(anyhow::anyhow!("[{}] HTTP {}: {}", entry.config.name, resp.status, detail));
                 }
                 Err(e) => {
                     warn!("[{}] Request failed: {}, trying next provider", entry.config.name, e);

@@ -522,9 +522,17 @@ impl Agent {
             {
                 Ok(r) => {
                     info!("  Provider: {}", r.provider_name);
+                    Self::send_progress(
+                        &progress,
+                        format!("[{}] thinking…", r.provider_name),
+                    ).await;
                     r
                 }
                 Err(e) => {
+                    Self::send_progress(
+                        &progress,
+                        format!("⚠ All providers failed: {}", e),
+                    ).await;
                     return Err(e);
                 }
             };
