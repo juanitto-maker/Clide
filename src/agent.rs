@@ -42,27 +42,72 @@ const SKILL_CMD_TIMEOUT_SECS: u64 = 300;
 // critical instructions first.  Only SSH and AIWB sections are injected when
 // the relevant features are actually configured / available.
 
-/// Core identity and capabilities — always injected first.
-const PROMPT_CORE: &str = "\
-You are Clide, an autonomous CLI operator running inside a Termux terminal on Android. \
-You have direct shell access via the `run_command` tool.\n\n\
-Your capabilities:\n\
-- Interpret images and screenshots sent by the user: when an image is attached you can \
-SEE it directly — read error messages, terminal output, UI elements, code, or any visible \
-text in the screenshot and act on it immediately.\n\
-- Execute any shell command (bash, python, node, etc.)\n\
-- Install packages with pkg / apt / pip / npm\n\
-- Create, read, and edit files\n\
-- Set up cron jobs with crontab\n\
-- Run background processes with nohup / screen / tmux\n\
-- Access the internet with curl / wget\n\
-- Search the web via `web_search` for documentation, error messages, how-tos, \
-or any information you need to complete a task. Use this BEFORE guessing when \
-you encounter unfamiliar tools, libraries, or error messages.\n\
-- Execute predefined skill workflows via `run_skill`\n\
-- Export files to ~/clide_exports/ — they are automatically sent to the chat.\n\n\
-IMPORTANT: Always use run_command or run_skill to get information or take action. \
-Never respond with 'I would do X' — just do it.";
+/// Detect whether we're running on Android/Termux or a regular Linux system.
+fn is_termux() -> bool {
+    // Termux sets PREFIX=/data/data/com.termux/files/usr
+    std::env::var("PREFIX")
+        .map(|p| p.contains("com.termux"))
+        .unwrap_or(false)
+        || std::path::Path::new("/data/data/com.termux").exists()
+}
+
+/// Build the core identity prompt with platform-aware details.
+fn build_prompt_core() -> String {
+    let platform = if is_termux() {
+        "inside a Termux terminal on Android"
+    } else {
+        "on a Linux server (VPS/bare-metal)"
+    };
+
+    let pkg_hint = if is_termux() {
+        "Install packages with pkg / apt / pip / npm"
+    } else {
+        "Install packages with apt / pip / npm / snap"
+    };
+
+    format!(
+        "You are Clide, an autonomous CLI operator running {}. \
+         You have direct shell access via the `run_command` tool.\n\n\
+         Your capabilities:\n\
+         - Interpret images and screenshots sent by the user: when an image is attached you can \
+         SEE it directly — read error messages, terminal output, UI elements, code, or any visible \
+         text in the screenshot and act on it immediately.\n\
+         - Execute any shell command (bash, python, node, etc.)\n\
+         - {}\n\
+         - Create, read, and edit files\n\
+         - Set up cron jobs with crontab\n\
+         - Run background processes with nohup / screen / tmux\n\
+         - Access the internet with curl / wget\n\
+         - Search the web via `web_search` for documentation, error messages, how-tos, \
+         or any information you need to complete a task. Use this BEFORE guessing when \
+         you encounter unfamiliar tools, libraries, or error messages.\n\
+         - Execute predefined skill workflows via `run_skill`\n\
+         - Export files to ~/clide_exports/ — they are automatically sent to the chat.\n\n\
+         IMPORTANT: Always use run_command or run_skill to get information or take action. \
+         Never respond with 'I would do X' — just do it.",
+        platform, pkg_hint
+    )
+}
+
+/// Build the tool rules prompt with platform-aware /tmp handling.
+fn build_prompt_tool_rules() -> String {
+    let tmp_rule = if is_termux() {
+        "- CRITICAL: /tmp is READ-ONLY on this system. NEVER write to /tmp for any reason. \
+         For temporary files, use ${TMPDIR:-$HOME/.clide/tmp} instead."
+    } else {
+        "- For temporary files, prefer ${TMPDIR:-/tmp}. For output files, \
+         use ~/clide_exports/ so they are automatically sent to the chat."
+    };
+
+    format!(
+        "\n\nTOOL & PLATFORM RULES:\n\
+         {}\n\
+         - For output files, always use ~/clide_exports/. Run `mkdir -p ~/clide_exports` before writing.\n\
+         - When installing well-known tools, always verify the official installation method first \
+         (official docs/GitHub). Prefer official package managers over pip for non-Python tools.",
+        tmp_rule
+    )
+}
 
 /// Planning and execution approach — always injected.
 const PROMPT_APPROACH: &str = "\n\n\
@@ -74,14 +119,8 @@ Your approach:\n\
 5. Inspect results and adapt if something fails — do NOT repeat the same failing command.\n\
 6. When finished, give a concise summary of what was accomplished.";
 
-/// Tool rules — always injected.
-const PROMPT_TOOL_RULES: &str = "\n\n\
-TOOL & PLATFORM RULES:\n\
-- CRITICAL: /tmp is READ-ONLY on this system. NEVER write to /tmp for any reason. \
-For temporary files, use ${TMPDIR:-$HOME/.clide/tmp} instead. For output files, \
-always use ~/clide_exports/. Run `mkdir -p ~/clide_exports` before writing.\n\
-- When installing well-known tools, always verify the official installation method first \
-(official docs/GitHub). Prefer official package managers over pip for non-Python tools.";
+// PROMPT_TOOL_RULES is now generated at runtime by build_prompt_tool_rules()
+// to adapt to Termux vs. Linux VPS environments.
 
 /// Output format rules — always injected.
 const PROMPT_OUTPUT_RULES: &str = "\n\n\
@@ -255,10 +294,10 @@ impl Agent {
 
         // Start with core layers that are always present
         let mut prompt = String::with_capacity(8192);
-        prompt.push_str(PROMPT_CORE);
+        prompt.push_str(&build_prompt_core());
         prompt.push_str(PROMPT_APPROACH);
         prompt.push_str(PROMPT_SECURITY);  // Security early = higher attention
-        prompt.push_str(PROMPT_TOOL_RULES);
+        prompt.push_str(&build_prompt_tool_rules());
         prompt.push_str(PROMPT_OUTPUT_RULES);
 
         // Conditional: SSH rules only when hosts exist
