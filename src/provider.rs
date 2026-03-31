@@ -9,8 +9,12 @@ use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use crate::openai_client::OpenAIClient;
+
+/// HTTP timeout for Gemini API requests.
+const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Wire format the provider speaks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -107,10 +111,14 @@ impl ProviderCascade {
                 } else {
                     None
                 };
+                let http_client = Client::builder()
+                    .timeout(GEMINI_REQUEST_TIMEOUT)
+                    .build()
+                    .unwrap_or_else(|_| Client::new());
                 ProviderEntry {
                     config: c,
                     openai_client,
-                    http_client: Client::new(),
+                    http_client,
                 }
             })
             .collect::<Vec<_>>();

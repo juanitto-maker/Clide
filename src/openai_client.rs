@@ -8,6 +8,10 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::time::Duration;
+
+/// HTTP timeout for OpenAI-compatible API requests.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub struct OpenAIClient {
     client: Client,
@@ -44,8 +48,12 @@ impl OpenAIClient {
         model: String,
         provider_name: String,
     ) -> Self {
+        let client = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
-            client: Client::new(),
+            client,
             api_key,
             api_base,
             model,
